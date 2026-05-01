@@ -76,6 +76,36 @@ enum WorktreeOps {
         }
     }
 
+    /// All configured git remotes (`git remote`). Empty array if the repo
+    /// has no remotes configured.
+    static func listRemotes(at repoPath: String) async -> [String] {
+        guard let out = try? await GitRunner.runChecked(["remote"], cwd: repoPath) else {
+            return []
+        }
+        return out
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// Branch refs suitable for a base-branch picker: local branches plus
+    /// remote-tracking branches (e.g. `main`, `origin/main`). Sorted
+    /// alphabetically with remote-tracking refs after locals.
+    static func listBaseRefs(at repoPath: String) async -> [String] {
+        async let locals = branches(at: repoPath, args: ["branch", "--format=%(refname:short)"])
+        async let remotes = branches(at: repoPath, args: ["branch", "-r", "--format=%(refname:short)"])
+        let combined = (await locals) + (await remotes).filter { !$0.contains("HEAD ->") }
+        return Array(NSOrderedSet(array: combined.sorted())) as? [String] ?? combined.sorted()
+    }
+
+    private static func branches(at repoPath: String, args: [String]) async -> [String] {
+        guard let out = try? await GitRunner.runChecked(args, cwd: repoPath) else { return [] }
+        return out
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
     /// Generate a slug-safe branch name from a workspace name.
     static func slug(_ name: String) -> String {
         let lowered = name.lowercased()

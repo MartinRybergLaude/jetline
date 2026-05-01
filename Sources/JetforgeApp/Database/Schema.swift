@@ -49,5 +49,19 @@ enum Schema {
                 t.column("theme", .text).notNull().defaults(to: "system")
             }
         }
+
+        migrator.registerMigration("v2_repo_settings") { db in
+            try db.alter(table: "repositories") { t in
+                t.add(column: "remoteOrigin", .text).notNull().defaults(to: "origin")
+                t.add(column: "branchPrefix", .text)
+                t.add(column: "setupScript", .text)
+                t.add(column: "runScript", .text)
+                t.add(column: "runExclusive", .boolean).notNull().defaults(to: false)
+                t.add(column: "archiveScript", .text)
+            }
+            try db.alter(table: "app_settings") { t in
+                t.add(column: "globalBranchPrefix", .text).notNull().defaults(to: "jetforge/")
+            }
+        }
     }
 }

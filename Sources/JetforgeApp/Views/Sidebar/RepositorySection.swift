@@ -4,6 +4,7 @@ struct RepositorySection: View {
     @EnvironmentObject private var state: AppState
     let repo: Repository
     let onNewWorkspace: () -> Void
+    let onOpenSettings: () -> Void
 
     @State private var expanded: Bool = true
 
@@ -38,8 +39,16 @@ struct RepositorySection: View {
                     .fontWeight(.semibold)
                     .textCase(nil)
                 Spacer()
+                Button(action: onOpenSettings) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Repository settings")
             }
             .contextMenu {
+                Button("Repository settings…", action: onOpenSettings)
                 Button("Reveal in Finder") {
                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: repo.path)])
                 }

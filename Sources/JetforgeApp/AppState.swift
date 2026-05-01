@@ -13,6 +13,10 @@ final class AppState: ObservableObject {
     @Published var settings: AppSettings = AppSettings()
     @Published var diffByWorkspace: [String: DiffSnapshot] = [:]
     @Published var inspectorVisible: Bool = true
+    /// Run-script controllers, keyed by workspace id. Created on demand by
+    /// `runWorkspace`; nil means "never been run". Even when `isRunning` is
+    /// false we keep the controller around so the UI can show the last log.
+    @Published var runByWorkspace: [String: RunController] = [:]
 
     private var watchers: [String: WorktreeWatcher] = [:]
 
@@ -62,6 +66,21 @@ final class AppState: ObservableObject {
         try? Repositories.remove(id: id)
         repositories.removeAll { $0.id == id }
         workspacesByRepo.removeValue(forKey: id)
+        if selectedWorkspaceId.flatMap({ workspaceById($0) }) == nil {
+            selectedWorkspaceId = nil
+        }
+    }
+
+    /// Persist the edited fields to disk, keep the in-memory list in sync.
+    func updateRepository(_ repo: Repository) {
+        do {
+            try Repositories.update(repo)
+            if let idx = repositories.firstIndex(where: { $0.id == repo.id }) {
+                repositories[idx] = repo
+            }
+        } catch {
+            Task { await presentError(error.localizedDescription) }
+        }
     }
 
     // MARK: - Workspaces
@@ -69,7 +88,8 @@ final class AppState: ObservableObject {
     func createWorkspace(in repo: Repository, name: String, agent: Workspace.AgentKind) async {
         let id = UUID().uuidString
         let slug = WorktreeOps.slug(name)
-        let branch = "jetforge/\(slug)-\(id.prefix(6))"
+        let prefix = effectiveBranchPrefix(for: repo)
+        let branch = "\(prefix)\(slug)-\(id.prefix(6))"
 
         do {
             let path = try await WorktreeOps.create(
@@ -94,14 +114,46 @@ final class AppState: ObservableObject {
             try Workspaces.insert(ws)
             workspacesByRepo[repo.id, default: []].insert(ws, at: 0)
             selectWorkspace(ws.id)
+
+            // Run setup script after the worktree exists. Failures are surfaced
+            // so the user can fix the script — but the workspace stays so they
+            // can iterate without re-creating from scratch.
+            if let setup = repo.setupScript, !setup.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if let result = await ScriptRunner.run(
+                    setup,
+                    cwd: path,
+                    env: ["JETFORGE_ROOT_PATH": repo.path]
+                ), !result.success {
+                    await presentError(
+                        "Setup script failed (\(result.status)).\n\n\(result.stderr.isEmpty ? result.stdout : result.stderr)"
+                    )
+                }
+            }
         } catch {
             await presentError(error.localizedDescription)
         }
     }
 
     func archiveWorkspace(_ workspace: Workspace, removeWorktree: Bool) async {
+        // Stop a long-running run-script before yanking the worktree out from
+        // under it; otherwise the dev server keeps writing to a deleted dir.
+        if let runner = runByWorkspace[workspace.id], runner.isRunning {
+            runner.stop()
+        }
+        runByWorkspace.removeValue(forKey: workspace.id)
         detachWorkspace(workspace.id)
-        if removeWorktree, let repo = repositories.first(where: { $0.id == workspace.repositoryId }) {
+
+        let repo = repositories.first(where: { $0.id == workspace.repositoryId })
+        if removeWorktree, let repo {
+            // Archive script runs against the still-existing worktree, before
+            // git removes it. Its job is usually disk cleanup (`rm -rf node_modules`).
+            if let archive = repo.archiveScript, !archive.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                _ = await ScriptRunner.run(
+                    archive,
+                    cwd: workspace.worktreePath,
+                    env: ["JETFORGE_ROOT_PATH": repo.path]
+                )
+            }
             try? await WorktreeOps.remove(
                 repoPath: repo.path,
                 worktreePath: workspace.worktreePath,
@@ -112,6 +164,14 @@ final class AppState: ObservableObject {
         try? Workspaces.archive(id: workspace.id)
         workspacesByRepo[workspace.repositoryId]?.removeAll { $0.id == workspace.id }
         if selectedWorkspaceId == workspace.id { selectedWorkspaceId = nil }
+    }
+
+    private func effectiveBranchPrefix(for repo: Repository) -> String {
+        if let p = repo.branchPrefix?.trimmingCharacters(in: .whitespacesAndNewlines), !p.isEmpty {
+            return p
+        }
+        let global = settings.globalBranchPrefix.trimmingCharacters(in: .whitespacesAndNewlines)
+        return global.isEmpty ? "jetforge/" : global
     }
 
     func selectWorkspace(_ id: String) {
@@ -188,6 +248,44 @@ final class AppState: ObservableObject {
               let sessions = sessionsByWorkspace[wsId],
               oneBased >= 1, oneBased <= sessions.count else { return }
         selectSession(sessions[oneBased - 1].id, in: wsId)
+    }
+
+    // MARK: - Run script
+
+    /// Toggle the run script for a workspace. Honours the per-repo
+    /// `runExclusive` flag — starting an exclusive run stops every other
+    /// active runner in the same repository first.
+    func toggleRun(for workspace: Workspace) {
+        if let runner = runByWorkspace[workspace.id], runner.isRunning {
+            runner.stop()
+            return
+        }
+        guard let repo = repositories.first(where: { $0.id == workspace.repositoryId }) else { return }
+        guard let script = repo.runScript,
+              !script.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+        if repo.runExclusive {
+            for (otherId, runner) in runByWorkspace where otherId != workspace.id && runner.isRunning {
+                if let other = workspaceById(otherId), other.repositoryId == repo.id {
+                    runner.stop()
+                }
+            }
+        }
+
+        let runner = runByWorkspace[workspace.id] ?? RunController(
+            workspaceId: workspace.id,
+            onExit: { [weak self] _ in self?.objectWillChange.send() }
+        )
+        runByWorkspace[workspace.id] = runner
+        runner.start(
+            script: script,
+            cwd: workspace.worktreePath,
+            env: ["JETFORGE_ROOT_PATH": repo.path]
+        )
+    }
+
+    func runController(for workspaceId: String) -> RunController? {
+        runByWorkspace[workspaceId]
     }
 
     /// Cycle to the next or previous tab of the active workspace. Wraps.

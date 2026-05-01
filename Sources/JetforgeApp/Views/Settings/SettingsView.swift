@@ -31,8 +31,20 @@ private struct GeneralSettingsView: View {
                 Text("Light").tag(AppSettings.Theme.light)
                 Text("Dark").tag(AppSettings.Theme.dark)
             }
+            TextField("Branch prefix", text: bindingBranchPrefix)
         }
         .formStyle(.grouped)
+    }
+
+    private var bindingBranchPrefix: Binding<String> {
+        Binding(
+            get: { state.settings.globalBranchPrefix },
+            set: { newValue in
+                var s = state.settings
+                s.globalBranchPrefix = newValue
+                state.saveSettings(s)
+            }
+        )
     }
 
     private var bindingDefaultAgent: Binding<Workspace.AgentKind> {

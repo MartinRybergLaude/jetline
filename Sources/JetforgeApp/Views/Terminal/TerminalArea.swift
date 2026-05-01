@@ -4,6 +4,7 @@ import AppKit
 struct TerminalArea: View {
     @EnvironmentObject private var state: AppState
     let workspace: Workspace
+    @State private var showingRunOutput = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -14,8 +15,9 @@ struct TerminalArea: View {
         .navigationTitle(workspace.name)
         .navigationSubtitle(workspace.branchName)
         .toolbar {
-            if let session = state.activeSession(for: workspace.id) {
-                ToolbarItem(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .primaryAction) {
+                runToolbarItems
+                if let session = state.activeSession(for: workspace.id) {
                     Button {
                         session.interrupt()
                     } label: {
@@ -25,6 +27,46 @@ struct TerminalArea: View {
                 }
             }
         }
+        .sheet(isPresented: $showingRunOutput) {
+            if let runner = state.runController(for: workspace.id) {
+                RunOutputSheet(controller: runner)
+            }
+        }
+    }
+
+    /// Renders Run / Stop based on the workspace's run controller state.
+    /// Hidden entirely when the repo has no run script configured.
+    @ViewBuilder
+    private var runToolbarItems: some View {
+        if hasRunScript {
+            Button {
+                let wasRunning = state.runController(for: workspace.id)?.isRunning ?? false
+                state.toggleRun(for: workspace)
+                if !wasRunning { showingRunOutput = true }
+            } label: {
+                let running = state.runController(for: workspace.id)?.isRunning ?? false
+                Label(
+                    running ? "Stop run" : "Run",
+                    systemImage: running ? "stop.fill" : "play.fill"
+                )
+            }
+            .help("Run the configured run script")
+
+            if state.runController(for: workspace.id) != nil {
+                Button {
+                    showingRunOutput = true
+                } label: {
+                    Label("Run output", systemImage: "doc.text.below.ecg")
+                }
+                .help("View run-script output")
+            }
+        }
+    }
+
+    private var hasRunScript: Bool {
+        guard let repo = state.repositories.first(where: { $0.id == workspace.repositoryId })
+        else { return false }
+        return !(repo.runScript ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     @ViewBuilder

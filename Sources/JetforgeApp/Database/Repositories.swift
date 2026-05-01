@@ -24,6 +24,12 @@ enum Repositories {
         return repo
     }
 
+    static func update(_ repo: Repository) throws {
+        try Database.shared.writer.write { db in
+            try repo.update(db)
+        }
+    }
+
     static func remove(id: String) throws {
         _ = try Database.shared.writer.write { db in
             try Repository.deleteOne(db, key: id)
