@@ -17,14 +17,6 @@ struct TerminalArea: View {
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 runToolbarItems
-                if let session = state.activeSession(for: workspace.id) {
-                    Button {
-                        session.interrupt()
-                    } label: {
-                        Label("Interrupt", systemImage: "stop.circle")
-                    }
-                    .help("Send ^C to the session")
-                }
             }
         }
         .sheet(isPresented: $showingRunOutput) {
