@@ -20,14 +20,13 @@ final class PTYSession: ObservableObject, Identifiable {
         id: String = UUID().uuidString,
         workspaceId: String,
         agent: Workspace.AgentKind,
-        cwd: String,
-        backend: TerminalBackend = .default
+        cwd: String
     ) {
         self.id = id
         self.workspaceId = workspaceId
         self.agent = agent
         self.cwd = cwd
-        self.emulator = backend.makeView()
+        self.emulator = TerminalEmulatorFactory.make()
     }
 
     /// Resolve the binary path and start the agent process. Idempotent —

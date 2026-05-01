@@ -2,12 +2,9 @@ import Foundation
 import AppKit
 
 /// Implementation-agnostic interface for an embedded terminal emulator.
-///
-/// Two implementations exist:
-///   - `SwiftTermEmulator`  ▶ working today, used by default
-///   - `GhosttyEmulator`    ▶ planned drop-in once libghostty embedder is wired up
-///
-/// Switching backends is one-line: see `TerminalBackend.makeView(...)`.
+/// Backed by `GhosttyEmulator` — the SwiftTerm backend was removed when
+/// the migration to libghostty landed (its DECSET 2026 bookkeeping
+/// produced overdraw under Claude Code's flicker-free TUI).
 @MainActor
 protocol TerminalEmulatorView: AnyObject {
     /// The underlying NSView to host inside SwiftUI.
@@ -27,23 +24,19 @@ protocol TerminalEmulatorView: AnyObject {
 
     /// Stop the process and tear down the PTY.
     func terminate()
+
+    /// Toggle Metal rendering when the tab is hidden / shown. Inactive
+    /// surfaces should pause display-link work to keep the GPU idle.
+    func setActive(_ active: Bool)
 }
 
-/// Selects which embedded terminal backend to use.
-enum TerminalBackend {
-    case swiftTerm
-    case ghostty
+extension TerminalEmulatorView {
+    func setActive(_ active: Bool) {}
+}
 
-    /// Default backend. Flip this constant when libghostty integration lands.
-    static let `default`: TerminalBackend = .swiftTerm
-
-    @MainActor
-    func makeView() -> TerminalEmulatorView {
-        switch self {
-        case .swiftTerm:
-            return SwiftTermEmulator()
-        case .ghostty:
-            return GhosttyEmulator()
-        }
+@MainActor
+enum TerminalEmulatorFactory {
+    static func make() -> TerminalEmulatorView {
+        GhosttyEmulator()
     }
 }

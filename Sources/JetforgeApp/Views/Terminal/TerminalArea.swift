@@ -168,7 +168,7 @@ private struct SessionSurface: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            TerminalHostView(session: session)
+            TerminalHostView(session: session, isActive: true)
 
             if session.fellBackToShell {
                 FallbackBanner(agent: session.agent)
@@ -336,6 +336,7 @@ private struct NewSessionMenu: View {
 /// session was constructed with.
 struct TerminalHostView: NSViewRepresentable {
     let session: PTYSession
+    let isActive: Bool
 
     func makeNSView(context: Context) -> NSView {
         let container = NSView()
@@ -348,16 +349,18 @@ struct TerminalHostView: NSViewRepresentable {
             term.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             term.trailingAnchor.constraint(equalTo: container.trailingAnchor)
         ])
+        session.emulator.setActive(isActive)
         return container
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
+        session.emulator.setActive(isActive)
         // Focus is asserted on viewDidMoveToWindow when the tab swaps in. Don't
         // dispatch makeFirstResponder on every SwiftUI update — re-entering
         // layout during a NavigationSplitView divider drag is one of the paths
         // that crashes with `_postWindowNeedsUpdateConstraints`.
         let term = session.emulator.nsView
-        guard let win = term.window, win.firstResponder !== term else { return }
+        guard isActive, let win = term.window, win.firstResponder !== term else { return }
         DispatchQueue.main.async { win.makeFirstResponder(term) }
     }
 }
