@@ -1,0 +1,28 @@
+# Build
+.build/
+.swiftpm/
+DerivedData/
+build/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+xcuserdata/
+
+# App bundle output
+dist/
+*.app
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log
+logs/
+
+# Local config
+.env
+.env.local
