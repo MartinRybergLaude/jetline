@@ -22,24 +22,6 @@ struct RepositorySection: View {
                     .listRowInsets(EdgeInsets(top: 1, leading: -8, bottom: 1, trailing: -8))
                     .listRowSeparator(.hidden)
                 }
-
-                Button(action: onNewWorkspace) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "plus")
-                            .font(.system(size: 14, weight: .regular))
-                            .frame(width: 22, alignment: .center)
-                        Text("New workspace")
-                            .font(.body)
-                    }
-                    .foregroundStyle(.secondary)
-                    .padding(.leading, 26)
-                    .padding(.trailing, 8)
-                    .padding(.vertical, 4)
-                }
-                .buttonStyle(.plain)
-                .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 8))
-                .listRowSeparator(.hidden)
             }
         } header: {
             HStack(spacing: 8) {
@@ -51,10 +33,20 @@ struct RepositorySection: View {
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(.secondary)
                             .frame(width: 12, alignment: .center)
-                        Image(systemName: "folder")
-                            .font(.system(size: 16, weight: .regular))
-                            .foregroundStyle(.primary)
-                            .frame(width: 22, alignment: .center)
+                        Group {
+                            if let favicon = RepoIconLoader.icon(for: repo.path) {
+                                Image(nsImage: favicon)
+                                    .resizable()
+                                    .interpolation(.high)
+                                    .aspectRatio(contentMode: .fit)
+                                    .frame(width: 14, height: 14)
+                            } else {
+                                Image(systemName: "folder")
+                                    .font(.system(size: 16, weight: .regular))
+                                    .foregroundStyle(.primary)
+                            }
+                        }
+                        .frame(width: 22, alignment: .center)
                         Text(repo.name)
                             .font(.body)
                             .textCase(nil)
@@ -64,6 +56,13 @@ struct RepositorySection: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                Button(action: onNewWorkspace) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("New workspace")
                 Button(action: onOpenSettings) {
                     Image(systemName: "gearshape")
                         .font(.system(size: 13, weight: .regular))

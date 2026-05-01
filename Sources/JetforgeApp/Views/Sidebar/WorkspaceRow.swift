@@ -11,10 +11,6 @@ struct WorkspaceRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: iconName)
-                .font(.system(size: 16, weight: .regular))
-                .foregroundStyle(isSelected ? Color.accentColor.opacity(0.9) : Color.primary)
-                .frame(width: 22, alignment: .center)
             Text(workspace.name)
                 .font(.body)
                 .foregroundStyle(isSelected ? Color.accentColor.opacity(0.9) : Color.primary)
@@ -25,9 +21,9 @@ struct WorkspaceRow: View {
                 ChangesPill(adds: stats.totalAdditions, dels: stats.totalDeletions)
             }
         }
-        .padding(.leading, 26)
+        .padding(.leading, 52)
         .padding(.trailing, 8)
-        .padding(.vertical, 4)
+        .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
             if isSelected {
@@ -47,14 +43,6 @@ struct WorkspaceRow: View {
             Button("Delete worktree…", role: .destructive) {
                 Task { await state.archiveWorkspace(workspace, removeWorktree: true) }
             }
-        }
-    }
-
-    private var iconName: String {
-        switch workspace.agent {
-        case .claude: return "sparkles"
-        case .codex: return "wand.and.stars"
-        case .shell: return "terminal"
         }
     }
 }
