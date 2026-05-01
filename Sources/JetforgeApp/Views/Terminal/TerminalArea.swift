@@ -30,17 +30,16 @@ struct TerminalArea: View {
     @ViewBuilder
     private var runToolbarItems: some View {
         if state.hasRunScript(workspace) {
-            let running = state.isRunActive(workspace.id)
-            Button {
-                state.toggleRun(for: workspace)
-                if !running { showingRunOutput = true }
-            } label: {
-                Label(
-                    running ? "Stop run" : "Run",
-                    systemImage: running ? "stop.fill" : "play.fill"
-                )
+            if let runner = state.runController(for: workspace.id) {
+                RunStatusButton(runner: runner) { state.toggleRun(for: workspace) }
+            } else {
+                Button {
+                    state.toggleRun(for: workspace)
+                } label: {
+                    Label("Run", systemImage: "play.fill")
+                }
+                .help("Run the configured run script")
             }
-            .help(running ? "Stop the run script" : "Run the configured run script")
         }
         if state.hasRunHistory(workspace.id) {
             Button {
@@ -50,6 +49,13 @@ struct TerminalArea: View {
             }
             .help("View run-script output")
         }
+        Button {
+            state.inspectorVisible.toggle()
+        } label: {
+            Image(systemName: "sidebar.right")
+                .symbolVariant(state.inspectorVisible ? .fill : .none)
+        }
+        .help("Toggle inspector")
     }
 
     @ViewBuilder
@@ -84,6 +90,73 @@ struct TerminalArea: View {
                 .id(session.id)
         } else {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+}
+
+/// Toolbar button that mirrors the runner's phase: play icon when idle,
+/// pulsing yellow dot while spinning up, solid green once it's settled.
+/// Click toggles start/stop in any phase.
+private struct RunStatusButton: View {
+    @ObservedObject var runner: RunController
+    let onToggle: () -> Void
+    @State private var pulse: Bool = false
+
+    var body: some View {
+        Button(action: onToggle) {
+            label
+        }
+        .help(helpText)
+    }
+
+    @ViewBuilder
+    private var label: some View {
+        Label {
+            Text(accessibilityTitle)
+        } icon: {
+            Image(systemName: runner.phase == .idle ? "play.fill" : "stop.fill")
+                .overlay(alignment: .topTrailing) { statusDot }
+        }
+    }
+
+    @ViewBuilder
+    private var statusDot: some View {
+        switch runner.phase {
+        case .idle:
+            EmptyView()
+        case .starting:
+            Circle()
+                .fill(.yellow)
+                .frame(width: 6, height: 6)
+                .opacity(pulse ? 0.35 : 1.0)
+                .animation(
+                    .easeInOut(duration: 0.6).repeatForever(autoreverses: true),
+                    value: pulse
+                )
+                .onAppear { pulse = true }
+                .onDisappear { pulse = false }
+                .offset(x: 3, y: -3)
+        case .running:
+            Circle()
+                .fill(.green)
+                .frame(width: 6, height: 6)
+                .offset(x: 3, y: -3)
+        }
+    }
+
+    private var accessibilityTitle: String {
+        switch runner.phase {
+        case .idle: return "Run"
+        case .starting: return "Starting"
+        case .running: return "Running"
+        }
+    }
+
+    private var helpText: String {
+        switch runner.phase {
+        case .idle: return "Run the configured run script"
+        case .starting: return "Starting… click to stop"
+        case .running: return "Running — click to stop"
         }
     }
 }

@@ -16,19 +16,6 @@ struct AppShell: View {
                         .inspectorColumnWidth(min: 240, ideal: 320, max: 480)
                 }
         }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    state.inspectorVisible.toggle()
-                } label: {
-                    Image(systemName: state.inspectorVisible
-                          ? "sidebar.right"
-                          : "sidebar.right")
-                        .symbolVariant(state.inspectorVisible ? .fill : .none)
-                }
-                .help("Toggle inspector")
-            }
-        }
         .frame(minWidth: 900, minHeight: 600)
     }
 
