@@ -2,7 +2,7 @@ import SwiftUI
 
 struct FileDiffSection: View {
     let file: FileDiff
-    @State private var expanded: Bool = true
+    @State private var expanded: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
