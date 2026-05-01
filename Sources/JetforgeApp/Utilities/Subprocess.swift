@@ -12,6 +12,14 @@ enum Subprocess {
         var success: Bool { status == 0 }
     }
 
+    /// Returns the current process environment with `overrides` layered on
+    /// top. Used everywhere we spawn — keeps inherited PATH/HOME/etc.
+    static func inheritedEnvironment(overrides: [String: String]) -> [String: String] {
+        var merged = ProcessInfo.processInfo.environment
+        for (k, v) in overrides { merged[k] = v }
+        return merged
+    }
+
     static func run(
         executable: String,
         args: [String],
@@ -45,9 +53,7 @@ enum Subprocess {
         process.arguments = args
         if let cwd { process.currentDirectoryURL = URL(fileURLWithPath: cwd) }
 
-        var environment = ProcessInfo.processInfo.environment
-        for (k, v) in env { environment[k] = v }
-        process.environment = environment
+        process.environment = Subprocess.inheritedEnvironment(overrides: env)
 
         let outPipe = Pipe()
         let errPipe = Pipe()

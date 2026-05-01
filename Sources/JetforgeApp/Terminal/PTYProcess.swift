@@ -30,6 +30,9 @@ final class PTYProcess: @unchecked Sendable {
     private let queue = DispatchQueue(label: "PTYProcess.io", qos: .userInitiated)
     private var hasStarted = false
     private var hasReportedExit = false
+    /// Reused across reads from the io queue so steady-state output
+    /// doesn't allocate an 8 KB array per chunk.
+    private var readBuffer = [UInt8](repeating: 0, count: 8192)
 
     init(
         executable: String,
@@ -197,15 +200,14 @@ final class PTYProcess: @unchecked Sendable {
         let fd = masterFd
         guard fd >= 0 else { return }
 
-        let bufSize = 8192
-        var buffer = [UInt8](repeating: 0, count: bufSize)
-
         while true {
-            let n = buffer.withUnsafeMutableBufferPointer { bp -> Int in
+            let n = readBuffer.withUnsafeMutableBufferPointer { bp -> Int in
                 read(fd, bp.baseAddress, bp.count)
             }
             if n > 0 {
-                let chunk = Data(buffer[0..<n])
+                let chunk = readBuffer.withUnsafeBufferPointer { bp in
+                    Data(bytes: bp.baseAddress!, count: n)
+                }
                 outputHandler(chunk)
             } else if n == 0 {
                 // EOF — child closed the slave. Reap and notify.

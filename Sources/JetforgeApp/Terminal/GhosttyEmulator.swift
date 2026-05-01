@@ -12,16 +12,13 @@ final class GhosttyEmulator: TerminalEmulatorView {
     private let session: InMemoryTerminalSession
     private let controller: TerminalController
     private var pty: PTYProcess?
+    private var isActive: Bool = true
 
     var nsView: NSView { view }
 
     init() {
         let controller = TerminalController(
-            configuration: TerminalConfiguration { builder in
-                builder.withCursorStyle(.block)
-                builder.withCursorStyleBlink(true)
-                builder.withFontSize(13)
-            }
+            configuration: Self.makeConfiguration(family: nil, size: 13)
         )
         self.controller = controller
 
@@ -62,8 +59,7 @@ final class GhosttyEmulator: TerminalEmulatorView {
     private let ptyHolder: PTYHolder
 
     func spawn(executable: String, args: [String], cwd: String, env: [String: String]) {
-        var environment = ProcessInfo.processInfo.environment
-        for (k, v) in env { environment[k] = v }
+        var environment = Subprocess.inheritedEnvironment(overrides: env)
         environment["TERM"] = environment["TERM"] ?? "xterm-256color"
         environment["COLORTERM"] = "truecolor"
 
@@ -77,9 +73,8 @@ final class GhosttyEmulator: TerminalEmulatorView {
                 session.receive(data)
             },
             exit: { exitCode in
-                let runtimeMs: UInt64 = 0
                 Task { @MainActor in
-                    session.finish(exitCode: UInt32(bitPattern: exitCode), runtimeMilliseconds: runtimeMs)
+                    session.finish(exitCode: UInt32(clamping: exitCode), runtimeMilliseconds: 0)
                 }
             }
         )
@@ -105,13 +100,18 @@ final class GhosttyEmulator: TerminalEmulatorView {
     }
 
     func updateFont(family: String, size: CGFloat) {
-        let updated = TerminalConfiguration { builder in
+        controller.setTerminalConfiguration(
+            Self.makeConfiguration(family: family, size: Float(size))
+        )
+    }
+
+    private static func makeConfiguration(family: String?, size: Float) -> TerminalConfiguration {
+        TerminalConfiguration { builder in
             builder.withCursorStyle(.block)
             builder.withCursorStyleBlink(true)
-            builder.withFontFamily(family)
-            builder.withFontSize(Float(size))
+            if let family { builder.withFontFamily(family) }
+            builder.withFontSize(size)
         }
-        controller.setTerminalConfiguration(updated)
     }
 
     func terminate() {
@@ -122,7 +122,11 @@ final class GhosttyEmulator: TerminalEmulatorView {
 
     /// Drive Metal rendering only when the tab is active; an inactive tab's
     /// `CAMetalLayer` would otherwise keep firing on display refresh.
+    /// Guarded so SwiftUI's per-update churn doesn't ping the surface
+    /// every layout pass.
     func setActive(_ active: Bool) {
+        guard isActive != active else { return }
+        isActive = active
         view.setSurfaceVisible(active)
     }
 }

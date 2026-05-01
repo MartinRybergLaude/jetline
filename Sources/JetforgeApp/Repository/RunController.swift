@@ -52,9 +52,7 @@ final class RunController: ObservableObject, Identifiable {
         proc.arguments = ["-lc", trimmed]
         proc.currentDirectoryURL = URL(fileURLWithPath: cwd)
 
-        var environment = ProcessInfo.processInfo.environment
-        for (k, v) in env { environment[k] = v }
-        proc.environment = environment
+        proc.environment = Subprocess.inheritedEnvironment(overrides: env)
 
         let outPipe = Pipe()
         let errPipe = Pipe()
