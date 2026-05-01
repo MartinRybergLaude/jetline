@@ -277,9 +277,12 @@ struct TerminalHostView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        // Re-assert focus when the active tab swaps in.
-        DispatchQueue.main.async {
-            session.emulator.nsView.window?.makeFirstResponder(session.emulator.nsView)
-        }
+        // Focus is asserted on viewDidMoveToWindow when the tab swaps in. Don't
+        // dispatch makeFirstResponder on every SwiftUI update — re-entering
+        // layout during a NavigationSplitView divider drag is one of the paths
+        // that crashes with `_postWindowNeedsUpdateConstraints`.
+        let term = session.emulator.nsView
+        guard let win = term.window, win.firstResponder !== term else { return }
+        DispatchQueue.main.async { win.makeFirstResponder(term) }
     }
 }

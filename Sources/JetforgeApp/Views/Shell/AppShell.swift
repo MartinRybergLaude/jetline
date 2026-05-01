@@ -8,13 +8,12 @@ struct AppShell: View {
     var body: some View {
         NavigationSplitView {
             SidebarView()
-                .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
+                .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 320)
         } detail: {
             MainArea()
-                .frame(minWidth: 360)
                 .inspector(isPresented: inspectorBinding) {
                     InspectorView()
-                        .inspectorColumnWidth(min: 240, ideal: 320, max: 600)
+                        .inspectorColumnWidth(min: 240, ideal: 320, max: 480)
                 }
         }
         .toolbar {
