@@ -9,7 +9,7 @@ import Foundation
 enum ScriptRunner {
     /// Env var pointing at the original repo path. Setup/run/archive scripts
     /// can read it to copy or symlink files (e.g. `.env`).
-    static let rootPathEnvKey = "JETFORGE_ROOT_PATH"
+    static let rootPathEnvKey = "JETLINE_ROOT_PATH"
 
     /// Standard env every script gets — repo root path under our well-known key.
     static func defaultEnv(repoPath: String) -> [String: String] {

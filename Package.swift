@@ -2,12 +2,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "Jetforge",
+    name: "Jetline",
     platforms: [
         .macOS(.v26)
     ],
     products: [
-        .executable(name: "jetforge", targets: ["JetforgeApp"])
+        .executable(name: "jetline", targets: ["JetlineApp"])
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
@@ -15,18 +15,18 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "JetforgeApp",
+            name: "JetlineApp",
             dependencies: [
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "GhosttyTerminal", package: "libghostty-spm")
             ],
-            path: "Sources/JetforgeApp",
+            path: "Sources/JetlineApp",
             resources: [.process("Resources")]
         ),
         .testTarget(
-            name: "JetforgeAppTests",
-            dependencies: ["JetforgeApp"],
-            path: "Tests/JetforgeAppTests"
+            name: "JetlineAppTests",
+            dependencies: ["JetlineApp"],
+            path: "Tests/JetlineAppTests"
         )
     ]
 )

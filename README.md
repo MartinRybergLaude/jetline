@@ -1,4 +1,4 @@
-# Jetforge
+# Jetline
 
 A SwiftUI macOS app that wraps `claude` / `codex` CLIs in an embedded terminal,
 with workspace = git worktree management on top.
@@ -13,11 +13,10 @@ parsing agent events.
 - Repo + worktree management ✅
 - SQLite persistence (workspaces, sessions, settings) ✅
 - Sidebar with repos & workspaces, new-workspace sheet ✅
-- Embedded terminal hosting `claude` / `codex` ✅ (SwiftTerm-backed)
+- Embedded terminal hosting `claude` / `codex` ✅ (libghostty-backed)
 - Changes panel from `git diff` against base branch ✅
 - FSEvents watcher → live diff refresh ✅
 - Settings (default agent, binary paths, terminal font) ✅
-- libghostty as the terminal backend ⏳ stubbed; see migration plan below
 - File editor, Conductor import, GitHub auth ❌ explicitly out of scope
 
 ## Build
@@ -28,7 +27,7 @@ Requires:
 - Swift 5.10+ (5.10 / 6.x both work)
 
 ```bash
-make app    # debug build, produces dist/Jetforge.app
+make app    # debug build, produces dist/Jetline.app
 make run    # build + open
 make release ; # release config
 make test
@@ -49,8 +48,8 @@ directly, prepend the same env var.
 ## Architecture
 
 ```
-Sources/JetforgeApp/
-├── JetforgeApp.swift           ─ @main / WindowGroup / SettingsScene
+Sources/JetlineApp/
+├── JetlineApp.swift          ─ @main / WindowGroup / SettingsScene
 ├── AppState.swift            ─ ObservableObject root state
 ├── Models/
 │   ├── Repository.swift
@@ -67,11 +66,11 @@ Sources/JetforgeApp/
 │   ├── Diff.swift            ─ DiffSnapshot + unified-diff parser
 │   └── Watcher.swift         ─ FSEvents → coalesced refresh
 ├── Terminal/
-│   ├── TerminalEmulator.swift─ backend protocol + selector
-│   ├── SwiftTermEmulator.swift  ─ default impl (working)
-│   ├── GhosttyEmulator.swift    ─ stub + migration plan
-│   ├── AgentLauncher.swift   ─ resolve `claude`/`codex` binary paths
-│   └── PTYSession.swift      ─ owns one terminal view + child process
+│   ├── TerminalEmulator.swift   ─ emulator protocol + factory
+│   ├── GhosttyEmulator.swift    ─ libghostty-backed implementation
+│   ├── PTYProcess.swift         ─ forkpty/execve, drain, exit reaping
+│   ├── AgentLauncher.swift      ─ resolve `claude`/`codex` binary paths
+│   └── PTYSession.swift         ─ owns one terminal view + child process
 └── Views/
     ├── Shell/AppShell.swift  ─ NavigationSplitView layout
     ├── Sidebar/              ─ repos + workspaces + new-workspace sheet
@@ -89,35 +88,9 @@ sidebar → AppState.selectWorkspace → ensure PTYSession → spawn `claude`/`c
                                                                      → refresh inspector
 ```
 
-Workspaces live in `~/.jetforge/worktrees/<repoId>/<workspaceId>`. The
-SQLite db lives at `~/.jetforge/jetforge.sqlite`. Override the data dir
-with the `JETFORGE_DATA_DIR` env var.
-
-## Swapping SwiftTerm for libghostty
-
-This is documented in detail in
-`Sources/JetforgeApp/Terminal/GhosttyEmulator.swift` (header comment).
-
-Short version:
-
-1. `git submodule add https://github.com/ghostty-org/ghostty Vendor/ghostty`,
-   pinned to a known good commit. Requires Zig 0.13+.
-2. Add a `Makefile` target that runs `zig build -Doptimize=ReleaseFast` in
-   the submodule and copies `GhosttyKit.xcframework` to
-   `Frameworks/GhosttyKit.xcframework`.
-3. In `Package.swift`, add a `.binaryTarget` for the xcframework and depend
-   on it from `JetforgeApp`.
-4. Port the relevant pieces of Ghostty's own
-   `macos/Sources/Ghostty/{Ghostty.App, SurfaceView_AppKit}.swift` into
-   `GhosttyEmulator.swift` — enough to make a `ghostty_app_t` once and a
-   `ghostty_surface_t` per terminal view.
-5. Pass `command = claude` / `codex` and `working-directory = <worktree path>`
-   in the surface config so Ghostty spawns the agent inside its own PTY.
-6. Flip `TerminalBackend.default` to `.ghostty`. Drop SwiftTerm from the
-   package once parity is verified.
-
-The `TerminalEmulatorView` protocol is the entire surface area you need to
-re-implement, so the swap is contained.
+Workspaces live in `~/.jetline/worktrees/<repoId>/<workspaceId>`. The
+SQLite db lives at `~/.jetline/jetline.sqlite`. Override the data dir
+with the `JETLINE_DATA_DIR` env var.
 
 ## License
 

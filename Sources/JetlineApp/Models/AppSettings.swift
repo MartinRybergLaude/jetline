@@ -15,7 +15,7 @@ struct AppSettings: Codable, FetchableRecord, PersistableRecord {
     /// Prefix prepended to generated branch names for new workspaces. Each
     /// repo can override via `Repository.branchPrefix`. Trailing slash is
     /// preserved as-is so users can use either `name/` or `name-`.
-    var globalBranchPrefix: String = "jetforge/"
+    var globalBranchPrefix: String = "jetline/"
 
     enum Theme: String, Codable, CaseIterable, DatabaseValueConvertible {
         case system

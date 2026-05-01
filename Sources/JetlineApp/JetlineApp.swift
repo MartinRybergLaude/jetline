@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 @main
-struct JetforgeApp: App {
+struct JetlineApp: App {
     @StateObject private var state = AppState()
 
     var body: some Scene {

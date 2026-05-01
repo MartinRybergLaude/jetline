@@ -1,7 +1,7 @@
 import Foundation
 import GRDB
 
-/// A git repository the user has added to Jetforge.
+/// A git repository the user has added to Jetline.
 /// Workspaces are git worktrees rooted off this repo.
 struct Repository: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
     var id: String

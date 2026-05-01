@@ -43,7 +43,7 @@ struct RepositorySettingsSheet: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This forgets the repo from Jetforge and tears down its workspaces' worktrees. The original git checkout at \(repository.path) is left alone.")
+            Text("This forgets the repo from Jetline and tears down its workspaces' worktrees. The original git checkout at \(repository.path) is left alone.")
         }
     }
 
@@ -157,7 +157,7 @@ struct RepositorySettingsSheet: View {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Delete repository").font(.headline)
-                    Text("Removes Jetforge's record and all its worktrees. The original checkout is untouched.")
+                    Text("Removes Jetline's record and all its worktrees. The original checkout is untouched.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

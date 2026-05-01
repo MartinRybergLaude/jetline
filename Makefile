@@ -1,12 +1,12 @@
-# Jetforge — build & app-bundle helpers.
+# Jetline — build & app-bundle helpers.
 #
 # `swift build` produces a plain mach-o executable. macOS apps need a
 # `.app` bundle (Info.plist, dock icon, menu bar). This Makefile wraps
 # `swift build` and assembles a minimal bundle in `dist/`.
 
 CONFIG ?= debug
-BIN_NAME = jetforge
-APP_NAME = Jetforge.app
+BIN_NAME = jetline
+APP_NAME = Jetline.app
 BUILD_DIR = .build/$(CONFIG)
 DIST_DIR = dist
 APP_BUNDLE = $(DIST_DIR)/$(APP_NAME)

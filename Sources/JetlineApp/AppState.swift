@@ -159,7 +159,7 @@ final class AppState: ObservableObject {
     private func effectiveBranchPrefix(for repo: Repository) -> String {
         repo.branchPrefix?.nonBlank
             ?? settings.globalBranchPrefix.nonBlank
-            ?? "jetforge/"
+            ?? "jetline/"
     }
 
     func selectWorkspace(_ id: String) {

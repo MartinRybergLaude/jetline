@@ -257,7 +257,7 @@ private struct BorderedTab: View {
 }
 
 /// Brand mark for an agent. Branded agents ship PNG assets in
-/// `Sources/JetforgeApp/Resources` (loaded via NSImage — SwiftUI's
+/// `Sources/JetlineApp/Resources` (loaded via NSImage — SwiftUI's
 /// `Image(_:bundle:)` only resolves asset-catalog entries). The plain
 /// terminal has no logo and falls back to an SF Symbol.
 struct AgentMark: View {

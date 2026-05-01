@@ -1,5 +1,5 @@
 import XCTest
-@testable import JetforgeApp
+@testable import JetlineApp
 
 final class DiffParserTests: XCTestCase {
     func testParsesSingleFilePatch() {

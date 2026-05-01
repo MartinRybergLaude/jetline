@@ -64,7 +64,7 @@ enum AgentLauncher {
     }
 
     private static func agentEnv() -> [String: String] {
-        ["JETFORGE": "1"]
+        ["JETLINE": "1"]
     }
 
     /// Try several strategies to find a CLI on disk. App bundles launched from

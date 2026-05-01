@@ -60,7 +60,7 @@ enum Schema {
                 t.add(column: "archiveScript", .text)
             }
             try db.alter(table: "app_settings") { t in
-                t.add(column: "globalBranchPrefix", .text).notNull().defaults(to: "jetforge/")
+                t.add(column: "globalBranchPrefix", .text).notNull().defaults(to: "jetline/")
             }
         }
     }

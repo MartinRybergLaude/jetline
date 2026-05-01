@@ -85,7 +85,7 @@ final class GhosttyEmulator: TerminalEmulatorView {
             ptyHolder.process = pty
         } catch {
             // Surface the failure as terminal output so the user sees something.
-            let message = "jetforge: failed to spawn \(executable): \(error)\r\n"
+            let message = "jetline: failed to spawn \(executable): \(error)\r\n"
             session.receive(message)
         }
     }
