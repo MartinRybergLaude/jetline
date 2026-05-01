@@ -12,6 +12,7 @@ final class AppState: ObservableObject {
     @Published var activeSessionByWorkspace: [String: String] = [:]
     @Published var settings: AppSettings = AppSettings()
     @Published var diffByWorkspace: [String: DiffSnapshot] = [:]
+    @Published var prByWorkspace: [String: PRSnapshot] = [:]
     @Published var inspectorVisible: Bool = true
     /// Run-script controllers keyed by workspace id. `nil` means "never run".
     /// Kept around after exit so the user can review the last log.
@@ -300,14 +301,44 @@ final class AppState: ObservableObject {
     // MARK: - Diff & watcher
 
     func refreshDiff(for workspace: Workspace) async {
-        do {
-            let snapshot = try await DiffComputer.compute(
-                worktreePath: workspace.worktreePath,
-                baseBranch: workspace.baseBranch
-            )
+        let snapshot: DiffSnapshot = (try? await DiffComputer.compute(
+            worktreePath: workspace.worktreePath,
+            baseBranch: workspace.baseBranch
+        )) ?? .empty
+        if diffByWorkspace[workspace.id] != snapshot {
             diffByWorkspace[workspace.id] = snapshot
+        }
+    }
+
+    /// Look up the PR for `workspace.branchName` and its checks.
+    /// Driven by `PRPanel.task` so `gh` only runs when the PR tab is open.
+    func refreshPR(for workspace: Workspace) async {
+        if prByWorkspace[workspace.id] == nil {
+            prByWorkspace[workspace.id] = .loading
+        }
+        let snapshot: PRSnapshot
+        do {
+            let pr = try await GitHubRunner.findPullRequest(
+                branch: workspace.branchName,
+                cwd: workspace.worktreePath
+            )
+            if let pr {
+                let checks = (try? await GitHubRunner.checks(
+                    forPR: pr.number,
+                    cwd: workspace.worktreePath
+                )) ?? []
+                snapshot = .loaded(pr, checks)
+            } else {
+                snapshot = .absent
+            }
         } catch {
-            diffByWorkspace[workspace.id] = .empty
+            snapshot = .error(error.localizedDescription)
+        }
+        // Don't resurrect a workspace that was detached mid-flight, and
+        // suppress no-op writes so @Published doesn't kick every observer.
+        guard prByWorkspace[workspace.id] != nil else { return }
+        if prByWorkspace[workspace.id] != snapshot {
+            prByWorkspace[workspace.id] = snapshot
         }
     }
 
@@ -330,6 +361,7 @@ final class AppState: ObservableObject {
         sessionsByWorkspace.removeValue(forKey: id)
         activeSessionByWorkspace.removeValue(forKey: id)
         diffByWorkspace.removeValue(forKey: id)
+        prByWorkspace.removeValue(forKey: id)
     }
 
     // MARK: - Helpers

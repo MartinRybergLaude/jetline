@@ -2,12 +2,7 @@ import Foundation
 
 /// Thin wrapper around `git` subprocess invocation. Async; never blocks the main actor.
 enum GitRunner {
-    struct Result {
-        var stdout: String
-        var stderr: String
-        var status: Int32
-        var success: Bool { status == 0 }
-    }
+    typealias Result = Subprocess.Result
 
     enum GitError: LocalizedError {
         case nonZeroExit(args: [String], status: Int32, stderr: String)
@@ -26,9 +21,16 @@ enum GitRunner {
         cwd: String? = nil,
         env: [String: String] = [:]
     ) async throws -> Result {
-        try await Task.detached(priority: .userInitiated) {
-            try runSync(args, cwd: cwd, env: env)
-        }.value
+        let result = await Subprocess.run(
+            executable: "/usr/bin/env",
+            args: ["git"] + args,
+            cwd: cwd,
+            env: env
+        )
+        if result.status == -1 {
+            throw GitError.nonZeroExit(args: args, status: -1, stderr: result.stderr)
+        }
+        return result
     }
 
     @discardableResult
@@ -42,31 +44,5 @@ enum GitRunner {
             throw GitError.nonZeroExit(args: args, status: result.status, stderr: result.stderr)
         }
         return result.stdout
-    }
-
-    private static func runSync(_ args: [String], cwd: String?, env: [String: String]) throws -> Result {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["git"] + args
-
-        if let cwd {
-            process.currentDirectoryURL = URL(fileURLWithPath: cwd)
-        }
-
-        var environment = ProcessInfo.processInfo.environment
-        for (k, v) in env { environment[k] = v }
-        process.environment = environment
-
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        process.standardOutput = outPipe
-        process.standardError = errPipe
-
-        try process.run()
-        process.waitUntilExit()
-
-        let stdout = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        let stderr = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        return Result(stdout: stdout, stderr: stderr, status: process.terminationStatus)
     }
 }

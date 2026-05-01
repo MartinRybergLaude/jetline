@@ -16,16 +16,10 @@ struct ChangesPanel: View {
     private func content(for workspace: Workspace) -> some View {
         let snap = state.diffByWorkspace[workspace.id] ?? .empty
         if snap.files.isEmpty {
-            VStack(spacing: 8) {
-                Image(systemName: "checkmark.circle")
-                    .font(.system(size: 24, weight: .light))
-                    .foregroundStyle(.secondary)
-                Text("No changes vs \(workspace.baseBranch)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 24)
+            InspectorPlaceholder(
+                systemImage: "checkmark.circle",
+                title: "No changes vs \(workspace.baseBranch)"
+            )
         } else {
             VStack(alignment: .leading, spacing: 8) {
                 summaryHeader(snap: snap, baseBranch: workspace.baseBranch)
