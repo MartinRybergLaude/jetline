@@ -10,15 +10,12 @@ struct AppShell: View {
             SidebarView()
                 .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
         } detail: {
-            HStack(spacing: 0) {
-                MainArea()
-                    .frame(minWidth: 360)
-                if state.inspectorVisible, state.selectedWorkspaceId != nil {
-                    Divider()
+            MainArea()
+                .frame(minWidth: 360)
+                .inspector(isPresented: inspectorBinding) {
                     InspectorView()
-                        .frame(minWidth: 280, idealWidth: 320, maxWidth: 480)
+                        .inspectorColumnWidth(min: 240, ideal: 320, max: 600)
                 }
-            }
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -34,6 +31,15 @@ struct AppShell: View {
             }
         }
         .frame(minWidth: 900, minHeight: 600)
+    }
+
+    /// Inspector hides when nothing is selected (mirrors the previous logic),
+    /// otherwise tracks the user-toggled visibility flag.
+    private var inspectorBinding: Binding<Bool> {
+        Binding(
+            get: { state.inspectorVisible && state.selectedWorkspaceId != nil },
+            set: { state.inspectorVisible = $0 }
+        )
     }
 }
 

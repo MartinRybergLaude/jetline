@@ -7,12 +7,24 @@ struct TerminalArea: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            TerminalHeader(workspace: workspace)
-            Divider()
             sessionTabStrip
             terminalSurface
         }
         .background(Color(nsColor: .textBackgroundColor))
+        .navigationTitle(workspace.name)
+        .navigationSubtitle(workspace.branchName)
+        .toolbar {
+            if let session = state.activeSession(for: workspace.id) {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        session.interrupt()
+                    } label: {
+                        Label("Interrupt", systemImage: "stop.circle")
+                    }
+                    .help("Send ^C to the session")
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -103,32 +115,6 @@ private struct ErrorOverlay: View {
     }
 }
 
-private struct TerminalHeader: View {
-    @EnvironmentObject private var state: AppState
-    let workspace: Workspace
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Text(workspace.name).font(.headline)
-            Text(workspace.branchName)
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
-            Spacer()
-            if let session = state.activeSession(for: workspace.id) {
-                Button {
-                    session.interrupt()
-                } label: {
-                    Label("Interrupt", systemImage: "stop.circle")
-                }
-                .buttonStyle(.borderless)
-                .help("Send ^C to the session")
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-    }
-}
-
 /// Flat bordered tab. Active tab uses the system text background to read as
 /// "in front"; inactive tabs sit on a slightly recessed fill. Right-edge
 /// border on every tab gives the dividing line the user wants.
@@ -158,7 +144,7 @@ private struct BorderedTab: View {
         }
         .font(.callout)
         .padding(.horizontal, 12)
-        .padding(.vertical, 4)
+        .padding(.vertical, 9)
         .background(isActive ? Color(nsColor: .textBackgroundColor) : Color(nsColor: .windowBackgroundColor))
         .overlay(alignment: .trailing) {
             Rectangle()
@@ -236,7 +222,7 @@ private struct NewSessionMenu: View {
             Image(systemName: "plus")
                 .font(.callout)
                 .padding(.horizontal, 10)
-                .padding(.vertical, 4)
+                .padding(.vertical, 9)
         } primaryAction: {
             onStart(defaultAgent)
         }
