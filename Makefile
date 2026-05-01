@@ -34,6 +34,17 @@ app: build
 	@mkdir -p "$(APP_BUNDLE)/Contents/Resources"
 	@cp "$(BUILD_DIR)/$(BIN_NAME)" "$(APP_BUNDLE)/Contents/MacOS/$(BIN_NAME)"
 	@cp "BundleResources/Info.plist" "$(APP_BUNDLE)/Contents/Info.plist"
+	@# Compile the Icon Composer source into Assets.car (live Liquid Glass on
+	@# macOS 26+) plus AppIcon.icns (legacy fallback). actool accepts the
+	@# .icon file directly as the document arg — wrapping it in an .xcassets
+	@# silently produces nothing.
+	@xcrun actool BundleResources/AppIcon.icon \
+		--app-icon AppIcon \
+		--compile "$(APP_BUNDLE)/Contents/Resources" \
+		--output-partial-info-plist /dev/null \
+		--platform macosx --target-device mac \
+		--minimum-deployment-target 26.0 \
+		--skip-app-store-deployment >/dev/null
 	@# Copy SPM-generated resource bundles. SwiftPM names them `<Package>_<Target>.bundle`
 	@# and the auto-generated `Bundle.module` accessor for executable targets resolves
 	@# them at `Bundle.main.bundleURL/<Pkg>_<Tgt>.bundle` — which on a `.app` means the

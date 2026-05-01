@@ -6,6 +6,10 @@
     <string>Jetforge</string>
     <key>CFBundleExecutable</key>
     <string>jetforge</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.mrlaude.jetline</string>
     <key>CFBundleInfoDictionaryVersion</key>
