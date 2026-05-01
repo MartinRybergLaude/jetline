@@ -91,8 +91,19 @@ final class JetforgeTerminalView: LocalProcessTerminalView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window != nil {
+            tameScroller()
             window?.makeFirstResponder(self)
             attemptSpawn()
+        }
+    }
+
+    /// SwiftTerm bakes its `NSScroller` to `.legacy` style at the regular
+    /// control size, which renders the fat always-visible bar. Shrink the
+    /// control size so the thumb stays visible but reads as a thin indicator.
+    private func tameScroller() {
+        for case let scroller as NSScroller in subviews {
+            scroller.controlSize = .small
+            scroller.knobStyle = .default
         }
     }
 
