@@ -48,6 +48,10 @@ app: build
 	@echo "Built $(APP_BUNDLE)"
 
 run: app
+	@# `open` on a .app just foregrounds the existing instance; kill the
+	@# running copy first so we always launch the freshly built binary.
+	@pkill -x $(BIN_NAME) 2>/dev/null; true
+	@sleep 0.2
 	open "$(APP_BUNDLE)"
 
 release:

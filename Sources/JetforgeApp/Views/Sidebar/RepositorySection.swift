@@ -12,41 +12,68 @@ struct RepositorySection: View {
         Section {
             if expanded {
                 ForEach(state.workspacesByRepo[repo.id] ?? []) { ws in
-                    WorkspaceRow(workspace: ws)
-                        .tag(ws.id)
+                    Button {
+                        state.selectWorkspace(ws.id)
+                    } label: {
+                        WorkspaceRow(workspace: ws)
+                    }
+                    .buttonStyle(.plain)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 1, leading: -8, bottom: 1, trailing: -8))
+                    .listRowSeparator(.hidden)
                 }
 
                 Button(action: onNewWorkspace) {
-                    Label("New workspace", systemImage: "plus.rectangle")
-                        .foregroundStyle(.secondary)
-                        .font(.callout)
+                    HStack(spacing: 8) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 14, weight: .regular))
+                            .frame(width: 22, alignment: .center)
+                        Text("New workspace")
+                            .font(.body)
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 26)
+                    .padding(.trailing, 8)
+                    .padding(.vertical, 4)
                 }
                 .buttonStyle(.plain)
-                .padding(.vertical, 2)
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 8))
+                .listRowSeparator(.hidden)
             }
         } header: {
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 Button {
                     withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
                 } label: {
-                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 12, alignment: .center)
+                        Image(systemName: "folder")
+                            .font(.system(size: 16, weight: .regular))
+                            .foregroundStyle(.primary)
+                            .frame(width: 22, alignment: .center)
+                        Text(repo.name)
+                            .font(.body)
+                            .textCase(nil)
+                            .foregroundStyle(.primary)
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                Text(repo.name)
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .textCase(nil)
-                Spacer()
                 Button(action: onOpenSettings) {
-                    Image(systemName: "slider.horizontal.3")
-                        .font(.caption2)
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 13, weight: .regular))
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
                 .help("Repository settings")
+                .padding(.trailing, 8)
             }
+            .padding(.vertical, 4)
             .contextMenu {
                 Button("Repository settings…", action: onOpenSettings)
                 Button("Reveal in Finder") {

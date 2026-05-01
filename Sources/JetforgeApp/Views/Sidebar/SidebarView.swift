@@ -6,10 +6,7 @@ struct SidebarView: View {
     @State private var showingRepoSettings: Repository?
 
     var body: some View {
-        List(selection: Binding(
-            get: { state.selectedWorkspaceId },
-            set: { if let id = $0 { state.selectWorkspace(id) } }
-        )) {
+        List {
             ForEach(state.repositories) { repo in
                 RepositorySection(
                     repo: repo,

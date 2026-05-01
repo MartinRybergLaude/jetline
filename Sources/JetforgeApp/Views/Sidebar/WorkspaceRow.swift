@@ -1,26 +1,41 @@
 import SwiftUI
+import AppKit
 
 struct WorkspaceRow: View {
     @EnvironmentObject private var state: AppState
     let workspace: Workspace
 
+    private var isSelected: Bool {
+        state.selectedWorkspaceId == workspace.id
+    }
+
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: workspace.agent == .claude ? "sparkles" : "terminal")
-                .foregroundStyle(.secondary)
-                .frame(width: 16)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(workspace.name).lineLimit(1)
-                Text(workspace.branchName)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            Spacer()
+            Image(systemName: iconName)
+                .font(.system(size: 16, weight: .regular))
+                .foregroundStyle(isSelected ? Color.accentColor.opacity(0.9) : Color.primary)
+                .frame(width: 22, alignment: .center)
+            Text(workspace.name)
+                .font(.body)
+                .foregroundStyle(isSelected ? Color.accentColor.opacity(0.9) : Color.primary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 8)
             if let stats = state.diffByWorkspace[workspace.id], !stats.files.isEmpty {
                 ChangesPill(adds: stats.totalAdditions, dels: stats.totalDeletions)
             }
         }
+        .padding(.leading, 26)
+        .padding(.trailing, 8)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color.primary.opacity(0.06))
+            }
+        }
+        .contentShape(Rectangle())
         .contextMenu {
             Button("Reveal worktree in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: workspace.worktreePath)])
@@ -32,6 +47,14 @@ struct WorkspaceRow: View {
             Button("Delete worktree…", role: .destructive) {
                 Task { await state.archiveWorkspace(workspace, removeWorktree: true) }
             }
+        }
+    }
+
+    private var iconName: String {
+        switch workspace.agent {
+        case .claude: return "sparkles"
+        case .codex: return "wand.and.stars"
+        case .shell: return "terminal"
         }
     }
 }
@@ -49,7 +72,7 @@ private struct ChangesPill: View {
                 Text("-\(dels)").foregroundStyle(.red)
             }
         }
-        .font(.system(size: 10, weight: .medium, design: .monospaced))
+        .font(.system(size: 11, weight: .medium, design: .monospaced))
         .opacity(0.85)
     }
 }
