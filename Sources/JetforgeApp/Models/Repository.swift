@@ -7,27 +7,25 @@ struct Repository: Codable, Identifiable, Hashable, FetchableRecord, Persistable
     var id: String
     var name: String
     var path: String
-    /// Ref new workspaces branch off (e.g. `origin/main`, `main`). Stored as
-    /// the literal git rev string so it can be a remote-tracking ref or local.
+    /// May be a local branch (`main`) or a remote-tracking ref (`origin/main`).
     var defaultBranch: String
     var createdAt: Date
     var lastOpenedAt: Date?
 
-    /// Remote name used for `git push` / PR operations. Defaults to `origin`.
     var remoteOrigin: String = "origin"
-    /// Optional branch-name prefix for new workspaces. When `nil` or empty,
-    /// the global default in `AppSettings.globalBranchPrefix` is used.
+    /// `nil` means "inherit `AppSettings.globalBranchPrefix`".
     var branchPrefix: String?
-    /// Shell script run once after a worktree is created (`pnpm install`,
-    /// symlink .env files, etc.). Has `JETFORGE_ROOT_PATH` available.
     var setupScript: String?
-    /// Shell script run when the user presses Run (typically `npm run dev`).
     var runScript: String?
-    /// If true, only one workspace per repo can have its run script active;
-    /// starting a new run stops any other.
+    /// When true, starting a run stops every other active runner in the same repo.
     var runExclusive: Bool = false
-    /// Shell script run before a worktree is deleted (`rm -rf node_modules`).
     var archiveScript: String?
+
+    /// Trimmed, non-empty variants of the script fields. Returns `nil` when
+    /// blank so callers can use `if let` instead of repeated trim+isEmpty.
+    var trimmedSetupScript: String? { setupScript?.nonBlank }
+    var trimmedRunScript: String? { runScript?.nonBlank }
+    var trimmedArchiveScript: String? { archiveScript?.nonBlank }
 
     static let databaseTableName = "repositories"
 

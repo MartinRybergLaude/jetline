@@ -34,39 +34,29 @@ struct TerminalArea: View {
         }
     }
 
-    /// Renders Run / Stop based on the workspace's run controller state.
-    /// Hidden entirely when the repo has no run script configured.
     @ViewBuilder
     private var runToolbarItems: some View {
-        if hasRunScript {
+        if state.hasRunScript(workspace) {
+            let running = state.isRunActive(workspace.id)
             Button {
-                let wasRunning = state.runController(for: workspace.id)?.isRunning ?? false
                 state.toggleRun(for: workspace)
-                if !wasRunning { showingRunOutput = true }
+                if !running { showingRunOutput = true }
             } label: {
-                let running = state.runController(for: workspace.id)?.isRunning ?? false
                 Label(
                     running ? "Stop run" : "Run",
                     systemImage: running ? "stop.fill" : "play.fill"
                 )
             }
-            .help("Run the configured run script")
-
-            if state.runController(for: workspace.id) != nil {
-                Button {
-                    showingRunOutput = true
-                } label: {
-                    Label("Run output", systemImage: "doc.text.below.ecg")
-                }
-                .help("View run-script output")
-            }
+            .help(running ? "Stop the run script" : "Run the configured run script")
         }
-    }
-
-    private var hasRunScript: Bool {
-        guard let repo = state.repositories.first(where: { $0.id == workspace.repositoryId })
-        else { return false }
-        return !(repo.runScript ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if state.hasRunHistory(workspace.id) {
+            Button {
+                showingRunOutput = true
+            } label: {
+                Label("Run output", systemImage: "doc.text.below.ecg")
+            }
+            .help("View run-script output")
+        }
     }
 
     @ViewBuilder

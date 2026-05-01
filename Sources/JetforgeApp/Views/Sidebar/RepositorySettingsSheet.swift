@@ -1,8 +1,7 @@
 import SwiftUI
 
 /// Per-repository configuration sheet. Edits are kept in a local draft so
-/// the user can cancel out without persisting; saving writes through
-/// `AppState.updateRepository` and refreshes the in-memory repo list.
+/// the user can cancel out without persisting.
 struct RepositorySettingsSheet: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.dismiss) private var dismiss
@@ -11,7 +10,6 @@ struct RepositorySettingsSheet: View {
     @State private var draft: Repository
     @State private var remotes: [String] = []
     @State private var baseRefs: [String] = []
-    @State private var loadingRefs = true
     @State private var confirmingDelete = false
 
     init(repository: Repository) {
@@ -81,7 +79,6 @@ struct RepositorySettingsSheet: View {
                     }
                 }
                 .labelsHidden()
-                .disabled(loadingRefs)
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text("Branch new workspaces from").font(.headline)
@@ -96,7 +93,6 @@ struct RepositorySettingsSheet: View {
                     }
                 }
                 .labelsHidden()
-                .disabled(loadingRefs)
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text("Branch prefix").font(.headline)
@@ -118,8 +114,8 @@ struct RepositorySettingsSheet: View {
         Section {
             scriptEditor(
                 title: "Setup script",
-                help: "Runs once after a worktree is created. `$JETFORGE_ROOT_PATH` points at the original repo so you can copy or symlink files like .env.",
-                placeholder: "pnpm install && ln -s \"$JETFORGE_ROOT_PATH/apps/web/.env\" apps/web/.env",
+                help: "Runs once after a worktree is created. `$\(ScriptRunner.rootPathEnvKey)` points at the original repo so you can copy or symlink files like .env.",
+                placeholder: "pnpm install && ln -s \"$\(ScriptRunner.rootPathEnvKey)/apps/web/.env\" apps/web/.env",
                 text: Binding(
                     get: { draft.setupScript ?? "" },
                     set: { draft.setupScript = $0.isEmpty ? nil : $0 }
@@ -127,7 +123,7 @@ struct RepositorySettingsSheet: View {
             )
             scriptEditor(
                 title: "Run script",
-                help: "Runs when you press Run. `$JETFORGE_ROOT_PATH` is also available.",
+                help: "Runs when you press Run. `$\(ScriptRunner.rootPathEnvKey)` is also available.",
                 placeholder: "npm run dev",
                 text: Binding(
                     get: { draft.runScript ?? "" },
@@ -189,22 +185,19 @@ struct RepositorySettingsSheet: View {
             TextEditor(text: text)
                 .font(.system(.body, design: .monospaced))
                 .frame(minHeight: 64, maxHeight: 96)
+                .overlay(alignment: .topLeading) {
+                    if text.wrappedValue.isEmpty {
+                        Text(placeholder)
+                            .font(.system(.body, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 8)
+                            .allowsHitTesting(false)
+                    }
+                }
                 .overlay(
                     RoundedRectangle(cornerRadius: 6)
                         .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
-                )
-                .background(
-                    Group {
-                        if text.wrappedValue.isEmpty {
-                            Text(placeholder)
-                                .font(.system(.body, design: .monospaced))
-                                .foregroundStyle(.tertiary)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 8)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                                .allowsHitTesting(false)
-                        }
-                    }
                 )
         }
     }
@@ -232,6 +225,5 @@ struct RepositorySettingsSheet: View {
         let (remotes, refs) = await (r, b)
         self.remotes = remotes.isEmpty ? [draft.remoteOrigin] : remotes
         self.baseRefs = refs.contains(draft.defaultBranch) ? refs : ([draft.defaultBranch] + refs)
-        self.loadingRefs = false
     }
 }

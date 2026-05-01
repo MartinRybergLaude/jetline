@@ -7,6 +7,15 @@ import Foundation
 /// We invoke through `/bin/zsh -lc` so the user's PATH (Homebrew, asdf,
 /// nvm) is loaded — same reasoning as `AgentLauncher.shellCommand`.
 enum ScriptRunner {
+    /// Env var pointing at the original repo path. Setup/run/archive scripts
+    /// can read it to copy or symlink files (e.g. `.env`).
+    static let rootPathEnvKey = "JETFORGE_ROOT_PATH"
+
+    /// Standard env every script gets — repo root path under our well-known key.
+    static func defaultEnv(repoPath: String) -> [String: String] {
+        [rootPathEnvKey: repoPath]
+    }
+
     struct Result: Sendable {
         var stdout: String
         var stderr: String
@@ -15,15 +24,14 @@ enum ScriptRunner {
     }
 
     /// Run `script` with the given working directory and extra environment.
-    /// Returns the captured output. Skips silently for empty scripts.
+    /// Returns the captured output. Skips silently for blank scripts.
     static func run(
         _ script: String,
         cwd: String,
         env: [String: String] = [:],
         timeout: TimeInterval? = nil
     ) async -> Result? {
-        let trimmed = script.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
+        guard let trimmed = script.nonBlank else { return nil }
 
         return await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
