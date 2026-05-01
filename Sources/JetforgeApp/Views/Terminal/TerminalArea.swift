@@ -20,27 +20,23 @@ struct TerminalArea: View {
     private var sessionTabs: some View {
         let sessions = state.sessionsByWorkspace[workspace.id] ?? []
         let active = state.activeSessionByWorkspace[workspace.id]
-        if sessions.count > 1 {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(sessions) { session in
-                        SessionTab(
-                            session: session,
-                            isActive: session.id == active,
-                            onSelect: { state.selectSession(session.id, in: workspace.id) }
-                        )
-                    }
-                    Button {
-                        state.startNewSession(for: workspace, agent: workspace.agent)
-                    } label: {
-                        Image(systemName: "plus")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("New session")
+        let defaultAgent = state.settings.defaultAgent
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(sessions) { session in
+                    SessionTab(
+                        session: session,
+                        isActive: session.id == active,
+                        onSelect: { state.selectSession(session.id, in: workspace.id) }
+                    )
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
+                NewSessionMenu(
+                    defaultAgent: defaultAgent,
+                    onStart: { state.startNewSession(for: workspace, agent: $0) }
+                )
             }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
         }
     }
 
@@ -132,6 +128,37 @@ private struct TerminalHeader: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+}
+
+/// Split menu button: the icon click starts a session with the user's default
+/// agent; the chevron exposes the other agents.
+private struct NewSessionMenu: View {
+    let defaultAgent: Workspace.AgentKind
+    let onStart: (Workspace.AgentKind) -> Void
+
+    var body: some View {
+        Menu {
+            ForEach(Workspace.AgentKind.allCases, id: \.self) { kind in
+                Button {
+                    onStart(kind)
+                } label: {
+                    Label("New \(kind.displayName) tab", systemImage: icon(for: kind))
+                }
+            }
+        } label: {
+            Image(systemName: "plus")
+        } primaryAction: {
+            onStart(defaultAgent)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.visible)
+        .fixedSize()
+        .help("New \(defaultAgent.displayName) tab")
+    }
+
+    private func icon(for kind: Workspace.AgentKind) -> String {
+        kind == .claude ? "sparkles" : "terminal"
     }
 }
 
