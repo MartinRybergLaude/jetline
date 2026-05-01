@@ -25,6 +25,7 @@ final class SwiftTermEmulator: NSObject, TerminalEmulatorView, LocalProcessTermi
         view.processDelegate = self
         view.translatesAutoresizingMaskIntoConstraints = false
         view.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        view.configureNativeColors()
     }
 
     func spawn(executable: String, args: [String], cwd: String, env: [String: String]) {
@@ -93,6 +94,19 @@ final class JetforgeTerminalView: LocalProcessTerminalView {
             window?.makeFirstResponder(self)
             attemptSpawn()
         }
+    }
+
+    /// Re-resolve dynamic system colors when the window flips between light
+    /// and dark. SwiftTerm bakes the foreground/background through
+    /// `getTerminalColor()` (RGB at assignment time) and stamps the layer bg as
+    /// a CGColor — neither follows `effectiveAppearance` on its own.
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        effectiveAppearance.performAsCurrentDrawingAppearance { [self] in
+            configureNativeColors()
+            layer?.backgroundColor = nativeBackgroundColor.cgColor
+        }
+        needsDisplay = true
     }
 
     /// SwiftTerm uses `setFrameSize` (not `layout()`) for AutoLayout-driven
