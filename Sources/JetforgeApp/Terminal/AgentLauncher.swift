@@ -15,10 +15,21 @@ enum AgentLauncher {
     /// otherwise resolves via several PATH probes; finally falls back to the
     /// user's login shell so the terminal is always usable.
     static func spec(for agent: Workspace.AgentKind, settings: AppSettings) async throws -> Spec {
+        // Plain terminal: skip resolution, just open the user's login shell.
+        if agent == .shell {
+            return Spec(
+                executable: ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh",
+                args: ["-l"],
+                env: agentEnv(),
+                fellBackToShell: false
+            )
+        }
+
         let configured: String? = {
             switch agent {
             case .claude: return settings.claudeBinaryPath
             case .codex: return settings.codexBinaryPath
+            case .shell: return nil
             }
         }()
 

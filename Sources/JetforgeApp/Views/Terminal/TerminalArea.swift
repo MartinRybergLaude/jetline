@@ -171,9 +171,10 @@ private struct BorderedTab: View {
     }
 }
 
-/// Brand mark for an agent. PNG assets ship in `Sources/JetforgeApp/Resources`
-/// and load from the module bundle as raw files (SwiftUI `Image(_:bundle:)`
-/// only resolves asset-catalog entries, not loose files).
+/// Brand mark for an agent. Branded agents ship PNG assets in
+/// `Sources/JetforgeApp/Resources` (loaded via NSImage — SwiftUI's
+/// `Image(_:bundle:)` only resolves asset-catalog entries). The plain
+/// terminal has no logo and falls back to an SF Symbol.
 struct AgentMark: View {
     let agent: Workspace.AgentKind
     var size: CGFloat = 16
@@ -185,20 +186,28 @@ struct AgentMark: View {
                 .interpolation(.high)
                 .aspectRatio(contentMode: .fit)
                 .frame(width: size, height: size)
+        } else if let symbol = symbolFallback {
+            Image(systemName: symbol)
+                .frame(width: size, height: size)
         } else {
             Color.clear.frame(width: size, height: size)
         }
     }
 
+    private var symbolFallback: String? {
+        switch agent {
+        case .shell: return "terminal"
+        case .claude, .codex: return nil
+        }
+    }
+
     private static let cache: [Workspace.AgentKind: NSImage] = {
         var map: [Workspace.AgentKind: NSImage] = [:]
-        for kind in Workspace.AgentKind.allCases {
-            let name: String = {
-                switch kind {
-                case .claude: return "ClaudeCodeMark"
-                case .codex: return "CodexMark"
-                }
-            }()
+        let assetNames: [Workspace.AgentKind: String] = [
+            .claude: "ClaudeCodeMark",
+            .codex: "CodexMark"
+        ]
+        for (kind, name) in assetNames {
             if let url = Bundle.module.url(forResource: name, withExtension: "png"),
                let img = NSImage(contentsOf: url) {
                 map[kind] = img
