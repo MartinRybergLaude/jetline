@@ -10,6 +10,7 @@ struct TerminalArea: View {
         VStack(spacing: 0) {
             sessionTabStrip
             terminalSurface
+                .padding(.leading, 8)
         }
         .background(Color(nsColor: .textBackgroundColor))
         .navigationTitle(workspace.name)
@@ -71,6 +72,7 @@ struct TerminalArea: View {
                 )
                 Spacer(minLength: 0)
             }
+            .padding(.leading, 6)
         }
         .overlay(alignment: .bottom) { Divider() }
     }
