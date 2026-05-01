@@ -34,10 +34,14 @@ app: build
 	@mkdir -p "$(APP_BUNDLE)/Contents/Resources"
 	@cp "$(BUILD_DIR)/$(BIN_NAME)" "$(APP_BUNDLE)/Contents/MacOS/$(BIN_NAME)"
 	@cp "BundleResources/Info.plist" "$(APP_BUNDLE)/Contents/Info.plist"
-	@# Copy any SPM-generated bundle resources (so SwiftUI previews etc. find them).
-	@if [ -d "$(BUILD_DIR)/JetforgeApp_JetforgeApp.bundle" ]; then \
-		cp -R "$(BUILD_DIR)/JetforgeApp_JetforgeApp.bundle" "$(APP_BUNDLE)/Contents/Resources/"; \
-	fi
+	@# Copy SPM-generated resource bundles. SwiftPM names them `<Package>_<Target>.bundle`
+	@# and the auto-generated `Bundle.module` accessor for executable targets resolves
+	@# them at `Bundle.main.bundleURL/<Pkg>_<Tgt>.bundle` — which on a `.app` means the
+	@# top of the bundle (sibling of `Contents/`), NOT `Contents/Resources/`. Place the
+	@# bundle there so `Image("…", bundle: .module)` actually finds the assets.
+	@for b in $(BUILD_DIR)/*_*.bundle; do \
+		[ -d "$$b" ] && cp -R "$$b" "$(APP_BUNDLE)/"; \
+	done
 	@printf "APPL????" > "$(APP_BUNDLE)/Contents/PkgInfo"
 	@# Ad-hoc sign so Gatekeeper doesn't kill it on first launch.
 	@codesign --force --deep --sign - "$(APP_BUNDLE)" 2>/dev/null || true

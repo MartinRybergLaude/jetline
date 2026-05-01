@@ -138,7 +138,7 @@ final class AppState: ObservableObject {
             agent: agent,
             cwd: workspace.worktreePath
         )
-        sessionsByWorkspace[workspace.id, default: []].insert(session, at: 0)
+        sessionsByWorkspace[workspace.id, default: []].append(session)
         activeSessionByWorkspace[workspace.id] = session.id
 
         let dbSession = Session(
@@ -160,6 +160,45 @@ final class AppState: ObservableObject {
     func activeSession(for workspaceId: String) -> PTYSession? {
         guard let id = activeSessionByWorkspace[workspaceId] else { return nil }
         return sessionsByWorkspace[workspaceId]?.first { $0.id == id }
+    }
+
+    /// Close one tab. Picks a neighbour to activate; if it was the last tab,
+    /// spawns a fresh one with the default agent so the workspace is never
+    /// empty (the surface would otherwise show only a spinner).
+    func closeSession(_ sessionId: String, in workspaceId: String) {
+        guard var sessions = sessionsByWorkspace[workspaceId],
+              let idx = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
+        let session = sessions.remove(at: idx)
+        session.terminate()
+        sessionsByWorkspace[workspaceId] = sessions
+
+        if activeSessionByWorkspace[workspaceId] == sessionId {
+            let neighbour = idx < sessions.count ? sessions[idx] : sessions.last
+            activeSessionByWorkspace[workspaceId] = neighbour?.id
+        }
+
+        if sessions.isEmpty, let ws = workspaceById(workspaceId) {
+            startNewSession(for: ws, agent: settings.defaultAgent)
+        }
+    }
+
+    /// Activate the Nth tab (1-indexed) of the active workspace. Used by ⌘1…⌘9.
+    func selectSessionByIndex(_ oneBased: Int) {
+        guard let wsId = selectedWorkspaceId,
+              let sessions = sessionsByWorkspace[wsId],
+              oneBased >= 1, oneBased <= sessions.count else { return }
+        selectSession(sessions[oneBased - 1].id, in: wsId)
+    }
+
+    /// Cycle to the next or previous tab of the active workspace. Wraps.
+    func cycleSession(forward: Bool) {
+        guard let wsId = selectedWorkspaceId,
+              let sessions = sessionsByWorkspace[wsId],
+              !sessions.isEmpty,
+              let activeId = activeSessionByWorkspace[wsId],
+              let idx = sessions.firstIndex(where: { $0.id == activeId }) else { return }
+        let next = (idx + (forward ? 1 : -1) + sessions.count) % sessions.count
+        selectSession(sessions[next].id, in: wsId)
     }
 
     // MARK: - Diff & watcher

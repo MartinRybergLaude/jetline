@@ -9,41 +9,39 @@ struct TerminalArea: View {
         VStack(spacing: 0) {
             TerminalHeader(workspace: workspace)
             Divider()
-            sessionTabs
-            Divider().opacity(0.5)
+            sessionTabStrip
             terminalSurface
         }
         .background(Color(nsColor: .textBackgroundColor))
     }
 
     @ViewBuilder
-    private var sessionTabs: some View {
+    private var sessionTabStrip: some View {
         let sessions = state.sessionsByWorkspace[workspace.id] ?? []
-        let active = state.activeSessionByWorkspace[workspace.id]
-        let defaultAgent = state.settings.defaultAgent
+        let activeId = state.activeSessionByWorkspace[workspace.id]
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
+            HStack(spacing: 0) {
                 ForEach(sessions) { session in
-                    SessionTab(
+                    BorderedTab(
                         session: session,
-                        isActive: session.id == active,
-                        onSelect: { state.selectSession(session.id, in: workspace.id) }
+                        isActive: session.id == activeId,
+                        onSelect: { state.selectSession(session.id, in: workspace.id) },
+                        onClose: { state.closeSession(session.id, in: workspace.id) }
                     )
                 }
                 NewSessionMenu(
-                    defaultAgent: defaultAgent,
+                    defaultAgent: state.settings.defaultAgent,
                     onStart: { state.startNewSession(for: workspace, agent: $0) }
                 )
+                Spacer(minLength: 0)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
         }
+        .overlay(alignment: .bottom) { Divider() }
     }
 
     @ViewBuilder
     private var terminalSurface: some View {
         if let session = state.activeSession(for: workspace.id) {
-            // SessionSurface observes the session so banners/errors update live.
             SessionSurface(session: session)
                 .id(session.id)
         } else {
@@ -131,6 +129,85 @@ private struct TerminalHeader: View {
     }
 }
 
+/// Flat bordered tab. Active tab uses the system text background to read as
+/// "in front"; inactive tabs sit on a slightly recessed fill. Right-edge
+/// border on every tab gives the dividing line the user wants.
+private struct BorderedTab: View {
+    @ObservedObject var session: PTYSession
+    let isActive: Bool
+    let onSelect: () -> Void
+    let onClose: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            AgentMark(agent: session.agent, size: 14)
+                .opacity(isActive ? 1 : 0.7)
+            Text(session.agent.displayName)
+                .lineLimit(1)
+                .foregroundStyle(isActive ? .primary : .secondary)
+            // Always laid out (so tab width is stable); revealed on hover.
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+            }
+            .buttonStyle(.plain)
+            .opacity(hovering ? 1 : 0)
+            .help("Close tab")
+        }
+        .font(.callout)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+        .background(isActive ? Color(nsColor: .textBackgroundColor) : Color(nsColor: .windowBackgroundColor))
+        .overlay(alignment: .trailing) {
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor))
+                .frame(width: 1)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onSelect)
+        .onHover { hovering = $0 }
+    }
+}
+
+/// Brand mark for an agent. PNG assets ship in `Sources/JetforgeApp/Resources`
+/// and load from the module bundle as raw files (SwiftUI `Image(_:bundle:)`
+/// only resolves asset-catalog entries, not loose files).
+struct AgentMark: View {
+    let agent: Workspace.AgentKind
+    var size: CGFloat = 16
+
+    var body: some View {
+        if let nsImage = Self.cache[agent] {
+            Image(nsImage: nsImage)
+                .resizable()
+                .interpolation(.high)
+                .aspectRatio(contentMode: .fit)
+                .frame(width: size, height: size)
+        } else {
+            Color.clear.frame(width: size, height: size)
+        }
+    }
+
+    private static let cache: [Workspace.AgentKind: NSImage] = {
+        var map: [Workspace.AgentKind: NSImage] = [:]
+        for kind in Workspace.AgentKind.allCases {
+            let name: String = {
+                switch kind {
+                case .claude: return "ClaudeCodeMark"
+                case .codex: return "CodexMark"
+                }
+            }()
+            if let url = Bundle.module.url(forResource: name, withExtension: "png"),
+               let img = NSImage(contentsOf: url) {
+                map[kind] = img
+            }
+        }
+        return map
+    }()
+}
+
 /// Split menu button: the icon click starts a session with the user's default
 /// agent; the chevron exposes the other agents.
 private struct NewSessionMenu: View {
@@ -143,11 +220,14 @@ private struct NewSessionMenu: View {
                 Button {
                     onStart(kind)
                 } label: {
-                    Label("New \(kind.displayName) tab", systemImage: icon(for: kind))
+                    Text("New \(kind.displayName) tab")
                 }
             }
         } label: {
             Image(systemName: "plus")
+                .font(.callout)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
         } primaryAction: {
             onStart(defaultAgent)
         }
@@ -155,31 +235,6 @@ private struct NewSessionMenu: View {
         .menuIndicator(.visible)
         .fixedSize()
         .help("New \(defaultAgent.displayName) tab")
-    }
-
-    private func icon(for kind: Workspace.AgentKind) -> String {
-        kind == .claude ? "sparkles" : "terminal"
-    }
-}
-
-private struct SessionTab: View {
-    @ObservedObject var session: PTYSession
-    let isActive: Bool
-    let onSelect: () -> Void
-
-    var body: some View {
-        Button(action: onSelect) {
-            HStack(spacing: 6) {
-                Image(systemName: session.agent == .claude ? "sparkles" : "terminal")
-                Text(session.agent.displayName)
-            }
-            .font(.caption)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background(isActive ? Color.accentColor.opacity(0.18) : Color.clear)
-            .clipShape(Capsule())
-        }
-        .buttonStyle(.plain)
     }
 }
 

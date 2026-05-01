@@ -4,7 +4,7 @@ import GRDB
 /// SQLite-backed persistence using GRDB.
 /// Database lives at `~/.jetforge/jetforge.sqlite`
 /// (override with `JETFORGE_DATA_DIR`).
-final class Database {
+final class Database: Sendable {
     static let shared: Database = {
         do {
             return try Database()

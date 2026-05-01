@@ -2,18 +2,21 @@ import Foundation
 
 /// Coalesced filesystem watcher backed by FSEvents.
 /// Fires `onChange` after any change inside the worktree, throttled.
+///
+/// Pinned to the main actor so the throttle Task and the `onChange` callback
+/// share the same isolation domain — FSEvents already dispatches on `.main`,
+/// so we just have to bridge that into actor space via `assumeIsolated`.
+@MainActor
 final class WorktreeWatcher {
     private var stream: FSEventStreamRef?
     private let path: String
-    private let onChange: () -> Void
+    private let onChange: @MainActor () -> Void
     private var pendingTask: Task<Void, Never>?
 
-    init(path: String, onChange: @escaping () -> Void) {
+    init(path: String, onChange: @escaping @MainActor () -> Void) {
         self.path = path
         self.onChange = onChange
     }
-
-    deinit { stop() }
 
     func start() {
         guard stream == nil else { return }
@@ -27,7 +30,9 @@ final class WorktreeWatcher {
         let callback: FSEventStreamCallback = { _, info, _, _, _, _ in
             guard let info else { return }
             let watcher = Unmanaged<WorktreeWatcher>.fromOpaque(info).takeUnretainedValue()
-            watcher.scheduleNotify()
+            // Dispatched on `.main` (set below), so we're guaranteed to be on
+            // the main thread — matches MainActor isolation.
+            MainActor.assumeIsolated { watcher.scheduleNotify() }
         }
         let pathArray = [path] as CFArray
         let s = FSEventStreamCreate(
@@ -61,7 +66,7 @@ final class WorktreeWatcher {
         pendingTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 250_000_000)
             guard !Task.isCancelled else { return }
-            await MainActor.run { self?.onChange() }
+            self?.onChange()
         }
     }
 }

@@ -1,10 +1,10 @@
-// swift-tools-version:5.10
+// swift-tools-version:6.2
 import PackageDescription
 
 let package = Package(
     name: "Jetforge",
     platforms: [
-        .macOS(.v14)
+        .macOS(.v26)
     ],
     products: [
         .executable(name: "jetforge", targets: ["JetforgeApp"])
@@ -20,7 +20,8 @@ let package = Package(
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "SwiftTerm", package: "SwiftTerm")
             ],
-            path: "Sources/JetforgeApp"
+            path: "Sources/JetforgeApp",
+            resources: [.process("Resources")]
         ),
         .testTarget(
             name: "JetforgeAppTests",
