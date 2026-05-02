@@ -4,7 +4,6 @@ import AppKit
 struct TerminalArea: View {
     @EnvironmentObject private var state: AppState
     let workspace: Workspace
-    @State private var showingRunOutput = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -18,11 +17,6 @@ struct TerminalArea: View {
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 runToolbarItems
-            }
-        }
-        .sheet(isPresented: $showingRunOutput) {
-            if let runner = state.runController(for: workspace.id) {
-                RunOutputSheet(controller: runner)
             }
         }
     }
@@ -40,14 +34,6 @@ struct TerminalArea: View {
                 }
                 .help("Run the configured run script")
             }
-        }
-        if state.hasRunHistory(workspace.id) {
-            Button {
-                showingRunOutput = true
-            } label: {
-                Label("Run output", systemImage: "doc.text.below.ecg")
-            }
-            .help("View run-script output")
         }
         Button {
             state.inspectorVisible.toggle()
