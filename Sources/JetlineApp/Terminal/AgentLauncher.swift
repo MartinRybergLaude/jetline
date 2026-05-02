@@ -29,6 +29,7 @@ enum AgentLauncher {
             switch agent {
             case .claude: return settings.claudeBinaryPath
             case .codex: return settings.codexBinaryPath
+            case .vibe: return settings.mistralBinaryPath
             case .shell: return nil
             }
         }()

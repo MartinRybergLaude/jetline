@@ -76,6 +76,7 @@ private struct AgentsSettingsView: View {
     var body: some View {
         Form {
             Section("Claude Code") {
+                Toggle("Show in new tab menu", isOn: bindingVisible(.claude))
                 BinaryPathField(
                     title: "Binary path",
                     binding: bindingPath(\.claudeBinaryPath),
@@ -83,11 +84,23 @@ private struct AgentsSettingsView: View {
                 )
             }
             Section("Codex") {
+                Toggle("Show in new tab menu", isOn: bindingVisible(.codex))
                 BinaryPathField(
                     title: "Binary path",
                     binding: bindingPath(\.codexBinaryPath),
                     placeholder: "Auto-detected via PATH"
                 )
+            }
+            Section("Mistral Vibe") {
+                Toggle("Show in new tab menu", isOn: bindingVisible(.vibe))
+                BinaryPathField(
+                    title: "Binary path",
+                    binding: bindingPath(\.mistralBinaryPath),
+                    placeholder: "Auto-detected via PATH"
+                )
+            }
+            Section("Terminal") {
+                Toggle("Show in new tab menu", isOn: bindingVisible(.shell))
             }
         }
         .formStyle(.grouped)
@@ -99,6 +112,17 @@ private struct AgentsSettingsView: View {
             set: { newValue in
                 var s = state.settings
                 s[keyPath: keyPath] = newValue.isEmpty ? nil : newValue
+                state.saveSettings(s)
+            }
+        )
+    }
+
+    private func bindingVisible(_ agent: Workspace.AgentKind) -> Binding<Bool> {
+        Binding(
+            get: { state.settings.isAgentVisible(agent) },
+            set: { newValue in
+                var s = state.settings
+                s.setAgent(agent, visible: newValue)
                 state.saveSettings(s)
             }
         )

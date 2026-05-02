@@ -63,5 +63,12 @@ enum Schema {
                 t.add(column: "globalBranchPrefix", .text).notNull().defaults(to: "jetline/")
             }
         }
+
+        migrator.registerMigration("v3_agent_visibility") { db in
+            try db.alter(table: "app_settings") { t in
+                t.add(column: "mistralBinaryPath", .text)
+                t.add(column: "hiddenAgents", .text).notNull().defaults(to: "")
+            }
+        }
     }
 }

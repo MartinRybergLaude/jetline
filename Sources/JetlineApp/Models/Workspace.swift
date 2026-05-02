@@ -18,12 +18,14 @@ struct Workspace: Codable, Identifiable, Hashable, FetchableRecord, PersistableR
     enum AgentKind: String, Codable, CaseIterable, DatabaseValueConvertible {
         case claude
         case codex
+        case vibe
         case shell
 
         var displayName: String {
             switch self {
             case .claude: return "Claude Code"
             case .codex: return "Codex"
+            case .vibe: return "Mistral Vibe"
             case .shell: return "Terminal"
             }
         }
@@ -32,6 +34,7 @@ struct Workspace: Codable, Identifiable, Hashable, FetchableRecord, PersistableR
             switch self {
             case .claude: return "claude"
             case .codex: return "codex"
+            case .vibe: return "vibe"
             case .shell: return "shell"
             }
         }

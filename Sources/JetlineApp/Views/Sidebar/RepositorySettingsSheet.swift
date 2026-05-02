@@ -30,7 +30,7 @@ struct RepositorySettingsSheet: View {
             }
             footer
         }
-        .frame(width: 640, height: 720)
+        .frame(width: 580, height: 680)
         .task { await loadRefs() }
         .confirmationDialog(
             "Delete \(repository.name)?",
@@ -53,12 +53,17 @@ struct RepositorySettingsSheet: View {
         Section {
             LabeledContent("Path") {
                 Text(repository.path)
-                    .font(.system(.callout, design: .monospaced))
+                    .font(.system(.body, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .textSelection(.enabled)
             }
-            TextField("Display name", text: $draft.name)
+            LabeledContent("Display name") {
+                TextField("", text: $draft.name)
+                    .multilineTextAlignment(.trailing)
+                    .textFieldStyle(.plain)
+            }
         } header: {
             Text("Repository")
         }
@@ -66,11 +71,10 @@ struct RepositorySettingsSheet: View {
 
     private var branchingSection: some View {
         Section {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Remote origin").font(.headline)
-                Text("Where should we push, pull, and create PRs?")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            describedRow(
+                title: "Remote origin",
+                description: "Where Jetline pushes, pulls, and opens pull requests."
+            ) {
                 Picker("", selection: $draft.remoteOrigin) {
                     if remotes.isEmpty {
                         Text(draft.remoteOrigin).tag(draft.remoteOrigin)
@@ -79,12 +83,12 @@ struct RepositorySettingsSheet: View {
                     }
                 }
                 .labelsHidden()
+                .fixedSize()
             }
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Branch new workspaces from").font(.headline)
-                Text("Each workspace is an isolated copy of your codebase.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            describedRow(
+                title: "Branch new workspaces from",
+                description: "Each workspace is an isolated copy of your codebase."
+            ) {
                 Picker("", selection: $draft.defaultBranch) {
                     if baseRefs.isEmpty {
                         Text(draft.defaultBranch).tag(draft.defaultBranch)
@@ -93,12 +97,12 @@ struct RepositorySettingsSheet: View {
                     }
                 }
                 .labelsHidden()
+                .fixedSize()
             }
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Branch prefix").font(.headline)
-                Text("Leave empty to inherit the global prefix.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            describedRow(
+                title: "Branch prefix",
+                description: "Leave empty to inherit the global prefix."
+            ) {
                 TextField(
                     state.settings.globalBranchPrefix,
                     text: Binding(
@@ -106,7 +110,12 @@ struct RepositorySettingsSheet: View {
                         set: { draft.branchPrefix = $0.isEmpty ? nil : $0 }
                     )
                 )
+                .multilineTextAlignment(.trailing)
+                .textFieldStyle(.plain)
+                .frame(width: 160)
             }
+        } header: {
+            Text("Branching")
         }
     }
 
@@ -130,13 +139,11 @@ struct RepositorySettingsSheet: View {
                     set: { draft.runScript = $0.isEmpty ? nil : $0 }
                 )
             )
-            Toggle(isOn: $draft.runExclusive) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Exclusive")
-                    Text("Only one workspace in this repo can run at a time. Starting another stops the previous run.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+            describedRow(
+                title: "Exclusive run",
+                description: "Only one workspace in this repo can run at a time. Starting another stops the previous run."
+            ) {
+                Toggle("", isOn: $draft.runExclusive).labelsHidden()
             }
             scriptEditor(
                 title: "Archive script",
@@ -154,20 +161,34 @@ struct RepositorySettingsSheet: View {
 
     private var dangerZoneSection: some View {
         Section {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Delete repository").font(.headline)
-                    Text("Removes Jetline's record and all its worktrees. The original checkout is untouched.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
+            describedRow(
+                title: "Delete repository",
+                description: "Removes Jetline's record and all its worktrees. The original checkout is untouched."
+            ) {
                 Button("Delete…", role: .destructive) {
                     confirmingDelete = true
                 }
             }
-        } header: {
-            Text("Danger zone")
+        }
+    }
+
+    // MARK: - Building blocks
+
+    private func describedRow<Control: View>(
+        title: String,
+        description: String,
+        @ViewBuilder control: () -> Control
+    ) -> some View {
+        LabeledContent {
+            control()
+        } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                Text(description)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -177,28 +198,36 @@ struct RepositorySettingsSheet: View {
         placeholder: String,
         text: Binding<String>
     ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.headline)
-            Text(help)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            TextEditor(text: text)
-                .font(.system(.body, design: .monospaced))
-                .frame(minHeight: 64, maxHeight: 96)
-                .overlay(alignment: .topLeading) {
-                    if text.wrappedValue.isEmpty {
-                        Text(placeholder)
-                            .font(.system(.body, design: .monospaced))
-                            .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 8)
-                            .allowsHitTesting(false)
-                    }
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                Text(.init(help))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: text)
+                    .font(.system(.callout, design: .monospaced))
+                    .scrollContentBackground(.hidden)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 6)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
+                    )
+                    .frame(minHeight: 64, maxHeight: 96)
+                if text.wrappedValue.isEmpty {
+                    Text(placeholder)
+                        .font(.system(.callout, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 13)
+                        .allowsHitTesting(false)
                 }
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
-                )
+            }
         }
     }
 
@@ -213,7 +242,8 @@ struct RepositorySettingsSheet: View {
             }
             .keyboardShortcut(.defaultAction)
         }
-        .padding(12)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
         .background(.bar)
     }
 

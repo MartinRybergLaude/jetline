@@ -74,6 +74,7 @@ struct TerminalArea: View {
                 }
                 NewSessionMenu(
                     defaultAgent: state.settings.defaultAgent,
+                    visibleAgents: Workspace.AgentKind.allCases.filter(state.settings.isAgentVisible),
                     onStart: { state.startNewSession(for: workspace, agent: $0) }
                 )
                 Spacer(minLength: 0)
@@ -282,7 +283,7 @@ struct AgentMark: View {
     private var symbolFallback: String? {
         switch agent {
         case .shell: return "terminal"
-        case .claude, .codex: return nil
+        case .claude, .codex, .vibe: return nil
         }
     }
 
@@ -290,7 +291,8 @@ struct AgentMark: View {
         var map: [Workspace.AgentKind: NSImage] = [:]
         let assetNames: [Workspace.AgentKind: String] = [
             .claude: "ClaudeCodeMark",
-            .codex: "CodexMark"
+            .codex: "CodexMark",
+            .vibe: "MistralVibeMark"
         ]
         for (kind, name) in assetNames {
             if let url = Bundle.module.url(forResource: name, withExtension: "png"),
@@ -306,11 +308,12 @@ struct AgentMark: View {
 /// agent; the chevron exposes the other agents.
 private struct NewSessionMenu: View {
     let defaultAgent: Workspace.AgentKind
+    let visibleAgents: [Workspace.AgentKind]
     let onStart: (Workspace.AgentKind) -> Void
 
     var body: some View {
         Menu {
-            ForEach(Workspace.AgentKind.allCases, id: \.self) { kind in
+            ForEach(visibleAgents, id: \.self) { kind in
                 Button {
                     onStart(kind)
                 } label: {
