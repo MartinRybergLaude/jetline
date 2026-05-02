@@ -14,7 +14,19 @@ enum AgentLauncher {
     /// Build a spawn spec for the given agent. Honours user-configured paths;
     /// otherwise resolves via several PATH probes; finally falls back to the
     /// user's login shell so the terminal is always usable.
-    static func spec(for agent: Workspace.AgentKind, settings: AppSettings) async throws -> Spec {
+    ///
+    /// `sessionId` is Jetline's session UUID. Claude accepts `--session-id` at
+    /// first launch and `--resume` thereafter, so we get true per-tab resume.
+    /// Codex and Vibe have no flag to seed a session ID at start, so on resume
+    /// we use their built-in "most recent in cwd" flags (`resume --last` /
+    /// `-c`) — multiple tabs of those agents in the same workspace can't all
+    /// be resumed, and the caller must collapse duplicates before getting here.
+    static func spec(
+        for agent: Workspace.AgentKind,
+        settings: AppSettings,
+        sessionId: String,
+        isResume: Bool
+    ) async throws -> Spec {
         // Plain terminal: skip resolution, just open the user's login shell.
         if agent == .shell {
             return Spec(
@@ -34,11 +46,13 @@ enum AgentLauncher {
             }
         }()
 
+        let args = resumeArgs(for: agent, sessionId: sessionId, isResume: isResume)
+
         if let configured, !configured.isEmpty,
            FileManager.default.isExecutableFile(atPath: configured) {
             return Spec(
                 executable: configured,
-                args: [],
+                args: args,
                 env: agentEnv(),
                 fellBackToShell: false
             )
@@ -47,7 +61,7 @@ enum AgentLauncher {
         if let resolved = await resolveOnPath(agent.executableName) {
             return Spec(
                 executable: resolved,
-                args: [],
+                args: args,
                 env: agentEnv(),
                 fellBackToShell: false
             )
@@ -66,6 +80,20 @@ enum AgentLauncher {
 
     private static func agentEnv() -> [String: String] {
         ["JETLINE": "1"]
+    }
+
+    /// Only Claude supports per-tab resume — `--session-id` lets us seed the
+    /// conversation with our own UUID at first launch and `--resume` reattaches
+    /// to it later. Codex and Vibe only offer "most recent in cwd" flags, which
+    /// can latch onto the wrong conversation when multiple workspaces share
+    /// state, so we deliberately don't try.
+    private static func resumeArgs(
+        for agent: Workspace.AgentKind,
+        sessionId: String,
+        isResume: Bool
+    ) -> [String] {
+        guard agent == .claude else { return [] }
+        return isResume ? ["--resume", sessionId] : ["--session-id", sessionId]
     }
 
     /// Try several strategies to find a CLI on disk. App bundles launched from

@@ -10,6 +10,7 @@ final class PTYSession: ObservableObject, Identifiable {
     let workspaceId: String
     let agent: Workspace.AgentKind
     let cwd: String
+    let isResume: Bool
     let emulator: TerminalEmulatorView
 
     @Published private(set) var hasStarted: Bool = false
@@ -20,12 +21,14 @@ final class PTYSession: ObservableObject, Identifiable {
         id: String = UUID().uuidString,
         workspaceId: String,
         agent: Workspace.AgentKind,
-        cwd: String
+        cwd: String,
+        isResume: Bool = false
     ) {
         self.id = id
         self.workspaceId = workspaceId
         self.agent = agent
         self.cwd = cwd
+        self.isResume = isResume
         self.emulator = TerminalEmulatorFactory.make()
     }
 
@@ -37,7 +40,12 @@ final class PTYSession: ObservableObject, Identifiable {
         hasStarted = true
         do {
             let settings = try SettingsStore.load()
-            let spec = try await AgentLauncher.spec(for: agent, settings: settings)
+            let spec = try await AgentLauncher.spec(
+                for: agent,
+                settings: settings,
+                sessionId: id,
+                isResume: isResume
+            )
             fellBackToShell = spec.fellBackToShell
             emulator.spawn(executable: spec.executable, args: spec.args, cwd: cwd, env: spec.env)
             emulator.updateFont(family: settings.terminalFontFamily, size: settings.terminalFontSize)

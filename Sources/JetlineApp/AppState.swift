@@ -174,10 +174,39 @@ final class AppState: ObservableObject {
 
     // MARK: - Sessions
 
+    /// Repopulate tabs the first time a workspace is selected this app run.
+    /// If the DB has open sessions, recreate them in resume mode so each
+    /// agent reloads its conversation; otherwise start one fresh.
     private func ensureSessionExists(for workspace: Workspace) {
-        if (sessionsByWorkspace[workspace.id]?.isEmpty ?? true) {
-            startNewSession(for: workspace, agent: workspace.agent)
+        guard sessionsByWorkspace[workspace.id]?.isEmpty ?? true else { return }
+
+        let persisted = (try? Sessions.openForWorkspace(workspace.id)) ?? []
+        // Only Claude tabs come back across launches; close the rest so they
+        // don't accumulate as zombie open rows.
+        for row in persisted where row.agent != .claude {
+            try? Sessions.end(id: row.id)
         }
+        let resumable = persisted.filter { $0.agent == .claude }
+
+        guard !resumable.isEmpty else {
+            startNewSession(for: workspace, agent: workspace.agent)
+            return
+        }
+
+        let hydrated = resumable.map { row in
+            PTYSession(
+                id: row.id,
+                workspaceId: workspace.id,
+                agent: row.agent,
+                cwd: workspace.worktreePath,
+                isResume: true
+            )
+        }
+        for session in hydrated {
+            Task { await session.startIfNeeded() }
+        }
+        sessionsByWorkspace[workspace.id] = hydrated
+        activeSessionByWorkspace[workspace.id] = hydrated.last?.id
     }
 
     func startNewSession(for workspace: Workspace, agent: Workspace.AgentKind) {
@@ -218,6 +247,7 @@ final class AppState: ObservableObject {
               let idx = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
         let session = sessions.remove(at: idx)
         session.terminate()
+        try? Sessions.end(id: sessionId)
         sessionsByWorkspace[workspaceId] = sessions
 
         if activeSessionByWorkspace[workspaceId] == sessionId {
