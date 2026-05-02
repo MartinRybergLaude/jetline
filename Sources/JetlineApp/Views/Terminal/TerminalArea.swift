@@ -13,8 +13,25 @@ struct TerminalArea: View {
         }
         .background(Color(nsColor: .textBackgroundColor))
         .navigationTitle(workspace.name)
-        .navigationSubtitle(workspace.branchName)
+        // Suppress the stock title rendering — our principal item below
+        // takes its place. `navigationTitle` above still drives the window
+        // menu proxy, Dock tooltip and accessibility label.
+        .toolbar(removing: .title)
         .toolbar {
+            // `.navigation` puts content at the leading edge of the detail
+            // titlebar (right after the split separator), unlike `.principal`
+            // which centres between two flex spaces. The explicit
+            // `ToolbarSpacer` in between keeps the trailing actions anchored
+            // to the right edge — without it they collapse next to the
+            // title.
+            ToolbarItem(placement: .navigation) {
+                WorkspaceTitleBar(
+                    name: workspace.name,
+                    branch: workspace.branchName,
+                    stats: state.diffByWorkspace[workspace.id]
+                )
+            }
+            ToolbarSpacer(.flexible)
             ToolbarItemGroup(placement: .primaryAction) {
                 runToolbarItems
             }
@@ -23,9 +40,6 @@ struct TerminalArea: View {
 
     @ViewBuilder
     private var runToolbarItems: some View {
-        if let stats = state.diffByWorkspace[workspace.id], !stats.files.isEmpty {
-            ChangesPill(adds: stats.totalAdditions, dels: stats.totalDeletions)
-        }
         OpenInAppButton(workspace: workspace)
         if state.hasRunScript(workspace) {
             if let runner = state.runController(for: workspace.id) {
@@ -85,6 +99,96 @@ struct TerminalArea: View {
     }
 }
 
+/// Title-area content rendered into the window's principal toolbar slot.
+/// Matches the system title styling — name in headline weight on top,
+/// branch in secondary subheadline below — and adds a coloured diff pill
+/// alongside the branch. The Liquid Glass capsule the toolbar would
+/// normally wrap this in is stripped at the AppKit level by the embedded
+/// `UnborderHost`, which finds its host `NSToolbarItem` and clears its
+/// `isBordered` flag (the same flag that keeps the system title item
+/// pill-free).
+private struct WorkspaceTitleBar: View {
+    let name: String
+    let branch: String
+    let stats: DiffSnapshot?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(name)
+                .font(.headline)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            HStack(spacing: 8) {
+                Text(branch)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let stats, !stats.isEmpty {
+                    ChangesPill(adds: stats.totalAdditions, dels: stats.totalDeletions)
+                }
+            }
+        }
+        .padding(.leading, 8)
+        .background(UnborderHost().frame(width: 0, height: 0))
+    }
+}
+
+/// Self-locating unborder. The probe NSView lives inside the SwiftUI tree
+/// that's hosted by the principal `NSToolbarItem` — so once it's mounted in
+/// a window, walking up its superview chain hits a `ToolbarItemHostingView`,
+/// which is referenced by exactly one `NSToolbarItem`. We flip that item's
+/// `isBordered` to `false`, which (per AppKit) suppresses the Liquid Glass
+/// capsule. Position-based / identifier-based matching would be fragile —
+/// SwiftUI assigns UUID identifiers and shuffles item order — so we let the
+/// view tell us which item it lives in.
+private struct UnborderHost: NSViewRepresentable {
+    func makeNSView(context: Context) -> UnborderProbe { UnborderProbe() }
+    func updateNSView(_ nsView: UnborderProbe, context: Context) {
+        nsView.unborderHostItem()
+    }
+}
+
+private final class UnborderProbe: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        unborderHostItem()
+    }
+
+    /// Toolbar items mount asynchronously; retry across a few frames until
+    /// our host view is wired into a `ToolbarItemHostingView` whose
+    /// `NSToolbarItem` we can reach. Idempotent.
+    func unborderHostItem() {
+        for delay: TimeInterval in [0.0, 0.05, 0.2, 0.6] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.tryUnborder()
+            }
+        }
+    }
+
+    private func tryUnborder() {
+        guard let host = enclosingToolbarItemHost(),
+              let toolbar = window?.toolbar else { return }
+        for item in toolbar.items where item.view === host {
+            if item.isBordered { item.isBordered = false }
+            return
+        }
+    }
+
+    /// Walk superviews until we hit the AppKit-private `ToolbarItemHostingView`
+    /// class that wraps SwiftUI content inside an `NSToolbarItem`.
+    private func enclosingToolbarItemHost() -> NSView? {
+        var current: NSView? = self
+        while let v = current {
+            if String(describing: type(of: v)).contains("ToolbarItemHostingView") {
+                return v
+            }
+            current = v.superview
+        }
+        return nil
+    }
+}
+
 private struct ChangesPill: View {
     let adds: Int
     let dels: Int
@@ -95,11 +199,10 @@ private struct ChangesPill: View {
                 Text("+\(adds)").foregroundStyle(.green)
             }
             if dels > 0 {
-                Text("-\(dels)").foregroundStyle(.red)
+                Text("−\(dels)").foregroundStyle(.red)
             }
         }
         .font(.system(size: 11, weight: .medium, design: .monospaced))
-        .opacity(0.85)
     }
 }
 

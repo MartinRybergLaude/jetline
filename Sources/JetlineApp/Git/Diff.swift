@@ -7,6 +7,8 @@ struct DiffSnapshot: Equatable {
     var totalDeletions: Int
 
     static let empty = DiffSnapshot(files: [], totalAdditions: 0, totalDeletions: 0)
+
+    var isEmpty: Bool { files.isEmpty }
 }
 
 struct FileDiff: Identifiable, Equatable {

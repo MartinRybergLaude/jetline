@@ -15,7 +15,7 @@ struct ChangesPanel: View {
     @ViewBuilder
     private func content(for workspace: Workspace) -> some View {
         let snap = state.diffByWorkspace[workspace.id] ?? .empty
-        if snap.files.isEmpty {
+        if snap.isEmpty {
             InspectorPlaceholder(
                 systemImage: "checkmark.circle",
                 title: "No changes vs \(workspace.baseBranch)"
@@ -39,7 +39,7 @@ struct ChangesPanel: View {
             Spacer()
             Text("+\(snap.totalAdditions)")
                 .foregroundStyle(.green)
-            Text("-\(snap.totalDeletions)")
+            Text("−\(snap.totalDeletions)")
                 .foregroundStyle(.red)
         }
         .font(.system(.caption, design: .monospaced))
