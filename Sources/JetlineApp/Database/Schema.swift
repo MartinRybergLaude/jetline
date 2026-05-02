@@ -70,5 +70,11 @@ enum Schema {
                 t.add(column: "hiddenAgents", .text).notNull().defaults(to: "")
             }
         }
+
+        migrator.registerMigration("v4_open_in_app") { db in
+            try db.alter(table: "app_settings") { t in
+                t.add(column: "defaultOpenInApp", .text).notNull().defaults(to: "finder")
+            }
+        }
     }
 }

@@ -21,6 +21,8 @@ struct AppSettings: Codable, FetchableRecord, PersistableRecord {
     /// new-tab menu. Stored as a string so adding new agents doesn't require
     /// a schema migration.
     var hiddenAgents: String = ""
+    /// External app used by the workspace toolbar's "Open in" button.
+    var defaultOpenInApp: OpenInApp = .finder
 
     enum Theme: String, Codable, CaseIterable, DatabaseValueConvertible {
         case system

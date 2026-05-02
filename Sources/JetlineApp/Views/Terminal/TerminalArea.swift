@@ -23,6 +23,7 @@ struct TerminalArea: View {
 
     @ViewBuilder
     private var runToolbarItems: some View {
+        OpenInAppButton(workspace: workspace)
         if state.hasRunScript(workspace) {
             if let runner = state.runController(for: workspace.id) {
                 RunStatusButton(runner: runner) { state.toggleRun(for: workspace) }
@@ -318,6 +319,55 @@ private struct NewSessionMenu: View {
         .menuIndicator(.visible)
         .fixedSize()
         .help("New \(defaultAgent.displayName) tab")
+    }
+}
+
+/// Split-action toolbar button: clicking the body opens the workspace's
+/// worktree in the user's last-chosen app; the chevron exposes the picker,
+/// and picking an app both updates the default and opens the folder.
+private struct OpenInAppButton: View {
+    @EnvironmentObject private var state: AppState
+    let workspace: Workspace
+
+    /// Falls back to Finder if the persisted choice was uninstalled since
+    /// it was saved — Finder is always present.
+    private var current: OpenInApp {
+        let stored = state.settings.defaultOpenInApp
+        return stored.isInstalled ? stored : .finder
+    }
+
+    var body: some View {
+        Menu {
+            ForEach(OpenInApp.allCases.filter(\.isInstalled), id: \.self) { app in
+                Button {
+                    var s = state.settings
+                    s.defaultOpenInApp = app
+                    state.saveSettings(s)
+                    app.open(directory: workspace.worktreePath)
+                } label: {
+                    if let icon = app.icon(size: 16) {
+                        Label {
+                            Text(app.displayName)
+                        } icon: {
+                            Image(nsImage: icon)
+                        }
+                    } else {
+                        Text(app.displayName)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 5) {
+                if let icon = current.icon(size: 14) {
+                    Image(nsImage: icon)
+                }
+                Text(current.displayName)
+            }
+        } primaryAction: {
+            current.open(directory: workspace.worktreePath)
+        }
+        .menuIndicator(.visible)
+        .help("Open workspace in \(current.displayName)")
     }
 }
 
