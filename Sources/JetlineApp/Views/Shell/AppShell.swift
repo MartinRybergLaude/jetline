@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Top-level layout: sidebar on the left, terminal in the middle,
 /// inspector on the right (toggleable).
@@ -16,7 +17,7 @@ struct AppShell: View {
                         .inspectorColumnWidth(min: 240, ideal: 320, max: 480)
                 }
         }
-        .frame(minWidth: 900, minHeight: 600)
+        .background(WindowTabbingDisabler())
     }
 
     /// Inspector hides when nothing is selected (mirrors the previous logic),
@@ -26,6 +27,19 @@ struct AppShell: View {
             get: { state.inspectorVisible && state.selectedWorkspaceId != nil },
             set: { state.inspectorVisible = $0 }
         )
+    }
+}
+
+/// Disables NSWindow tabbing for the hosting window — removes the
+/// View → Show Tab Bar / Merge All Windows / Move Tab to New Window items.
+private struct WindowTabbingDisabler: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let v = NSView()
+        DispatchQueue.main.async { v.window?.tabbingMode = .disallowed }
+        return v
+    }
+    func updateNSView(_ view: NSView, context: Context) {
+        view.window?.tabbingMode = .disallowed
     }
 }
 
