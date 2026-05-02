@@ -23,7 +23,6 @@ struct SidebarView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             sidebarFooter
         }
-        .task { await state.pollPRsForever() }
         .sheet(item: $showingNewWorkspace) { repo in
             NewWorkspaceSheet(repository: repo)
         }
@@ -46,6 +45,10 @@ struct SidebarView: View {
     private var sidebarFooter: some View {
         VStack(spacing: 0) {
             Divider()
+            if let message = state.prTrackerStatus.userMessage {
+                PRTrackerStatusPill(message: message)
+                Divider()
+            }
             HStack(spacing: 8) {
                 Button {
                     Task { await state.addRepository() }
@@ -63,5 +66,28 @@ struct SidebarView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
         }
+    }
+}
+
+/// Sidebar footer banner that surfaces persistent gh failures (missing CLI,
+/// auth required) so PR icons not updating has a visible explanation rather
+/// than just looking broken.
+private struct PRTrackerStatusPill: View {
+    let message: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.yellow)
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.yellow.opacity(0.08))
     }
 }

@@ -13,12 +13,14 @@ final class AppState: ObservableObject {
     @Published var settings: AppSettings = AppSettings()
     @Published var diffByWorkspace: [String: DiffSnapshot] = [:]
     @Published var prByWorkspace: [String: PRSnapshot] = [:]
+    @Published var prTrackerStatus: PRTracker.Status = .ok
     @Published var inspectorVisible: Bool = true
     /// Run-script controllers keyed by workspace id. `nil` means "never run".
     /// Kept around after exit so the user can review the last log.
     @Published var runByWorkspace: [String: RunController] = [:]
 
     private var watchers: [String: WorktreeWatcher] = [:]
+    private(set) lazy var prTracker: PRTracker = PRTracker(state: self)
 
     init() {
         Task { await load() }
@@ -34,9 +36,16 @@ final class AppState: ObservableObject {
             for r in repos {
                 workspacesByRepo[r.id] = (try? Workspaces.forRepository(r.id)) ?? []
             }
+            // Hydrate PR snapshots from disk so the sidebar paints
+            // stale-but-known state immediately. The tracker overwrites these
+            // entries as fresh data lands.
+            if let cached = try? PRSnapshots.loadAll() {
+                prByWorkspace = cached
+            }
         } catch {
             print("AppState load error: \(error)")
         }
+        prTracker.sync()
     }
 
     // MARK: - Repositories
@@ -53,6 +62,7 @@ final class AppState: ObservableObject {
             let repo = try Repositories.add(name: name, path: path, defaultBranch: defaultBranch)
             repositories.insert(repo, at: 0)
             workspacesByRepo[repo.id] = []
+            prTracker.sync()
         } catch {
             await presentError(error.localizedDescription)
         }
@@ -68,6 +78,7 @@ final class AppState: ObservableObject {
         if selectedWorkspaceId.flatMap({ workspaceById($0) }) == nil {
             selectedWorkspaceId = nil
         }
+        prTracker.sync()
     }
 
     func updateRepository(_ repo: Repository) {
@@ -111,6 +122,9 @@ final class AppState: ObservableObject {
             )
             try Workspaces.insert(ws)
             workspacesByRepo[repo.id, default: []].insert(ws, at: 0)
+            // Push the new branch into the tracker so the sidebar gets a
+            // PR snapshot for it on the next sweep.
+            prTracker.kick(repoId: repo.id)
             selectWorkspace(ws.id)
 
             if let setup = repo.trimmedSetupScript {
@@ -152,6 +166,7 @@ final class AppState: ObservableObject {
             )
         }
         try? Workspaces.archive(id: workspace.id)
+        try? PRSnapshots.remove(workspaceId: workspace.id)
         workspacesByRepo[workspace.repositoryId]?.removeAll { $0.id == workspace.id }
         if selectedWorkspaceId == workspace.id { selectedWorkspaceId = nil }
     }
@@ -346,59 +361,15 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Background sweep that keeps `prByWorkspace` populated for every
-    /// workspace, so the sidebar can render PR-state icons without the
-    /// inspector being open. One workspace at a time, with a small inter-call
-    /// delay so we don't fire a thundering herd of `gh` calls. Cadence speeds
-    /// up while any workspace has active checks.
-    func pollPRsForever() async {
-        while !Task.isCancelled {
-            let workspaces = workspacesByRepo.values.flatMap { $0 }
-            for ws in workspaces {
-                if Task.isCancelled { return }
-                await refreshPR(for: ws)
-                try? await Task.sleep(for: .milliseconds(250))
-            }
-            let hasActive = prByWorkspace.values.contains { snap in
-                if case let .loaded(_, checks) = snap {
-                    return checks.contains(where: \.isActive)
-                }
-                return false
-            }
-            try? await Task.sleep(for: .seconds(hasActive ? 15 : 60))
+    /// Single write path for PR snapshots. `PRTracker` calls this with fresh
+    /// data; the in-memory map drives the UI and the same value is mirrored
+    /// to disk so the next launch can paint immediately. No-op writes are
+    /// suppressed so we don't kick every observer on every poll.
+    func applyPR(_ snapshot: PRSnapshot, for workspaceId: String) {
+        if prByWorkspace[workspaceId] != snapshot {
+            prByWorkspace[workspaceId] = snapshot
         }
-    }
-
-    /// Look up the PR for `workspace.branchName` and its checks.
-    /// Called from the sidebar sweep above and on-demand by `PRPanel`.
-    func refreshPR(for workspace: Workspace) async {
-        if prByWorkspace[workspace.id] == nil {
-            prByWorkspace[workspace.id] = .loading
-        }
-        let snapshot: PRSnapshot
-        do {
-            let pr = try await GitHubRunner.findPullRequest(
-                branch: workspace.branchName,
-                cwd: workspace.worktreePath
-            )
-            if let pr {
-                let checks = (try? await GitHubRunner.checks(
-                    forPR: pr.number,
-                    cwd: workspace.worktreePath
-                )) ?? []
-                snapshot = .loaded(pr, checks)
-            } else {
-                snapshot = .absent
-            }
-        } catch {
-            snapshot = .error(error.localizedDescription)
-        }
-        // Don't resurrect a workspace that was detached mid-flight, and
-        // suppress no-op writes so @Published doesn't kick every observer.
-        guard prByWorkspace[workspace.id] != nil else { return }
-        if prByWorkspace[workspace.id] != snapshot {
-            prByWorkspace[workspace.id] = snapshot
-        }
+        try? PRSnapshots.save(snapshot, for: workspaceId)
     }
 
     private func startWatcher(for workspace: Workspace) {
@@ -408,6 +379,10 @@ final class AppState: ObservableObject {
             guard let self else { return }
             guard let ws = self.workspaceById(id) else { return }
             Task { await self.refreshDiff(for: ws) }
+            // Worktree changed — likely a commit or push. Wake the PR
+            // tracker so the sidebar reflects new state without waiting up
+            // to a minute for the next scheduled poll.
+            self.prTracker.kick(workspaceId: id)
         }
         watcher.start()
         watchers[workspace.id] = watcher

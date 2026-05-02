@@ -4,8 +4,8 @@ import Foundation
 /// the GitHub REST API directly so we inherit the user's existing `gh auth`
 /// credentials, host config, and SSO state.
 
-struct PullRequest: Decodable, Sendable, Hashable {
-    struct Author: Decodable, Sendable, Hashable {
+struct PullRequest: Codable, Sendable, Hashable {
+    struct Author: Codable, Sendable, Hashable {
         var login: String
     }
     var number: Int
@@ -18,61 +18,79 @@ struct PullRequest: Decodable, Sendable, Hashable {
     var author: Author
 }
 
-enum CheckStatus: Sendable, Hashable, Decodable {
-    case queued, inProgress, completed, waiting, requested, pending, unknown
+/// Discriminated string enums whose serialized form matches the GitHub API's
+/// SCREAMING_SNAKE constants. `gh pr checks` (REST) and `gh api graphql` both
+/// emit these forms, so we can round-trip JSON without a separate mapping.
+enum CheckStatus: String, Codable, Sendable, Hashable {
+    case queued = "QUEUED"
+    case inProgress = "IN_PROGRESS"
+    case completed = "COMPLETED"
+    case waiting = "WAITING"
+    case requested = "REQUESTED"
+    case pending = "PENDING"
+    case unknown = "UNKNOWN"
 
     init(from decoder: Decoder) throws {
         let raw = (try? decoder.singleValueContainer().decode(String.self))?.uppercased() ?? ""
-        switch raw {
-        case "QUEUED":      self = .queued
-        case "IN_PROGRESS": self = .inProgress
-        case "COMPLETED":   self = .completed
-        case "WAITING":     self = .waiting
-        case "REQUESTED":   self = .requested
-        case "PENDING":     self = .pending
-        default:            self = .unknown
-        }
+        self = CheckStatus(rawValue: raw) ?? .unknown
     }
 }
 
-enum CheckConclusion: Sendable, Hashable, Decodable {
-    case success, failure, neutral, cancelled, skipped, timedOut, actionRequired, stale, unknown
+enum CheckConclusion: String, Codable, Sendable, Hashable {
+    case success = "SUCCESS"
+    case failure = "FAILURE"
+    case neutral = "NEUTRAL"
+    case cancelled = "CANCELLED"
+    case skipped = "SKIPPED"
+    case timedOut = "TIMED_OUT"
+    case actionRequired = "ACTION_REQUIRED"
+    case stale = "STALE"
+    case unknown = "UNKNOWN"
 
     init(from decoder: Decoder) throws {
         let raw = (try? decoder.singleValueContainer().decode(String.self))?.uppercased() ?? ""
-        switch raw {
-        case "SUCCESS":         self = .success
-        case "FAILURE":         self = .failure
-        case "NEUTRAL":         self = .neutral
-        case "CANCELLED":       self = .cancelled
-        case "SKIPPED":         self = .skipped
-        case "TIMED_OUT":       self = .timedOut
-        case "ACTION_REQUIRED": self = .actionRequired
-        case "STALE":           self = .stale
-        default:                self = .unknown
-        }
+        self = CheckConclusion(rawValue: raw) ?? .unknown
     }
 }
 
-/// Coarse status assigned by gh — more reliable than `(status, conclusion)`
-/// for grouping/coloring because gh already collapses edge cases.
-enum CheckBucket: Sendable, Hashable, Decodable {
-    case pass, fail, pending, skipping, cancel, unknown
+/// Coarse status used for grouping/coloring. `gh pr checks` emits this in
+/// lowercase; we keep that on the wire for backwards-compat with persisted
+/// rows but synthesize it ourselves from `(status, conclusion)` when reading
+/// GraphQL responses (which don't include a bucket field).
+enum CheckBucket: String, Codable, Sendable, Hashable {
+    case pass = "pass"
+    case fail = "fail"
+    case pending = "pending"
+    case skipping = "skipping"
+    case cancel = "cancel"
+    case unknown = "unknown"
 
     init(from decoder: Decoder) throws {
         let raw = (try? decoder.singleValueContainer().decode(String.self))?.lowercased() ?? ""
-        switch raw {
-        case "pass":     self = .pass
-        case "fail":     self = .fail
-        case "pending":  self = .pending
-        case "skipping": self = .skipping
-        case "cancel":   self = .cancel
-        default:         self = .unknown
+        self = CheckBucket(rawValue: raw) ?? .unknown
+    }
+
+    /// Best-effort bucket derivation when only `(status, conclusion)` is
+    /// available — used for GraphQL `CheckRun` contexts.
+    static func derive(status: CheckStatus, conclusion: CheckConclusion) -> CheckBucket {
+        switch status {
+        case .queued, .inProgress, .pending, .waiting, .requested:
+            return .pending
+        case .completed:
+            switch conclusion {
+            case .success, .neutral:           return .pass
+            case .failure, .timedOut, .actionRequired: return .fail
+            case .cancelled:                   return .cancel
+            case .skipped, .stale:             return .skipping
+            case .unknown:                     return .unknown
+            }
+        case .unknown:
+            return .unknown
         }
     }
 }
 
-struct CheckRun: Decodable, Sendable, Hashable, Identifiable {
+struct CheckRun: Codable, Sendable, Hashable, Identifiable {
     var name: String
     var status: CheckStatus
     var conclusion: CheckConclusion
@@ -93,6 +111,26 @@ struct CheckRun: Decodable, Sendable, Hashable, Identifiable {
         case .completed, .unknown:
             return bucket == .pending
         }
+    }
+
+    init(
+        name: String,
+        status: CheckStatus,
+        conclusion: CheckConclusion,
+        bucket: CheckBucket,
+        link: String? = nil,
+        workflow: String? = nil,
+        startedAt: String? = nil,
+        completedAt: String? = nil
+    ) {
+        self.name = name
+        self.status = status
+        self.conclusion = conclusion
+        self.bucket = bucket
+        self.link = link
+        self.workflow = workflow
+        self.startedAt = startedAt
+        self.completedAt = completedAt
     }
 
     enum CodingKeys: String, CodingKey {
@@ -119,39 +157,131 @@ enum PRSnapshot: Equatable, Sendable {
     case loaded(PullRequest, [CheckRun])
 }
 
+/// Owner/name pair identifying a GitHub repository.
+struct RepoIdentifier: Sendable, Hashable {
+    let owner: String
+    let name: String
+}
+
 enum GitHubRunner {
     enum Error: LocalizedError {
         case ghMissing
         case authRequired
+        case notOnGitHub
         case other(String)
 
         var errorDescription: String? {
             switch self {
             case .ghMissing: return "gh CLI not found on PATH. Install via `brew install gh`."
             case .authRequired: return "gh not authenticated. Run `gh auth login` in a terminal."
+            case .notOnGitHub: return "Repository has no GitHub remote."
             case let .other(msg): return msg
             }
         }
     }
 
-    static func findPullRequest(branch: String, cwd: String) async throws -> PullRequest? {
-        let stdout = try await runGH([
-            "pr", "list",
-            "--head", branch,
-            "--state", "all",
-            "--limit", "1",
-            "--json", "number,title,url,state,isDraft,headRefName,baseRefName,author"
-        ], cwd: cwd)
-        let prs = try JSONDecoder().decode([PullRequest].self, from: Data(stdout.utf8))
-        return prs.first
+    /// Resolve the repo's GitHub owner/name. `gh` infers the remote from the
+    /// working directory, so any path inside the repo works. Returns `nil`
+    /// when the repo has no GitHub remote (we don't want to error in that
+    /// case — it's a normal, recurring state).
+    static func repoIdentifier(cwd: String) async throws -> RepoIdentifier? {
+        do {
+            let stdout = try await runGH(
+                ["repo", "view", "--json", "owner,name"],
+                cwd: cwd
+            )
+            struct Response: Decodable {
+                struct Owner: Decodable { let login: String }
+                let owner: Owner
+                let name: String
+            }
+            let parsed = try JSONDecoder().decode(Response.self, from: Data(stdout.utf8))
+            return RepoIdentifier(owner: parsed.owner.login, name: parsed.name)
+        } catch Error.other(let msg) where msg.lowercased().contains("no github") || msg.lowercased().contains("could not determine") {
+            return nil
+        }
     }
 
-    static func checks(forPR number: Int, cwd: String) async throws -> [CheckRun] {
-        let stdout = try await runGH([
-            "pr", "checks", String(number),
-            "--json", "name,status,conclusion,bucket,link,workflow,startedAt,completedAt"
-        ], cwd: cwd)
-        return try JSONDecoder().decode([CheckRun].self, from: Data(stdout.utf8))
+    /// Fetch latest PR + check rollup for each branch in a single GraphQL
+    /// request. Branches without a PR on the remote are absent from the
+    /// returned dictionary.
+    ///
+    /// We alias one `pullRequests(headRefName:)` field per branch (`b0`,
+    /// `b1`, …) so the response groups results back together. Each alias
+    /// returns the most recently created PR for that branch — typically only
+    /// one exists, but `--state ALL` would otherwise need a per-branch call.
+    static func batchFetchPRs(
+        repo: RepoIdentifier,
+        branches: [String],
+        cwd: String
+    ) async throws -> [String: (PullRequest, [CheckRun])] {
+        guard !branches.isEmpty else { return [:] }
+
+        let aliases = branches.enumerated().map { (alias: "b\($0.offset)", branch: $0.element) }
+        let varDecls = (["$owner: String!", "$name: String!"]
+            + aliases.map { "$\($0.alias): String!" }).joined(separator: ", ")
+        let aliasFields = aliases.map { a in
+            """
+              \(a.alias): pullRequests(headRefName: $\(a.alias), first: 1, orderBy: {field: CREATED_AT, direction: DESC}, states: [OPEN, CLOSED, MERGED]) {
+                nodes { ...PR }
+              }
+            """
+        }.joined(separator: "\n")
+        let query = """
+        query(\(varDecls)) {
+          repository(owner: $owner, name: $name) {
+        \(aliasFields)
+          }
+        }
+        fragment PR on PullRequest {
+          number title url state isDraft headRefName baseRefName
+          author { login }
+          commits(last: 1) {
+            nodes {
+              commit {
+                statusCheckRollup {
+                  contexts(first: 100) {
+                    nodes {
+                      __typename
+                      ... on CheckRun {
+                        name status conclusion detailsUrl startedAt completedAt
+                        checkSuite { workflowRun { workflow { name } } }
+                      }
+                      ... on StatusContext {
+                        context state targetUrl createdAt
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+
+        var args: [String] = [
+            "api", "graphql",
+            "-F", "owner=\(repo.owner)",
+            "-F", "name=\(repo.name)"
+        ]
+        for a in aliases { args.append(contentsOf: ["-F", "\(a.alias)=\(a.branch)"]) }
+        args.append(contentsOf: ["-f", "query=\(query)"])
+
+        let stdout = try await runGH(args, cwd: cwd)
+
+        let response = try JSONDecoder().decode(GraphQLResponse<RepoBatch>.self, from: Data(stdout.utf8))
+        if let errors = response.errors, !errors.isEmpty {
+            throw Error.other(errors.map(\.message).joined(separator: "; "))
+        }
+        guard let aliasMap = response.data?.repository?.aliases else { return [:] }
+
+        var out: [String: (PullRequest, [CheckRun])] = [:]
+        for a in aliases {
+            guard let result = aliasMap[a.alias],
+                  let node = result.nodes.first else { continue }
+            out[a.branch] = (node.toPullRequest(), node.checkRuns)
+        }
+        return out
     }
 
     private static func runGH(_ args: [String], cwd: String) async throws -> String {
@@ -176,5 +306,139 @@ enum GitHubRunner {
             throw Error.authRequired
         }
         throw Error.other(result.stderr.nonBlank ?? "gh exited with status \(result.status)")
+    }
+}
+
+// MARK: - GraphQL response wiring
+
+private struct GraphQLResponse<T: Decodable>: Decodable {
+    let data: T?
+    let errors: [GQLError]?
+}
+
+private struct GQLError: Decodable { let message: String }
+
+/// Wrapper around `repository(...)` whose only purpose is to forward the
+/// dynamic alias keys (`b0`, `b1`, …) into a `[String: PRBatchEntry]`.
+private struct RepoBatch: Decodable {
+    let repository: AliasedRepository?
+
+    struct AliasedRepository: Decodable {
+        let aliases: [String: PRBatchEntry]
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: DynamicKey.self)
+            var map: [String: PRBatchEntry] = [:]
+            for key in c.allKeys {
+                map[key.stringValue] = try c.decode(PRBatchEntry.self, forKey: key)
+            }
+            aliases = map
+        }
+    }
+}
+
+private struct DynamicKey: CodingKey {
+    let stringValue: String
+    var intValue: Int? { nil }
+    init?(intValue _: Int) { return nil }
+    init(stringValue: String) { self.stringValue = stringValue }
+}
+
+private struct PRBatchEntry: Decodable {
+    let nodes: [PRNode]
+}
+
+private struct PRNode: Decodable {
+    let number: Int
+    let title: String
+    let url: String
+    let state: String
+    let isDraft: Bool
+    let headRefName: String
+    let baseRefName: String
+    let author: AuthorNode?
+    let commits: CommitsConnection?
+
+    struct AuthorNode: Decodable { let login: String }
+    struct CommitsConnection: Decodable { let nodes: [CommitNode] }
+    struct CommitNode: Decodable { let commit: CommitDetail }
+    struct CommitDetail: Decodable { let statusCheckRollup: Rollup? }
+    struct Rollup: Decodable { let contexts: ContextsConnection }
+    struct ContextsConnection: Decodable { let nodes: [ContextNode] }
+
+    /// Either a CheckRun (Actions / GitHub App) or a StatusContext (legacy
+    /// commit status). `__typename` discriminates; the other branch's fields
+    /// are nil and the converter picks the right path.
+    struct ContextNode: Decodable {
+        let __typename: String
+        // CheckRun
+        let name: String?
+        let status: CheckStatus?
+        let conclusion: CheckConclusion?
+        let detailsUrl: String?
+        let startedAt: String?
+        let completedAt: String?
+        let checkSuite: CheckSuite?
+        struct CheckSuite: Decodable { let workflowRun: WorkflowRun? }
+        struct WorkflowRun: Decodable { let workflow: WorkflowName? }
+        struct WorkflowName: Decodable { let name: String? }
+        // StatusContext
+        let context: String?
+        let state: String?
+        let targetUrl: String?
+        let createdAt: String?
+    }
+
+    func toPullRequest() -> PullRequest {
+        PullRequest(
+            number: number,
+            title: title,
+            url: url,
+            state: state,
+            isDraft: isDraft,
+            headRefName: headRefName,
+            baseRefName: baseRefName,
+            author: PullRequest.Author(login: author?.login ?? "unknown")
+        )
+    }
+
+    var checkRuns: [CheckRun] {
+        let contexts = commits?.nodes.first?.commit.statusCheckRollup?.contexts.nodes ?? []
+        return contexts.map { ctx in
+            switch ctx.__typename {
+            case "CheckRun":
+                let status = ctx.status ?? .unknown
+                let conclusion = ctx.conclusion ?? .unknown
+                return CheckRun(
+                    name: ctx.name ?? "(unnamed)",
+                    status: status,
+                    conclusion: conclusion,
+                    bucket: CheckBucket.derive(status: status, conclusion: conclusion),
+                    link: ctx.detailsUrl,
+                    workflow: ctx.checkSuite?.workflowRun?.workflow?.name,
+                    startedAt: ctx.startedAt,
+                    completedAt: ctx.completedAt
+                )
+            default: // "StatusContext"
+                let (status, conclusion, bucket): (CheckStatus, CheckConclusion, CheckBucket) = {
+                    switch (ctx.state ?? "").uppercased() {
+                    case "SUCCESS": return (.completed,  .success, .pass)
+                    case "FAILURE", "ERROR": return (.completed, .failure, .fail)
+                    case "PENDING", "EXPECTED": return (.inProgress, .unknown, .pending)
+                    default: return (.unknown, .unknown, .unknown)
+                    }
+                }()
+                return CheckRun(
+                    name: ctx.context ?? "(unnamed)",
+                    status: status,
+                    conclusion: conclusion,
+                    bucket: bucket,
+                    link: ctx.targetUrl,
+                    workflow: nil,
+                    startedAt: ctx.createdAt,
+                    completedAt: nil
+                )
+            }
+        }
     }
 }

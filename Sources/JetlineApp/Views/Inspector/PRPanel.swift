@@ -9,34 +9,16 @@ struct PRPanel: View {
             if let id = state.selectedWorkspaceId,
                let ws = state.workspaceById(id) {
                 content(for: ws)
-                    .task(id: ws.id) { await poll(workspace: ws) }
+                    // Open / switch panel → wake the tracker for an immediate
+                    // refresh. Ongoing polling is handled centrally so the
+                    // panel doesn't run its own loop.
+                    .onAppear { state.prTracker.kick(workspaceId: ws.id) }
+                    .onChange(of: ws.id) { _, newId in
+                        state.prTracker.kick(workspaceId: newId)
+                    }
             } else {
                 EmptyView()
             }
-        }
-    }
-
-    /// Adaptive cadence: 15s while a check is in flight, 60s otherwise.
-    /// `.task(id:)` cancels this loop when the panel disappears or the
-    /// workspace changes — `gh` only runs while the PR tab is open.
-    private func poll(workspace: Workspace) async {
-        await state.refreshPR(for: workspace)
-        while !Task.isCancelled {
-            let interval = pollInterval(state.prByWorkspace[workspace.id])
-            do {
-                try await Task.sleep(for: .seconds(interval))
-            } catch {
-                return
-            }
-            await state.refreshPR(for: workspace)
-        }
-    }
-
-    private func pollInterval(_ snap: PRSnapshot?) -> Int {
-        switch snap {
-        case nil, .absent, .error: return 60
-        case .loading: return 15
-        case let .loaded(_, checks): return checks.contains(where: \.isActive) ? 15 : 60
         }
     }
 
@@ -67,7 +49,7 @@ struct PRPanel: View {
                 HStack {
                     Spacer()
                     Button {
-                        Task { await state.refreshPR(for: workspace) }
+                        state.prTracker.kick(workspaceId: workspace.id)
                     } label: {
                         Label("Refresh", systemImage: "arrow.clockwise")
                             .font(.caption)

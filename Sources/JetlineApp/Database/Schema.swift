@@ -76,5 +76,16 @@ enum Schema {
                 t.add(column: "defaultOpenInApp", .text).notNull().defaults(to: "finder")
             }
         }
+
+        migrator.registerMigration("v5_pr_snapshots") { db in
+            try db.create(table: "pr_snapshots") { t in
+                t.column("workspaceId", .text).primaryKey()
+                    .references("workspaces", onDelete: .cascade)
+                t.column("kind", .text).notNull()  // "absent" | "loaded"
+                t.column("prJSON", .text)
+                t.column("checksJSON", .text)
+                t.column("fetchedAt", .datetime).notNull()
+            }
+        }
     }
 }
