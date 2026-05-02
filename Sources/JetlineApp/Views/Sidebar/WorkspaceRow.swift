@@ -10,7 +10,7 @@ struct WorkspaceRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 10) {
             PRStatusIcon(snapshot: state.prByWorkspace[workspace.id], size: 13)
             Text(workspace.name)
                 .font(.body)
