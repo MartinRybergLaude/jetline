@@ -67,6 +67,27 @@ enum Subprocess {
             return Result(stdout: "", stderr: "spawn failed: \(error)", status: -1)
         }
 
+        // Drain pipes concurrently — without this, output larger than the
+        // pipe buffer (~16KB on macOS) blocks the child on write while the
+        // parent blocks on waitUntilExit.
+        let outHandle = outPipe.fileHandleForReading
+        let errHandle = errPipe.fileHandleForReading
+        var outData = Data()
+        var errData = Data()
+        let group = DispatchGroup()
+        let readQ = DispatchQueue.global(qos: .userInitiated)
+
+        group.enter()
+        readQ.async {
+            outData = outHandle.readDataToEndOfFile()
+            group.leave()
+        }
+        group.enter()
+        readQ.async {
+            errData = errHandle.readDataToEndOfFile()
+            group.leave()
+        }
+
         if let timeout {
             let killer = DispatchWorkItem {
                 if process.isRunning { process.terminate() }
@@ -77,9 +98,10 @@ enum Subprocess {
         } else {
             process.waitUntilExit()
         }
+        group.wait()
 
-        let stdout = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        let stderr = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stdout = String(data: outData, encoding: .utf8) ?? ""
+        let stderr = String(data: errData, encoding: .utf8) ?? ""
         return Result(stdout: stdout, stderr: stderr, status: process.terminationStatus)
     }
 }
