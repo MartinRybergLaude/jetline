@@ -23,6 +23,7 @@ struct SidebarView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             sidebarFooter
         }
+        .task { await state.pollPRsForever() }
         .sheet(item: $showingNewWorkspace) { repo in
             NewWorkspaceSheet(repository: repo)
         }

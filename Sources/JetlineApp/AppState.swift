@@ -346,8 +346,31 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Background sweep that keeps `prByWorkspace` populated for every
+    /// workspace, so the sidebar can render PR-state icons without the
+    /// inspector being open. One workspace at a time, with a small inter-call
+    /// delay so we don't fire a thundering herd of `gh` calls. Cadence speeds
+    /// up while any workspace has active checks.
+    func pollPRsForever() async {
+        while !Task.isCancelled {
+            let workspaces = workspacesByRepo.values.flatMap { $0 }
+            for ws in workspaces {
+                if Task.isCancelled { return }
+                await refreshPR(for: ws)
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            let hasActive = prByWorkspace.values.contains { snap in
+                if case let .loaded(_, checks) = snap {
+                    return checks.contains(where: \.isActive)
+                }
+                return false
+            }
+            try? await Task.sleep(for: .seconds(hasActive ? 15 : 60))
+        }
+    }
+
     /// Look up the PR for `workspace.branchName` and its checks.
-    /// Driven by `PRPanel.task` so `gh` only runs when the PR tab is open.
+    /// Called from the sidebar sweep above and on-demand by `PRPanel`.
     func refreshPR(for workspace: Workspace) async {
         if prByWorkspace[workspace.id] == nil {
             prByWorkspace[workspace.id] = .loading

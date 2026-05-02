@@ -23,6 +23,9 @@ struct TerminalArea: View {
 
     @ViewBuilder
     private var runToolbarItems: some View {
+        if let stats = state.diffByWorkspace[workspace.id], !stats.files.isEmpty {
+            ChangesPill(adds: stats.totalAdditions, dels: stats.totalDeletions)
+        }
         OpenInAppButton(workspace: workspace)
         if state.hasRunScript(workspace) {
             if let runner = state.runController(for: workspace.id) {
@@ -79,6 +82,24 @@ struct TerminalArea: View {
         } else {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+}
+
+private struct ChangesPill: View {
+    let adds: Int
+    let dels: Int
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if adds > 0 {
+                Text("+\(adds)").foregroundStyle(.green)
+            }
+            if dels > 0 {
+                Text("-\(dels)").foregroundStyle(.red)
+            }
+        }
+        .font(.system(size: 11, weight: .medium, design: .monospaced))
+        .opacity(0.85)
     }
 }
 
