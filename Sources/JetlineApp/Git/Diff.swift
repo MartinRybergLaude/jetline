@@ -57,13 +57,14 @@ struct FileDiff: Identifiable, Equatable {
 }
 
 enum DiffComputer {
-    /// Diff worktree (including untracked) against `baseBranch`.
+    /// Diff worktree (tracked files only) against `baseBranch`.
+    /// Throws if the base ref is missing or any of the three `git diff` calls fail —
+    /// callers decide how to surface that.
     static func compute(worktreePath: String, baseBranch: String) async throws -> DiffSnapshot {
-        // Determine merge base so we only show diff this branch contributed.
-        let mergeBase = (try? await GitRunner.runChecked(
+        let mergeBase = try await GitRunner.runChecked(
             ["merge-base", "HEAD", baseBranch],
             cwd: worktreePath
-        ))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? baseBranch
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
 
         // numstat for tallies
         let numstatOut = try await GitRunner.runChecked(

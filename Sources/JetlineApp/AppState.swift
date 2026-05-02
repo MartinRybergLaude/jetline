@@ -301,12 +301,18 @@ final class AppState: ObservableObject {
     // MARK: - Diff & watcher
 
     func refreshDiff(for workspace: Workspace) async {
-        let snapshot: DiffSnapshot = (try? await DiffComputer.compute(
-            worktreePath: workspace.worktreePath,
-            baseBranch: workspace.baseBranch
-        )) ?? .empty
-        if diffByWorkspace[workspace.id] != snapshot {
-            diffByWorkspace[workspace.id] = snapshot
+        do {
+            let snapshot = try await DiffComputer.compute(
+                worktreePath: workspace.worktreePath,
+                baseBranch: workspace.baseBranch
+            )
+            if diffByWorkspace[workspace.id] != snapshot {
+                diffByWorkspace[workspace.id] = snapshot
+            }
+        } catch {
+            // Keep the last known snapshot rather than clobbering it with .empty
+            // on a transient failure.
+            print("refreshDiff(\(workspace.id)) failed: \(error)")
         }
     }
 
