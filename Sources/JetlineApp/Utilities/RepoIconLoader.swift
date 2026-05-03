@@ -52,6 +52,15 @@ enum RepoIconLoader {
                 if stem == "favicon", validExtensions.contains(ext) {
                     candidates.append((url, depth))
                 }
+                if ext == "icns" {
+                    candidates.append((url, depth))
+                }
+                if ext == "icon", let resolved = resolveIconPackage(at: url) {
+                    candidates.append((resolved, depth))
+                }
+                if ext == "appiconset", let resolved = resolveAppIconSet(at: url) {
+                    candidates.append((resolved, depth))
+                }
             }
 
             if depth >= maxDepth { continue }
@@ -59,6 +68,8 @@ enum RepoIconLoader {
             for url in contents {
                 guard let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory, isDir else { continue }
                 let name = url.lastPathComponent
+                let ext = url.pathExtension.lowercased()
+                if ext == "icon" || ext == "appiconset" { continue }
                 if skipDirs.contains(name) || name.hasPrefix(".") { continue }
                 queue.append((url, depth + 1))
             }
@@ -74,6 +85,72 @@ enum RepoIconLoader {
             }
         }
         return nil
+    }
+
+    private static func resolveIconPackage(at url: URL) -> URL? {
+        let assets = url.appendingPathComponent("Assets", isDirectory: true)
+        let jsonURL = url.appendingPathComponent("icon.json")
+        if let data = try? Data(contentsOf: jsonURL),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let groups = json["groups"] as? [[String: Any]] {
+            for group in groups where (group["hidden"] as? Bool) != true {
+                guard let layers = group["layers"] as? [[String: Any]] else { continue }
+                for layer in layers where (layer["hidden"] as? Bool) != true {
+                    if let name = layer["image-name"] as? String {
+                        let candidate = assets.appendingPathComponent(name)
+                        if FileManager.default.fileExists(atPath: candidate.path) {
+                            return candidate
+                        }
+                    }
+                }
+            }
+        }
+        return largestPNG(in: assets)
+    }
+
+    private static func resolveAppIconSet(at url: URL) -> URL? {
+        let contentsURL = url.appendingPathComponent("Contents.json")
+        if let data = try? Data(contentsOf: contentsURL),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let images = json["images"] as? [[String: Any]] {
+            var best: (pixels: Int, url: URL)?
+            for image in images {
+                guard let filename = image["filename"] as? String else { continue }
+                let pixels = parseDimension(image["size"] as? String) * parseScale(image["scale"] as? String)
+                let candidate = url.appendingPathComponent(filename)
+                if best == nil || pixels > best!.pixels {
+                    best = (pixels, candidate)
+                }
+            }
+            if let best { return best.url }
+        }
+        return largestPNG(in: url)
+    }
+
+    private static func largestPNG(in dir: URL) -> URL? {
+        let fm = FileManager.default
+        guard let contents = try? fm.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: [.fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+        return contents
+            .filter { $0.pathExtension.lowercased() == "png" }
+            .max { a, b in
+                let sa = (try? a.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                let sb = (try? b.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                return sa < sb
+            }
+    }
+
+    private static func parseDimension(_ s: String?) -> Int {
+        guard let s, let dim = s.split(separator: "x").first, let n = Int(dim) else { return 0 }
+        return n
+    }
+
+    private static func parseScale(_ s: String?) -> Int {
+        guard let s, let n = Int(s.replacingOccurrences(of: "x", with: "")) else { return 1 }
+        return n
     }
 
     private static func score(_ url: URL, depth: Int) -> Int {
