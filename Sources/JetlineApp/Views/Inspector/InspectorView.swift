@@ -3,6 +3,7 @@ import SwiftUI
 struct InspectorView: View {
     @EnvironmentObject private var state: AppState
     @State private var tab: Tab = .changes
+    @State private var diffMode: DiffMode = .pr
 
     enum Tab: Hashable { case changes, pr, run }
 
@@ -23,7 +24,13 @@ struct InspectorView: View {
     private var content: some View {
         switch tab {
         case .changes:
-            ScrollView { ChangesPanel().padding(.vertical, 8) }
+            VStack(spacing: 0) {
+                DiffModeToggle(mode: $diffMode)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 8)
+                    .padding(.bottom, 4)
+                ScrollView { ChangesPanel(mode: diffMode).padding(.vertical, 8) }
+            }
         case .pr:
             ScrollView { PRPanel().padding(.vertical, 8) }
         case .run:
@@ -45,16 +52,21 @@ private struct InspectorTabBar: View {
     @Binding var selection: InspectorView.Tab
     @Namespace private var ns
 
+    private enum Icon {
+        case system(String)
+        case asset(String)
+    }
+
     private struct Item {
         let tab: InspectorView.Tab
-        let symbol: String
+        let icon: Icon
         let help: String
     }
 
     private let items: [Item] = [
-        Item(tab: .changes, symbol: "pencil", help: "Changes"),
-        Item(tab: .pr, symbol: "arrow.triangle.pull", help: "Pull request"),
-        Item(tab: .run, symbol: "terminal", help: "Run output")
+        Item(tab: .changes, icon: .system("plusminus"), help: "Changes"),
+        Item(tab: .pr, icon: .asset("PRStateNone"), help: "Pull request"),
+        Item(tab: .run, icon: .system("apple.terminal.fill"), help: "Run output")
     ]
 
     var body: some View {
@@ -83,8 +95,8 @@ private struct InspectorTabBar: View {
                 selection = item.tab
             }
         } label: {
-            Image(systemName: item.symbol)
-                .font(.system(size: 13, weight: .regular))
+            icon(for: item)
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(isSelected ? Color.white : Color.primary.opacity(0.85))
                 .frame(maxWidth: .infinity)
                 .frame(height: 22)
@@ -106,5 +118,53 @@ private struct InspectorTabBar: View {
             }
         }
         .help(item.help)
+    }
+
+    @ViewBuilder
+    private func icon(for item: Item) -> some View {
+        switch item.icon {
+        case .system(let name):
+            Image(systemName: name)
+        case .asset(let name):
+            if let nsImage = Self.assetCache[name] {
+                Image(nsImage: nsImage).resizable().scaledToFit().frame(width: 13, height: 13)
+            }
+        }
+    }
+
+    private static let assetCache: [String: NSImage] = {
+        let names = ["PRStateNone"]
+        var map: [String: NSImage] = [:]
+        for name in names {
+            if let url = Bundle.module.url(forResource: name, withExtension: "png"),
+               let img = NSImage(contentsOf: url) {
+                img.isTemplate = true
+                map[name] = img
+            }
+        }
+        return map
+    }()
+}
+
+private struct DiffModeToggle: View {
+    @Binding var mode: DiffMode
+
+    private var isLocal: Binding<Bool> {
+        Binding(
+            get: { mode == .local },
+            set: { mode = $0 ? .local : .pr }
+        )
+    }
+
+    var body: some View {
+        Toggle(isOn: isLocal) {
+            Text("Only uncommitted")
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .toggleStyle(.switch)
+        .controlSize(.small)
+        .help(mode == .pr
+              ? "Showing committed changes vs base branch"
+              : "Showing uncommitted (staged + unstaged) changes")
     }
 }

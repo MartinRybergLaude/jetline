@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ChangesPanel: View {
     @EnvironmentObject private var state: AppState
+    let mode: DiffMode
 
     var body: some View {
         if let id = state.selectedWorkspaceId,
@@ -14,15 +15,15 @@ struct ChangesPanel: View {
 
     @ViewBuilder
     private func content(for workspace: Workspace) -> some View {
-        let snap = state.diffByWorkspace[workspace.id] ?? .empty
+        let snap = snapshot(for: workspace.id)
         if snap.isEmpty {
             InspectorPlaceholder(
                 systemImage: "checkmark.circle",
-                title: "No changes vs \(workspace.baseBranch)"
+                title: emptyTitle(for: workspace)
             )
         } else {
             VStack(alignment: .leading, spacing: 8) {
-                summaryHeader(snap: snap, baseBranch: workspace.baseBranch)
+                summaryHeader(snap: snap)
                 ForEach(snap.files) { file in
                     FileDiffSection(file: file)
                 }
@@ -31,7 +32,22 @@ struct ChangesPanel: View {
         }
     }
 
-    private func summaryHeader(snap: DiffSnapshot, baseBranch: String) -> some View {
+    private func snapshot(for workspaceId: String) -> DiffSnapshot {
+        switch mode {
+        case .pr:       return state.prDiffByWorkspace[workspaceId] ?? .empty
+        case .local:    return state.localDiffByWorkspace[workspaceId] ?? .empty
+        case .combined: return state.diffByWorkspace[workspaceId] ?? .empty
+        }
+    }
+
+    private func emptyTitle(for workspace: Workspace) -> String {
+        switch mode {
+        case .pr, .combined: return "No changes vs \(workspace.baseBranch)"
+        case .local:         return "No uncommitted changes"
+        }
+    }
+
+    private func summaryHeader(snap: DiffSnapshot) -> some View {
         HStack(spacing: 6) {
             Text("\(snap.files.count) file\(snap.files.count == 1 ? "" : "s")")
                 .font(.caption)

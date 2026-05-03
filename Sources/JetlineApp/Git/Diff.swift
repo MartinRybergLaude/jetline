@@ -58,19 +58,42 @@ struct FileDiff: Identifiable, Equatable {
     }
 }
 
+enum DiffMode: Hashable {
+    case combined
+    case pr
+    case local
+
+    var needsMergeBase: Bool { self != .local }
+
+    func revspec(mergeBase: String?) -> String {
+        switch self {
+        case .combined: return mergeBase ?? "HEAD"
+        case .pr:       return "\(mergeBase ?? "HEAD")..HEAD"
+        case .local:    return "HEAD"
+        }
+    }
+}
+
 enum DiffComputer {
-    /// Diff worktree (tracked files only) against `baseBranch`.
+    /// Diff (tracked files only) against the revspec implied by `mode`.
     /// Throws if the base ref is missing or any of the three `git diff` calls fail —
     /// callers decide how to surface that.
-    static func compute(worktreePath: String, baseBranch: String) async throws -> DiffSnapshot {
-        let mergeBase = try await GitRunner.runChecked(
-            ["merge-base", "HEAD", baseBranch],
-            cwd: worktreePath
-        ).trimmingCharacters(in: .whitespacesAndNewlines)
+    static func compute(
+        worktreePath: String,
+        baseBranch: String,
+        mode: DiffMode = .combined
+    ) async throws -> DiffSnapshot {
+        let mergeBase: String? = mode.needsMergeBase
+            ? try await GitRunner.runChecked(
+                ["merge-base", "HEAD", baseBranch],
+                cwd: worktreePath
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            : nil
+        let revspec = mode.revspec(mergeBase: mergeBase)
 
         // numstat for tallies
         let numstatOut = try await GitRunner.runChecked(
-            ["diff", "--numstat", mergeBase],
+            ["diff", "--numstat", revspec],
             cwd: worktreePath
         )
         var stats: [String: (Int, Int)] = [:]
@@ -84,7 +107,7 @@ enum DiffComputer {
 
         // name-status for status flags
         let nameStatusOut = try await GitRunner.runChecked(
-            ["diff", "--name-status", mergeBase],
+            ["diff", "--name-status", revspec],
             cwd: worktreePath
         )
         var statuses: [String: FileDiff.Status] = [:]
@@ -97,7 +120,7 @@ enum DiffComputer {
 
         // Patch for hunks
         let patchOut = try await GitRunner.runChecked(
-            ["diff", "--no-color", "-U3", mergeBase],
+            ["diff", "--no-color", "-U3", revspec],
             cwd: worktreePath
         )
         let parsed = PatchParser.parse(patchOut)

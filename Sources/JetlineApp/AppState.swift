@@ -12,6 +12,8 @@ final class AppState: ObservableObject {
     @Published var activeSessionByWorkspace: [String: String] = [:]
     @Published var settings: AppSettings = AppSettings()
     @Published var diffByWorkspace: [String: DiffSnapshot] = [:]
+    @Published var prDiffByWorkspace: [String: DiffSnapshot] = [:]
+    @Published var localDiffByWorkspace: [String: DiffSnapshot] = [:]
     @Published var prByWorkspace: [String: PRSnapshot] = [:]
     @Published var prTrackerStatus: PRTracker.Status = .ok
     @Published var inspectorVisible: Bool = true
@@ -346,18 +348,36 @@ final class AppState: ObservableObject {
     // MARK: - Diff & watcher
 
     func refreshDiff(for workspace: Workspace) async {
-        do {
-            let snapshot = try await DiffComputer.compute(
+        async let combined: DiffSnapshot? = {
+            try? await DiffComputer.compute(
                 worktreePath: workspace.worktreePath,
-                baseBranch: workspace.baseBranch
+                baseBranch: workspace.baseBranch,
+                mode: .combined
             )
-            if diffByWorkspace[workspace.id] != snapshot {
-                diffByWorkspace[workspace.id] = snapshot
-            }
-        } catch {
-            // Keep the last known snapshot rather than clobbering it with .empty
-            // on a transient failure.
-            print("refreshDiff(\(workspace.id)) failed: \(error)")
+        }()
+        async let prSnap: DiffSnapshot? = {
+            try? await DiffComputer.compute(
+                worktreePath: workspace.worktreePath,
+                baseBranch: workspace.baseBranch,
+                mode: .pr
+            )
+        }()
+        async let localSnap: DiffSnapshot? = {
+            try? await DiffComputer.compute(
+                worktreePath: workspace.worktreePath,
+                baseBranch: workspace.baseBranch,
+                mode: .local
+            )
+        }()
+
+        if let snap = await combined, diffByWorkspace[workspace.id] != snap {
+            diffByWorkspace[workspace.id] = snap
+        }
+        if let snap = await prSnap, prDiffByWorkspace[workspace.id] != snap {
+            prDiffByWorkspace[workspace.id] = snap
+        }
+        if let snap = await localSnap, localDiffByWorkspace[workspace.id] != snap {
+            localDiffByWorkspace[workspace.id] = snap
         }
     }
 
@@ -395,6 +415,8 @@ final class AppState: ObservableObject {
         sessionsByWorkspace.removeValue(forKey: id)
         activeSessionByWorkspace.removeValue(forKey: id)
         diffByWorkspace.removeValue(forKey: id)
+        prDiffByWorkspace.removeValue(forKey: id)
+        localDiffByWorkspace.removeValue(forKey: id)
         prByWorkspace.removeValue(forKey: id)
     }
 
