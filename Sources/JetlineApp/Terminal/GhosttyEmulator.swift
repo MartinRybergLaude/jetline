@@ -111,8 +111,23 @@ final class GhosttyEmulator: TerminalEmulatorView {
             builder.withCursorStyleBlink(true)
             if let family { builder.withFontFamily(family) }
             builder.withFontSize(size)
+
+            // Release the shortcuts the host app's menu owns. Ghostty's
+            // performKeyEquivalent claims any key that resolves to one of
+            // its bindings before the responder chain reaches the main
+            // menu, which made our ⌘T / ⌘W / ⌘1-9 / ⌃Tab work only
+            // intermittently (when the terminal wasn't first responder).
+            for trigger in hostOwnedShortcuts {
+                builder.withCustom("keybind", "unbind:\(trigger)")
+            }
         }
     }
+
+    private static let hostOwnedShortcuts: [String] = {
+        var triggers = ["cmd+t", "cmd+w", "ctrl+tab", "ctrl+shift+tab"]
+        triggers.append(contentsOf: (1...9).map { "cmd+\($0)" })
+        return triggers
+    }()
 
     func terminate() {
         pty?.terminate()
