@@ -28,6 +28,12 @@ protocol TerminalEmulatorView: AnyObject {
     /// Toggle Metal rendering when the tab is hidden / shown. Inactive
     /// surfaces should pause display-link work to keep the GPU idle.
     func setActive(_ active: Bool)
+
+    /// Register a handler that fires once when the underlying process
+    /// exits (clean exit, signal, or fork failure). The host uses this to
+    /// reconcile DB state — e.g. mark the persisted session row ended so
+    /// a broken `--resume` doesn't keep cycling. Set before `spawn`.
+    func setExitHandler(_ handler: @escaping (Int32) -> Void)
 }
 
 extension TerminalEmulatorView {

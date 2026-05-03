@@ -6,6 +6,10 @@ import AppKit
 struct AppShell: View {
     @EnvironmentObject private var state: AppState
 
+    init() {
+        MenuFirstShortcutMonitor.install()
+    }
+
     var body: some View {
         NavigationSplitView {
             SidebarView()
@@ -40,6 +44,31 @@ private struct WindowTabbingDisabler: NSViewRepresentable {
     }
     func updateNSView(_ view: NSView, context: Context) {
         view.window?.tabbingMode = .disallowed
+    }
+}
+
+/// AppKit's default `NSWindow.performKeyEquivalent` walks the content view
+/// hierarchy *first* and only falls back to the main menu if no view claims
+/// the event. Ghostty's `AppTerminalView` answers `true` for any key that
+/// resolves to one of its internal bindings — which makes ⌘T / ⌘W /
+/// ⌃Tab / ⌘1-9 work only intermittently (when the terminal isn't first
+/// responder). Inverting the priority via a local event monitor: hand the
+/// main menu first crack on every modifier-keyed keyDown, fall through if
+/// the menu doesn't claim it. Installed once, app-wide.
+@MainActor
+private enum MenuFirstShortcutMonitor {
+    private static var token: Any?
+
+    static func install() {
+        guard token == nil else { return }
+        token = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            guard mods.contains(.command) || mods.contains(.control) else { return event }
+            if NSApp.mainMenu?.performKeyEquivalent(with: event) == true {
+                return nil
+            }
+            return event
+        }
     }
 }
 

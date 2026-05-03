@@ -13,6 +13,7 @@ final class GhosttyEmulator: TerminalEmulatorView {
     private let controller: TerminalController
     private var pty: PTYProcess?
     private var isActive: Bool = true
+    private var exitHandler: ((Int32) -> Void)?
 
     var nsView: NSView { view }
 
@@ -72,9 +73,10 @@ final class GhosttyEmulator: TerminalEmulatorView {
             output: { data in
                 session.receive(data)
             },
-            exit: { exitCode in
+            exit: { [weak self] exitCode in
                 Task { @MainActor in
                     session.finish(exitCode: UInt32(clamping: exitCode), runtimeMilliseconds: 0)
+                    self?.exitHandler?(exitCode)
                 }
             }
         )
@@ -88,6 +90,10 @@ final class GhosttyEmulator: TerminalEmulatorView {
             let message = "jetline: failed to spawn \(executable): \(error)\r\n"
             session.receive(message)
         }
+    }
+
+    func setExitHandler(_ handler: @escaping (Int32) -> Void) {
+        exitHandler = handler
     }
 
     func sendInterrupt() {
@@ -111,23 +117,8 @@ final class GhosttyEmulator: TerminalEmulatorView {
             builder.withCursorStyleBlink(true)
             if let family { builder.withFontFamily(family) }
             builder.withFontSize(size)
-
-            // Release the shortcuts the host app's menu owns. Ghostty's
-            // performKeyEquivalent claims any key that resolves to one of
-            // its bindings before the responder chain reaches the main
-            // menu, which made our ⌘T / ⌘W / ⌘1-9 / ⌃Tab work only
-            // intermittently (when the terminal wasn't first responder).
-            for trigger in hostOwnedShortcuts {
-                builder.withCustom("keybind", "unbind:\(trigger)")
-            }
         }
     }
-
-    private static let hostOwnedShortcuts: [String] = {
-        var triggers = ["cmd+t", "cmd+w", "ctrl+tab", "ctrl+shift+tab"]
-        triggers.append(contentsOf: (1...9).map { "cmd+\($0)" })
-        return triggers
-    }()
 
     func terminate() {
         pty?.terminate()

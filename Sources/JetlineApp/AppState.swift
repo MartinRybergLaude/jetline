@@ -317,7 +317,20 @@ final class AppState: ObservableObject {
         for row in persisted where row.agent != .claude {
             try? Sessions.end(id: row.id)
         }
-        let resumable = persisted.filter { $0.agent == .claude }
+        // A Claude row is only resumable if its conversation file is on disk.
+        // Claude doesn't write the JSONL until the first turn, so a tab the
+        // user opened and never typed in leaves a row with no conversation —
+        // `claude --resume <id>` would just error with "couldn't find
+        // conversation" and re-spawn that broken state forever. End those
+        // rows here so the workspace gets a fresh tab instead.
+        let resumable = persisted.filter { row in
+            guard row.agent == .claude else { return false }
+            if Self.claudeConversationExists(cwd: workspace.worktreePath, sessionId: row.id) {
+                return true
+            }
+            try? Sessions.end(id: row.id)
+            return false
+        }
 
         guard !resumable.isEmpty else {
             startNewSession(for: workspace, agent: workspace.agent)
@@ -325,13 +338,15 @@ final class AppState: ObservableObject {
         }
 
         let hydrated = resumable.map { row in
-            PTYSession(
+            let session = PTYSession(
                 id: row.id,
                 workspaceId: workspace.id,
                 agent: row.agent,
                 cwd: workspace.worktreePath,
                 isResume: true
             )
+            attachExitHandler(to: session)
+            return session
         }
         for session in hydrated {
             Task { await session.startIfNeeded() }
@@ -340,12 +355,25 @@ final class AppState: ObservableObject {
         activeSessionByWorkspace[workspace.id] = hydrated.last?.id
     }
 
+    /// Claude Code stores each conversation as
+    /// `~/.claude/projects/<cwd-with-slashes-as-dashes>/<sessionId>.jsonl`.
+    /// File presence is the most reliable signal that `--resume` will
+    /// succeed; absence means the session was registered but never had a
+    /// turn (so nothing was persisted).
+    private static func claudeConversationExists(cwd: String, sessionId: String) -> Bool {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let encoded = cwd.replacingOccurrences(of: "/", with: "-")
+        let path = "\(home)/.claude/projects/\(encoded)/\(sessionId).jsonl"
+        return FileManager.default.fileExists(atPath: path)
+    }
+
     func startNewSession(for workspace: Workspace, agent: Workspace.AgentKind) {
         let session = PTYSession(
             workspaceId: workspace.id,
             agent: agent,
             cwd: workspace.worktreePath
         )
+        attachExitHandler(to: session)
         sessionsByWorkspace[workspace.id, default: []].append(session)
         activeSessionByWorkspace[workspace.id] = session.id
 
@@ -359,6 +387,17 @@ final class AppState: ObservableObject {
         try? Sessions.insert(dbSession)
 
         Task { await session.startIfNeeded() }
+    }
+
+    /// Mark the persisted session row ended when the PTY exits, regardless
+    /// of cause. Without this a `--resume` that fails (Claude can't find
+    /// the conversation, broken binary, etc.) leaves the row open and the
+    /// next launch reattempts the same broken resume forever.
+    private func attachExitHandler(to session: PTYSession) {
+        let id = session.id
+        session.onExit = {
+            Task { @MainActor in try? Sessions.end(id: id) }
+        }
     }
 
     func selectSession(_ sessionId: String, in workspaceId: String) {
@@ -396,6 +435,7 @@ final class AppState: ObservableObject {
             cwd: workspace.worktreePath,
             initialPrompt: prompt
         )
+        attachExitHandler(to: session)
         sessionsByWorkspace[workspace.id, default: []].append(session)
         activeSessionByWorkspace[workspace.id] = session.id
 

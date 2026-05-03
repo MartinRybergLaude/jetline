@@ -21,6 +21,12 @@ final class PTYSession: ObservableObject, Identifiable {
     @Published private(set) var lastError: String?
     @Published private(set) var fellBackToShell: Bool = false
 
+    /// Called once when the underlying agent process exits, regardless of
+    /// status. Owner (AppState) sets this after construction to reconcile
+    /// DB state — e.g. mark the session row ended so a stale resume row
+    /// doesn't keep getting retried on subsequent launches.
+    var onExit: (() -> Void)?
+
     init(
         id: String = UUID().uuidString,
         workspaceId: String,
@@ -54,6 +60,9 @@ final class PTYSession: ObservableObject, Identifiable {
                 initialPrompt: initialPrompt
             )
             fellBackToShell = spec.fellBackToShell
+            emulator.setExitHandler { [weak self] _ in
+                self?.onExit?()
+            }
             emulator.spawn(executable: spec.executable, args: spec.args, cwd: cwd, env: spec.env)
             emulator.updateFont(family: settings.terminalFontFamily, size: settings.terminalFontSize)
         } catch {
