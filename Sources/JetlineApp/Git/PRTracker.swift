@@ -37,6 +37,11 @@ final class PRTracker {
     private var repoTasks: [String: Task<Void, Never>] = [:]
     private var sleepTasks: [String: Task<Void, Never>] = [:]
     private var failureCount: [String: Int] = [:]
+    /// Workspace IDs we've already kicked off auto-archive for. The archive
+    /// itself removes the workspace from `workspacesByRepo`, so subsequent
+    /// polls won't see it — but the archive is fire-and-forget, so this
+    /// guard prevents a re-trigger before it lands.
+    private var autoArchived: Set<String> = []
 
     init(state: AppState) {
         self.state = state
@@ -130,6 +135,7 @@ final class PRTracker {
                     snap = .absent
                 }
                 state.applyPR(snap, for: ws.id)
+                autoArchiveIfMerged(workspace: ws, snapshot: snap, state: state)
             }
         } catch GitHubRunner.Error.ghMissing {
             updateStatus(.ghMissing)
@@ -203,6 +209,16 @@ final class PRTracker {
             return false
         }
         return anyActive ? 15 : 60
+    }
+
+    /// Worktree is preserved (`removeWorktree: false`) so the user keeps
+    /// any uncommitted post-merge work; the row simply leaves the sidebar.
+    private func autoArchiveIfMerged(workspace: Workspace, snapshot: PRSnapshot, state: AppState) {
+        guard case let .loaded(pr, _) = snapshot,
+              pr.state.uppercased() == "MERGED",
+              !autoArchived.contains(workspace.id) else { return }
+        autoArchived.insert(workspace.id)
+        Task { await state.archiveWorkspace(workspace, removeWorktree: false) }
     }
 
     private func updateStatus(_ new: Status) {
