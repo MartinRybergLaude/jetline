@@ -14,7 +14,14 @@ final class AppState: ObservableObject {
     @Published var diffByWorkspace: [String: DiffSnapshot] = [:]
     @Published var prDiffByWorkspace: [String: DiffSnapshot] = [:]
     @Published var localDiffByWorkspace: [String: DiffSnapshot] = [:]
+    /// Tracked separately from the diff snapshots because porcelain status
+    /// also flags untracked files, which `git diff` ignores.
+    @Published var hasUncommittedByWorkspace: [String: Bool] = [:]
     @Published var prByWorkspace: [String: PRSnapshot] = [:]
+    /// Per-repo GitHub metadata (owner/name + allowed merge methods),
+    /// resolved on the first PR poll and reused for the app's lifetime.
+    /// Drives the merge confirmation dialog's button set.
+    @Published var repoMetadataByRepo: [String: RepoIdentifier] = [:]
     @Published var prTrackerStatus: PRTracker.Status = .ok
     @Published var inspectorVisible: Bool = true
     /// Run-script controllers keyed by workspace id. `nil` means "never run".
@@ -77,6 +84,7 @@ final class AppState: ObservableObject {
         try? Repositories.remove(id: id)
         repositories.removeAll { $0.id == id }
         workspacesByRepo.removeValue(forKey: id)
+        repoMetadataByRepo.removeValue(forKey: id)
         if selectedWorkspaceId.flatMap({ workspaceById($0) }) == nil {
             selectedWorkspaceId = nil
         }
@@ -251,6 +259,92 @@ final class AppState: ObservableObject {
         activeSessionByWorkspace[workspaceId] = sessionId
     }
 
+    // MARK: - Git actions
+
+    /// Spawns a fresh tab with the user-selected agent and the rendered
+    /// prompt as its first message. Merge has its own path (`performMerge`)
+    /// because the caller picks a strategy from the confirmation dialog.
+    func startGitActionSession(for workspace: Workspace, action: GitAction) {
+        let agent = resolveAgent(for: action)
+        let repo = repositories.first(where: { $0.id == workspace.repositoryId })
+        guard let template = GitActionPrompts.template(
+            for: action,
+            repository: repo,
+            settings: settings
+        ) else { return }
+
+        let pr: PullRequest?
+        let checks: [CheckRun]
+        if case let .loaded(pull, runs) = prByWorkspace[workspace.id] {
+            pr = pull
+            checks = runs
+        } else {
+            pr = nil
+            checks = []
+        }
+        let prompt = GitActionPrompts.render(template, workspace: workspace, pr: pr, checks: checks)
+
+        let session = PTYSession(
+            workspaceId: workspace.id,
+            agent: agent,
+            cwd: workspace.worktreePath,
+            initialPrompt: prompt
+        )
+        sessionsByWorkspace[workspace.id, default: []].append(session)
+        activeSessionByWorkspace[workspace.id] = session.id
+
+        let dbSession = Session(
+            id: session.id,
+            workspaceId: workspace.id,
+            title: "\(action.displayName) (\(agent.displayName))",
+            agent: agent,
+            startedAt: Date()
+        )
+        try? Sessions.insert(dbSession)
+        Task { await session.startIfNeeded() }
+    }
+
+    /// Resolve the agent for a given action through the fallback chain:
+    /// review → reviewAgent → defaultAgent; everything else → gitAgent →
+    /// defaultAgent. `.shell` is filtered out because it can't act on a
+    /// prompt autonomously.
+    private func resolveAgent(for action: GitAction) -> Workspace.AgentKind {
+        let preferred: Workspace.AgentKind? =
+            action.usesReviewAgent ? settings.reviewAgent : settings.gitAgent
+        let chosen = preferred ?? settings.defaultAgent
+        return chosen == .shell ? .claude : chosen
+    }
+
+    /// Run `gh pr merge` with the user-picked strategy (no agent involved).
+    /// On success persists the method as the repo's `lastMergeMethod` so
+    /// next time it becomes the dialog's default. Kicks the PR tracker so
+    /// the sidebar reflects the merged state without waiting for the next
+    /// scheduled poll.
+    func performMerge(for workspace: Workspace, method: MergeMethod) async {
+        guard case let .loaded(pr, _) = prByWorkspace[workspace.id] else { return }
+        do {
+            try await GitHubRunner.mergePR(pr.number, method: method, cwd: workspace.worktreePath)
+        } catch {
+            await presentError(error.localizedDescription)
+            return
+        }
+        if var repo = repositories.first(where: { $0.id == workspace.repositoryId }),
+           repo.lastMergeMethod != method.rawValue {
+            repo.lastMergeMethod = method.rawValue
+            updateRepository(repo)
+        }
+        prTracker.kick(workspaceId: workspace.id)
+    }
+
+    /// Last merge method the user chose for this workspace's repo. `nil`
+    /// when the user has never merged here.
+    func lastMergeMethod(for workspace: Workspace) -> MergeMethod? {
+        repositories
+            .first(where: { $0.id == workspace.repositoryId })?
+            .lastMergeMethod
+            .flatMap(MergeMethod.init(rawValue:))
+    }
+
     func activeSession(for workspaceId: String) -> PTYSession? {
         guard let id = activeSessionByWorkspace[workspaceId] else { return nil }
         return sessionsByWorkspace[workspaceId]?.first { $0.id == id }
@@ -369,6 +463,9 @@ final class AppState: ObservableObject {
                 mode: .local
             )
         }()
+        async let uncommitted = DiffComputer.hasUncommittedChanges(
+            worktreePath: workspace.worktreePath
+        )
 
         if let snap = await combined, diffByWorkspace[workspace.id] != snap {
             diffByWorkspace[workspace.id] = snap
@@ -378,6 +475,10 @@ final class AppState: ObservableObject {
         }
         if let snap = await localSnap, localDiffByWorkspace[workspace.id] != snap {
             localDiffByWorkspace[workspace.id] = snap
+        }
+        let dirty = await uncommitted
+        if hasUncommittedByWorkspace[workspace.id] != dirty {
+            hasUncommittedByWorkspace[workspace.id] = dirty
         }
     }
 
@@ -390,6 +491,15 @@ final class AppState: ObservableObject {
             prByWorkspace[workspaceId] = snapshot
         }
         try? PRSnapshots.save(snapshot, for: workspaceId)
+    }
+
+    /// Single write path for the repo metadata cache. PRTracker calls this
+    /// when it first resolves a repo's owner/name + allowed merge methods.
+    /// No-op writes are suppressed so Combine doesn't notify on every poll.
+    func applyRepoMetadata(_ metadata: RepoIdentifier, for repoId: String) {
+        if repoMetadataByRepo[repoId] != metadata {
+            repoMetadataByRepo[repoId] = metadata
+        }
     }
 
     private func startWatcher(for workspace: Workspace) {
@@ -417,6 +527,7 @@ final class AppState: ObservableObject {
         diffByWorkspace.removeValue(forKey: id)
         prDiffByWorkspace.removeValue(forKey: id)
         localDiffByWorkspace.removeValue(forKey: id)
+        hasUncommittedByWorkspace.removeValue(forKey: id)
         prByWorkspace.removeValue(forKey: id)
     }
 

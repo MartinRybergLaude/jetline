@@ -87,5 +87,32 @@ enum Schema {
                 t.column("fetchedAt", .datetime).notNull()
             }
         }
+
+        migrator.registerMigration("v6_git_actions") { db in
+            try db.alter(table: "app_settings") { t in
+                t.add(column: "gitAgent", .text)
+                t.add(column: "reviewAgent", .text)
+                t.add(column: "commitPrompt", .text)
+                t.add(column: "createPRPrompt", .text)
+                t.add(column: "pullUpdatesPrompt", .text)
+                t.add(column: "fixCIPrompt", .text)
+                t.add(column: "fixCommentsPrompt", .text)
+                t.add(column: "reviewPrompt", .text)
+            }
+            try db.alter(table: "repositories") { t in
+                t.add(column: "commitPrompt", .text)
+                t.add(column: "createPRPrompt", .text)
+                t.add(column: "pullUpdatesPrompt", .text)
+                t.add(column: "fixCIPrompt", .text)
+                t.add(column: "fixCommentsPrompt", .text)
+                t.add(column: "reviewPrompt", .text)
+            }
+        }
+
+        migrator.registerMigration("v7_last_merge_method") { db in
+            try db.alter(table: "repositories") { t in
+                t.add(column: "lastMergeMethod", .text)
+            }
+        }
     }
 }

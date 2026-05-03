@@ -24,6 +24,21 @@ struct AppSettings: Codable, FetchableRecord, PersistableRecord {
     /// External app used by the workspace toolbar's "Open in" button.
     var defaultOpenInApp: OpenInApp = .finder
 
+    /// Agent that executes commit / PR / CI / comments actions when the
+    /// inspector's git action bar is used. `nil` → use `defaultAgent`.
+    var gitAgent: Workspace.AgentKind?
+    /// Agent that runs the "Review" action. `nil` → use `defaultAgent`.
+    var reviewAgent: Workspace.AgentKind?
+
+    /// User overrides for the prompt sent to the agent for each action.
+    /// Empty/nil falls back to `GitActionPrompts.defaults`.
+    var commitPrompt: String?
+    var createPRPrompt: String?
+    var pullUpdatesPrompt: String?
+    var fixCIPrompt: String?
+    var fixCommentsPrompt: String?
+    var reviewPrompt: String?
+
     enum Theme: String, Codable, CaseIterable, DatabaseValueConvertible {
         case system
         case light
@@ -46,5 +61,11 @@ struct AppSettings: Codable, FetchableRecord, PersistableRecord {
         Set(hiddenAgents
             .split(separator: ",")
             .compactMap { Workspace.AgentKind(rawValue: String($0)) })
+    }
+
+    /// Lookup helper for the action-prompt fallback chain. `mergePR`
+    /// returns `nil` because it doesn't spawn an agent.
+    func prompt(for action: GitAction) -> String? {
+        action.settingsKeyPath.flatMap { self[keyPath: $0] }
     }
 }

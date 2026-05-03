@@ -9,10 +9,12 @@ struct SettingsView: View {
                 .tabItem { Label("General", systemImage: "gearshape") }
             AgentsSettingsView()
                 .tabItem { Label("Agents", systemImage: "sparkles") }
+            GitActionsSettingsView()
+                .tabItem { Label("Git Actions", systemImage: "arrow.triangle.branch") }
             TerminalSettingsView()
                 .tabItem { Label("Terminal", systemImage: "terminal") }
         }
-        .frame(width: 540, height: 360)
+        .frame(width: 580, height: 520)
     }
 }
 

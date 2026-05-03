@@ -21,11 +21,32 @@ struct Repository: Codable, Identifiable, Hashable, FetchableRecord, Persistable
     var runExclusive: Bool = false
     var archiveScript: String?
 
+    /// Last merge strategy the user picked from the merge confirmation
+    /// dialog for this repo, as `MergeMethod.rawValue`. `nil` → no
+    /// preference yet, dialog uses the first allowed method as default.
+    var lastMergeMethod: String?
+
+    /// Per-repo overrides for the git-action prompts. `nil`/blank falls
+    /// through to `AppSettings.<actionPrompt>` and finally
+    /// `GitActionPrompts.defaults`.
+    var commitPrompt: String?
+    var createPRPrompt: String?
+    var pullUpdatesPrompt: String?
+    var fixCIPrompt: String?
+    var fixCommentsPrompt: String?
+    var reviewPrompt: String?
+
     /// Trimmed, non-empty variants of the script fields. Returns `nil` when
     /// blank so callers can use `if let` instead of repeated trim+isEmpty.
     var trimmedSetupScript: String? { setupScript?.nonBlank }
     var trimmedRunScript: String? { runScript?.nonBlank }
     var trimmedArchiveScript: String? { archiveScript?.nonBlank }
+
+    /// Lookup helper for the action-prompt fallback chain. Mirrors
+    /// `AppSettings.prompt(for:)` so callers can chain the two.
+    func prompt(for action: GitAction) -> String? {
+        action.repositoryKeyPath.flatMap { self[keyPath: $0] }
+    }
 
     static let databaseTableName = "repositories"
 
@@ -42,6 +63,13 @@ struct Repository: Codable, Identifiable, Hashable, FetchableRecord, Persistable
         static let runScript = Column(CodingKeys.runScript)
         static let runExclusive = Column(CodingKeys.runExclusive)
         static let archiveScript = Column(CodingKeys.archiveScript)
+        static let lastMergeMethod = Column(CodingKeys.lastMergeMethod)
+        static let commitPrompt = Column(CodingKeys.commitPrompt)
+        static let createPRPrompt = Column(CodingKeys.createPRPrompt)
+        static let pullUpdatesPrompt = Column(CodingKeys.pullUpdatesPrompt)
+        static let fixCIPrompt = Column(CodingKeys.fixCIPrompt)
+        static let fixCommentsPrompt = Column(CodingKeys.fixCommentsPrompt)
+        static let reviewPrompt = Column(CodingKeys.reviewPrompt)
     }
 
     static let workspaces = hasMany(Workspace.self)

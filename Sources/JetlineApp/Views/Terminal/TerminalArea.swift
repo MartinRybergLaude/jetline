@@ -40,6 +40,7 @@ struct TerminalArea: View {
 
     @ViewBuilder
     private var runToolbarItems: some View {
+        GitActionMenu(workspace: workspace)
         OpenInAppButton(workspace: workspace)
         if state.hasRunScript(workspace) {
             if let runner = state.runController(for: workspace.id) {

@@ -11,6 +11,10 @@ final class PTYSession: ObservableObject, Identifiable {
     let agent: Workspace.AgentKind
     let cwd: String
     let isResume: Bool
+    /// Initial prompt to send to the agent on first start, as a positional
+    /// argument. Used by the inspector's git action bar; nil for plain new
+    /// tabs. Ignored on resume.
+    let initialPrompt: String?
     let emulator: TerminalEmulatorView
 
     @Published private(set) var hasStarted: Bool = false
@@ -22,13 +26,15 @@ final class PTYSession: ObservableObject, Identifiable {
         workspaceId: String,
         agent: Workspace.AgentKind,
         cwd: String,
-        isResume: Bool = false
+        isResume: Bool = false,
+        initialPrompt: String? = nil
     ) {
         self.id = id
         self.workspaceId = workspaceId
         self.agent = agent
         self.cwd = cwd
         self.isResume = isResume
+        self.initialPrompt = initialPrompt
         self.emulator = TerminalEmulatorFactory.make()
     }
 
@@ -44,7 +50,8 @@ final class PTYSession: ObservableObject, Identifiable {
                 for: agent,
                 settings: settings,
                 sessionId: id,
-                isResume: isResume
+                isResume: isResume,
+                initialPrompt: initialPrompt
             )
             fellBackToShell = spec.fellBackToShell
             emulator.spawn(executable: spec.executable, args: spec.args, cwd: cwd, env: spec.env)

@@ -24,6 +24,7 @@ struct RepositorySettingsSheet: View {
                     repoIdentitySection
                     branchingSection
                     scriptsSection
+                    gitActionsSection
                     dangerZoneSection
                 }
                 .formStyle(.grouped)
@@ -157,6 +158,37 @@ struct RepositorySettingsSheet: View {
         } header: {
             Text("Scripts")
         }
+    }
+
+    /// Per-repo prompt overrides for the inspector's git action bar. Each
+    /// editor's placeholder shows the *resolved global* prompt (global
+    /// override → built-in default), so an empty field clearly inherits
+    /// from the next layer up.
+    private var gitActionsSection: some View {
+        Section {
+            ForEach(GitAction.promptable, id: \.self) { action in
+                if let keyPath = action.repositoryKeyPath {
+                    PromptOverrideEditor(
+                        action: action,
+                        binding: bindingPrompt(for: keyPath),
+                        placeholderOverride: state.settings.prompt(for: action)?.nonBlank
+                    )
+                }
+            }
+        } header: {
+            Text("Git action prompts")
+        } footer: {
+            Text("Empty fields inherit from the global prompt set in Settings → Git Actions.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func bindingPrompt(for keyPath: WritableKeyPath<Repository, String?>) -> Binding<String> {
+        Binding(
+            get: { draft[keyPath: keyPath] ?? "" },
+            set: { draft[keyPath: keyPath] = $0.nonBlank }
+        )
     }
 
     private var dangerZoneSection: some View {

@@ -16,6 +16,75 @@ struct PullRequest: Codable, Sendable, Hashable {
     var headRefName: String
     var baseRefName: String
     var author: Author
+    /// `MERGEABLE` / `CONFLICTING` / `UNKNOWN`.
+    var mergeable: String?
+    /// `BEHIND` / `BLOCKED` / `CLEAN` / `DIRTY` / `HAS_HOOKS` / `UNKNOWN` /
+    /// `UNSTABLE`. Drives the "Pull updates" / "Merge PR" branches of the
+    /// action-bar state machine.
+    var mergeStateStatus: String?
+    /// Number of unresolved inline review threads.
+    var unresolvedThreadCount: Int = 0
+    /// Number of top-level issue comments on the PR. Distinct from review
+    /// threads — a general PR comment doesn't create a thread.
+    var issueCommentCount: Int = 0
+
+    var hasOpenComments: Bool {
+        unresolvedThreadCount > 0 || issueCommentCount > 0
+    }
+
+    init(
+        number: Int,
+        title: String,
+        url: String,
+        state: String,
+        isDraft: Bool,
+        headRefName: String,
+        baseRefName: String,
+        author: Author,
+        mergeable: String? = nil,
+        mergeStateStatus: String? = nil,
+        unresolvedThreadCount: Int = 0,
+        issueCommentCount: Int = 0
+    ) {
+        self.number = number
+        self.title = title
+        self.url = url
+        self.state = state
+        self.isDraft = isDraft
+        self.headRefName = headRefName
+        self.baseRefName = baseRefName
+        self.author = author
+        self.mergeable = mergeable
+        self.mergeStateStatus = mergeStateStatus
+        self.unresolvedThreadCount = unresolvedThreadCount
+        self.issueCommentCount = issueCommentCount
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case number, title, url, state, isDraft, headRefName, baseRefName, author
+        case mergeable, mergeStateStatus, unresolvedThreadCount, issueCommentCount
+    }
+
+    /// Custom decode so PR snapshots persisted before the comment-tracking
+    /// fields existed still load cleanly. Synthesised `init(from:)` calls
+    /// `decode` for non-Optional fields and ignores struct-level default
+    /// values, so old JSON without `unresolvedThreadCount` / `issueCommentCount`
+    /// would otherwise throw and get silently dropped by `PRSnapshots.decode`.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        number = try c.decode(Int.self, forKey: .number)
+        title = try c.decode(String.self, forKey: .title)
+        url = try c.decode(String.self, forKey: .url)
+        state = try c.decode(String.self, forKey: .state)
+        isDraft = try c.decode(Bool.self, forKey: .isDraft)
+        headRefName = try c.decode(String.self, forKey: .headRefName)
+        baseRefName = try c.decode(String.self, forKey: .baseRefName)
+        author = try c.decode(Author.self, forKey: .author)
+        mergeable = try c.decodeIfPresent(String.self, forKey: .mergeable)
+        mergeStateStatus = try c.decodeIfPresent(String.self, forKey: .mergeStateStatus)
+        unresolvedThreadCount = try c.decodeIfPresent(Int.self, forKey: .unresolvedThreadCount) ?? 0
+        issueCommentCount = try c.decodeIfPresent(Int.self, forKey: .issueCommentCount) ?? 0
+    }
 }
 
 /// Discriminated string enums whose serialized form matches the GitHub API's
@@ -157,10 +226,43 @@ enum PRSnapshot: Equatable, Sendable {
     case loaded(PullRequest, [CheckRun])
 }
 
-/// Owner/name pair identifying a GitHub repository.
+/// Owner/name pair identifying a GitHub repository, plus the merge methods
+/// the repo's settings allow. Cached per-repo by `PRTracker` and surfaced
+/// to the UI via `AppState.repoMetadataByRepo` so the merge confirmation
+/// dialog can show only the buttons that will actually work.
 struct RepoIdentifier: Sendable, Hashable {
     let owner: String
     let name: String
+    let allowedMergeMethods: Set<MergeMethod>
+}
+
+/// One of the three merge strategies GitHub offers. The repo admin picks
+/// which subset is enabled in Settings → General → Pull Requests.
+enum MergeMethod: String, CaseIterable, Hashable, Sendable {
+    case merge
+    case squash
+    case rebase
+
+    /// Matches GitHub's web UI labels.
+    var displayName: String {
+        switch self {
+        case .merge:  return "Create a merge commit"
+        case .squash: return "Squash and merge"
+        case .rebase: return "Rebase and merge"
+        }
+    }
+
+    /// `gh pr merge` flag for this method.
+    var ghFlag: String {
+        switch self {
+        case .merge:  return "--merge"
+        case .squash: return "--squash"
+        case .rebase: return "--rebase"
+        }
+    }
+
+    /// Display order matches GitHub's merge dropdown.
+    static let displayOrder: [MergeMethod] = [.merge, .squash, .rebase]
 }
 
 enum GitHubRunner {
@@ -187,16 +289,27 @@ enum GitHubRunner {
     static func repoIdentifier(cwd: String) async throws -> RepoIdentifier? {
         do {
             let stdout = try await runGH(
-                ["repo", "view", "--json", "owner,name"],
+                ["repo", "view", "--json", "owner,name,mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed"],
                 cwd: cwd
             )
             struct Response: Decodable {
                 struct Owner: Decodable { let login: String }
                 let owner: Owner
                 let name: String
+                let mergeCommitAllowed: Bool?
+                let squashMergeAllowed: Bool?
+                let rebaseMergeAllowed: Bool?
             }
             let parsed = try JSONDecoder().decode(Response.self, from: Data(stdout.utf8))
-            return RepoIdentifier(owner: parsed.owner.login, name: parsed.name)
+            var methods: Set<MergeMethod> = []
+            if parsed.mergeCommitAllowed == true  { methods.insert(.merge) }
+            if parsed.squashMergeAllowed == true  { methods.insert(.squash) }
+            if parsed.rebaseMergeAllowed == true  { methods.insert(.rebase) }
+            return RepoIdentifier(
+                owner: parsed.owner.login,
+                name: parsed.name,
+                allowedMergeMethods: methods
+            )
         } catch Error.other(let msg) where msg.lowercased().contains("no github") || msg.lowercased().contains("could not determine") {
             return nil
         }
@@ -235,6 +348,9 @@ enum GitHubRunner {
         }
         fragment PR on PullRequest {
           number title url state isDraft headRefName baseRefName
+          mergeable mergeStateStatus
+          reviewThreads(first: 50) { nodes { isResolved } }
+          comments { totalCount }
           author { login }
           commits(last: 1) {
             nodes {
@@ -282,6 +398,13 @@ enum GitHubRunner {
             out[a.branch] = (node.toPullRequest(), node.checkRuns)
         }
         return out
+    }
+
+    /// Merge a PR with the chosen strategy. Goes through `runGH` so the
+    /// caller gets the same `ghMissing` / `authRequired` error mapping as
+    /// the rest of the gh surface.
+    static func mergePR(_ number: Int, method: MergeMethod, cwd: String) async throws {
+        _ = try await runGH(["pr", "merge", String(number), method.ghFlag], cwd: cwd)
     }
 
     private static func runGH(_ args: [String], cwd: String) async throws -> String {
@@ -356,6 +479,10 @@ private struct PRNode: Decodable {
     let isDraft: Bool
     let headRefName: String
     let baseRefName: String
+    let mergeable: String?
+    let mergeStateStatus: String?
+    let reviewThreads: ReviewThreadsConnection?
+    let comments: CommentsConnection?
     let author: AuthorNode?
     let commits: CommitsConnection?
 
@@ -365,6 +492,9 @@ private struct PRNode: Decodable {
     struct CommitDetail: Decodable { let statusCheckRollup: Rollup? }
     struct Rollup: Decodable { let contexts: ContextsConnection }
     struct ContextsConnection: Decodable { let nodes: [ContextNode] }
+    struct ReviewThreadsConnection: Decodable { let nodes: [ReviewThread] }
+    struct ReviewThread: Decodable { let isResolved: Bool }
+    struct CommentsConnection: Decodable { let totalCount: Int }
 
     /// Either a CheckRun (Actions / GitHub App) or a StatusContext (legacy
     /// commit status). `__typename` discriminates; the other branch's fields
@@ -390,7 +520,8 @@ private struct PRNode: Decodable {
     }
 
     func toPullRequest() -> PullRequest {
-        PullRequest(
+        let unresolved = reviewThreads?.nodes.filter { !$0.isResolved }.count ?? 0
+        return PullRequest(
             number: number,
             title: title,
             url: url,
@@ -398,7 +529,11 @@ private struct PRNode: Decodable {
             isDraft: isDraft,
             headRefName: headRefName,
             baseRefName: baseRefName,
-            author: PullRequest.Author(login: author?.login ?? "unknown")
+            author: PullRequest.Author(login: author?.login ?? "unknown"),
+            mergeable: mergeable,
+            mergeStateStatus: mergeStateStatus,
+            unresolvedThreadCount: unresolved,
+            issueCommentCount: comments?.totalCount ?? 0
         )
     }
 

@@ -21,11 +21,17 @@ enum AgentLauncher {
     /// we use their built-in "most recent in cwd" flags (`resume --last` /
     /// `-c`) — multiple tabs of those agents in the same workspace can't all
     /// be resumed, and the caller must collapse duplicates before getting here.
+    ///
+    /// `initialPrompt`, when set, is appended as a positional argument so the
+    /// agent boots straight into a task. Always passed to fresh sessions only;
+    /// a resumed conversation already has its own history. Ignored for
+    /// `.shell` (the shell can't act on a prompt autonomously).
     static func spec(
         for agent: Workspace.AgentKind,
         settings: AppSettings,
         sessionId: String,
-        isResume: Bool
+        isResume: Bool,
+        initialPrompt: String? = nil
     ) async throws -> Spec {
         // Plain terminal: skip resolution, just open the user's login shell.
         if agent == .shell {
@@ -46,7 +52,10 @@ enum AgentLauncher {
             }
         }()
 
-        let args = resumeArgs(for: agent, sessionId: sessionId, isResume: isResume)
+        var args = resumeArgs(for: agent, sessionId: sessionId, isResume: isResume)
+        if !isResume, let prompt = initialPrompt?.nonBlank {
+            args.append(prompt)
+        }
 
         if let configured, !configured.isEmpty,
            FileManager.default.isExecutableFile(atPath: configured) {

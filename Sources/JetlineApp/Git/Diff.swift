@@ -75,6 +75,16 @@ enum DiffMode: Hashable {
 }
 
 enum DiffComputer {
+    /// Whether the working tree or index has uncommitted changes — what the
+    /// Commit button keys off. Cheap (`git status --porcelain`). Returns
+    /// `false` on any error so a transient git failure doesn't keep the
+    /// Commit button stuck enabled.
+    static func hasUncommittedChanges(worktreePath: String) async -> Bool {
+        let result = try? await GitRunner.run(["status", "--porcelain"], cwd: worktreePath)
+        guard let result, result.success else { return false }
+        return result.stdout.nonBlank != nil
+    }
+
     /// Diff (tracked files only) against the revspec implied by `mode`.
     /// Throws if the base ref is missing or any of the three `git diff` calls fail —
     /// callers decide how to surface that.

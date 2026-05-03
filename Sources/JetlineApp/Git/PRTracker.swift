@@ -155,6 +155,7 @@ final class PRTracker {
         do {
             if let id = try await GitHubRunner.repoIdentifier(cwd: repo.path) {
                 repoIdentifiers[repo.id] = .some(id)
+                state?.applyRepoMetadata(id, for: repo.id)
                 return .resolved(id)
             } else {
                 repoIdentifiers[repo.id] = .some(nil)
