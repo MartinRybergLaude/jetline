@@ -32,6 +32,7 @@ struct Repository: Codable, Identifiable, Hashable, FetchableRecord, Persistable
     var commitPrompt: String?
     var createPRPrompt: String?
     var pullUpdatesPrompt: String?
+    var rebaseOnMainPrompt: String?
     var fixCIPrompt: String?
     var fixCommentsPrompt: String?
     var reviewPrompt: String?
@@ -41,6 +42,14 @@ struct Repository: Codable, Identifiable, Hashable, FetchableRecord, Persistable
     var trimmedSetupScript: String? { setupScript?.nonBlank }
     var trimmedRunScript: String? { runScript?.nonBlank }
     var trimmedArchiveScript: String? { archiveScript?.nonBlank }
+
+    /// Strip the `<remoteOrigin>/` prefix from a remote-tracking ref so the
+    /// caller has the local-branch form. `git for-each-ref` emits the prefixed
+    /// form; the worktree + workspace use the local name.
+    func localName(forRemoteRef ref: String) -> String {
+        let prefix = "\(remoteOrigin)/"
+        return ref.hasPrefix(prefix) ? String(ref.dropFirst(prefix.count)) : ref
+    }
 
     /// Lookup helper for the action-prompt fallback chain. Mirrors
     /// `AppSettings.prompt(for:)` so callers can chain the two.
@@ -67,6 +76,7 @@ struct Repository: Codable, Identifiable, Hashable, FetchableRecord, Persistable
         static let commitPrompt = Column(CodingKeys.commitPrompt)
         static let createPRPrompt = Column(CodingKeys.createPRPrompt)
         static let pullUpdatesPrompt = Column(CodingKeys.pullUpdatesPrompt)
+        static let rebaseOnMainPrompt = Column(CodingKeys.rebaseOnMainPrompt)
         static let fixCIPrompt = Column(CodingKeys.fixCIPrompt)
         static let fixCommentsPrompt = Column(CodingKeys.fixCommentsPrompt)
         static let reviewPrompt = Column(CodingKeys.reviewPrompt)

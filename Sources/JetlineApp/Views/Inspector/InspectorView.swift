@@ -9,7 +9,16 @@ struct InspectorView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
+            CapsuleTabs(
+                selection: $tab,
+                tabs: [.changes, .pr, .run],
+                help: { Self.tooltip(for: $0) }
+            ) { tab, _ in
+                Self.icon(for: tab)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
+
             Divider()
             content
         }
@@ -38,97 +47,25 @@ struct InspectorView: View {
         }
     }
 
-    private var header: some View {
-        InspectorTabBar(selection: $tab)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 5)
-    }
-}
-
-/// Xcode-style inspector tabs: a recessed capsule "track" with icon-only
-/// segments. The selected segment is an inset blue capsule that slides between
-/// positions via `matchedGeometryEffect`.
-private struct InspectorTabBar: View {
-    @Binding var selection: InspectorView.Tab
-    @Namespace private var ns
-
-    private enum Icon {
-        case system(String)
-        case asset(String)
-    }
-
-    private struct Item {
-        let tab: InspectorView.Tab
-        let icon: Icon
-        let help: String
-    }
-
-    private let items: [Item] = [
-        Item(tab: .changes, icon: .system("plusminus"), help: "Changes"),
-        Item(tab: .pr, icon: .asset("PRStateNone"), help: "Pull request"),
-        Item(tab: .run, icon: .system("apple.terminal.fill"), help: "Run output")
-    ]
-
-    var body: some View {
-        HStack(spacing: 0) {
-            ForEach(Array(items.enumerated()), id: \.element.tab) { idx, item in
-                segment(item, showLeadingDivider: showDivider(before: idx))
-            }
+    private static func tooltip(for tab: Tab) -> String? {
+        switch tab {
+        case .changes: return "Changes"
+        case .pr: return "Pull request"
+        case .run: return "Run output"
         }
-        .background(
-            Capsule().fill(Color.primary.opacity(0.08))
-        )
-    }
-
-    /// Hairline shows between adjacent unselected segments — never on the
-    /// edges of the selected pill.
-    private func showDivider(before idx: Int) -> Bool {
-        guard idx > 0 else { return false }
-        return items[idx - 1].tab != selection && items[idx].tab != selection
-    }
-
-    private func segment(_ item: Item, showLeadingDivider: Bool) -> some View {
-        let isSelected = item.tab == selection
-        return Button {
-            guard !isSelected else { return }
-            withAnimation(.snappy(duration: 0.18)) {
-                selection = item.tab
-            }
-        } label: {
-            icon(for: item)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(isSelected ? Color.white : Color.primary.opacity(0.85))
-                .frame(maxWidth: .infinity)
-                .frame(height: 22)
-                .contentShape(Capsule())
-                .overlay(alignment: .leading) {
-                    if showLeadingDivider {
-                        Rectangle()
-                            .fill(Color.primary.opacity(0.15))
-                            .frame(width: 1, height: 14)
-                    }
-                }
-        }
-        .buttonStyle(.plain)
-        .background {
-            if isSelected {
-                Capsule()
-                    .fill(Color.accentColor)
-                    .matchedGeometryEffect(id: "selection", in: ns)
-            }
-        }
-        .help(item.help)
     }
 
     @ViewBuilder
-    private func icon(for item: Item) -> some View {
-        switch item.icon {
-        case .system(let name):
-            Image(systemName: name)
-        case .asset(let name):
-            if let nsImage = Self.assetCache[name] {
+    private static func icon(for tab: Tab) -> some View {
+        switch tab {
+        case .changes:
+            Image(systemName: "plusminus")
+        case .pr:
+            if let nsImage = assetCache["PRStateNone"] {
                 Image(nsImage: nsImage).resizable().scaledToFit().frame(width: 13, height: 13)
             }
+        case .run:
+            Image(systemName: "apple.terminal.fill")
         }
     }
 

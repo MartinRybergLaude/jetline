@@ -19,7 +19,8 @@ struct GitActionMenu: View {
         let actionState = GitActionState.derive(
             diff: state.diffByWorkspace[workspace.id],
             pr: state.prByWorkspace[workspace.id],
-            hasUncommitted: state.hasUncommittedByWorkspace[workspace.id] ?? false
+            hasUncommitted: state.hasUncommittedByWorkspace[workspace.id] ?? false,
+            branchPosition: state.branchPositionByWorkspace[workspace.id]
         )
 
         menu(for: actionState)
@@ -129,13 +130,14 @@ struct GitActionMenu: View {
             return "Git actions — nothing actionable right now"
         }
         switch primary {
-        case .commit:       return "Commit uncommitted changes with the git agent"
-        case .createPR:     return "Push and open a pull request"
-        case .pullUpdates:  return "Merge \(workspace.baseBranch) into this branch"
-        case .fixCI:        return "Investigate and fix failing CI checks"
-        case .fixComments:  return "Fix open PR comments"
-        case .mergePR:      return "Merge the pull request"
-        case .review:       return "Run a code review with the review agent"
+        case .commit:        return "Commit uncommitted changes with the git agent"
+        case .createPR:      return "Push and open a pull request"
+        case .pullUpdates:   return "Pull commits from origin/\(workspace.branchName) (rebase)"
+        case .rebaseOnMain:  return "Rebase this branch onto \(workspace.baseBranch)"
+        case .fixCI:         return "Investigate and fix failing CI checks"
+        case .fixComments:   return "Fix open PR comments"
+        case .mergePR:       return "Merge the pull request"
+        case .review:        return "Run a code review with the review agent"
         }
     }
 }

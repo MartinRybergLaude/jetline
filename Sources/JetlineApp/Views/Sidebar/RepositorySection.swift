@@ -39,10 +39,10 @@ struct RepositorySection: View {
                                     .resizable()
                                     .interpolation(.high)
                                     .aspectRatio(contentMode: .fit)
-                                    .frame(width: 14, height: 14)
+                                    .frame(width: 15, height: 15)
                             } else {
                                 Image(systemName: "folder")
-                                    .font(.system(size: 16, weight: .regular))
+                                    .font(.system(size: 14, weight: .regular))
                                     .foregroundStyle(.primary)
                             }
                         }
@@ -74,6 +74,8 @@ struct RepositorySection: View {
             }
             .padding(.vertical, 4)
             .contextMenu {
+                Button("New workspace…", action: onNewWorkspace)
+                Divider()
                 Button("Repository settings…", action: onOpenSettings)
                 Button("Reveal in Finder") {
                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: repo.path)])

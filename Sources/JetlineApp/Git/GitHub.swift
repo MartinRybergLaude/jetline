@@ -219,6 +219,30 @@ struct CheckRun: Codable, Sendable, Hashable, Identifiable {
     }
 }
 
+/// Slim PR row used by the import picker. Distinct from `PullRequest`
+/// because the picker needs `headRepositoryOwner` (for fork detection) and
+/// `updatedAt` (for the row caption) that the per-branch tracker query
+/// doesn't fetch — and conversely doesn't need review-thread/comment counts.
+struct PRSummary: Sendable, Hashable, Identifiable {
+    let number: Int
+    let title: String
+    let authorLogin: String
+    let headRefName: String
+    let headRepositoryOwner: String
+    let baseRefName: String
+    let isDraft: Bool
+    let updatedAt: Date
+    /// Coarse rollup of all checks on the head commit. `nil` when no checks
+    /// have run.
+    let checkBucket: CheckBucket?
+
+    var id: Int { number }
+
+    func isFork(of repo: RepoIdentifier) -> Bool {
+        headRepositoryOwner.caseInsensitiveCompare(repo.owner) != .orderedSame
+    }
+}
+
 enum PRSnapshot: Equatable, Sendable {
     case loading
     case error(String)
@@ -407,6 +431,49 @@ enum GitHubRunner {
         _ = try await runGH(["pr", "merge", String(number), method.ghFlag], cwd: cwd)
     }
 
+    /// Open PRs on the repo, newest-update first. Slimmer than
+    /// `batchFetchPRs` — the picker only needs enough metadata to render a
+    /// row and decide forks. Capped at 100 (one GraphQL page).
+    static func listOpenPRs(
+        repo: RepoIdentifier,
+        cwd: String
+    ) async throws -> [PRSummary] {
+        let query = """
+        query($owner: String!, $name: String!) {
+          repository(owner: $owner, name: $name) {
+            pullRequests(first: 100, states: OPEN, orderBy: {field: UPDATED_AT, direction: DESC}) {
+              nodes {
+                number title isDraft updatedAt
+                headRefName baseRefName
+                headRepositoryOwner { login }
+                author { login }
+                commits(last: 1) {
+                  nodes {
+                    commit { statusCheckRollup { state } }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+        let stdout = try await runGH(
+            [
+                "api", "graphql",
+                "-F", "owner=\(repo.owner)",
+                "-F", "name=\(repo.name)",
+                "-f", "query=\(query)"
+            ],
+            cwd: cwd
+        )
+        let decoded = try JSONDecoder().decode(GraphQLResponse<OpenPRsRepo>.self, from: Data(stdout.utf8))
+        if let errors = decoded.errors, !errors.isEmpty {
+            throw Error.other(errors.map(\.message).joined(separator: "; "))
+        }
+        let nodes = decoded.data?.repository?.pullRequests.nodes ?? []
+        return nodes.compactMap { $0.toSummary() }
+    }
+
     private static func runGH(_ args: [String], cwd: String) async throws -> String {
         let result = await Subprocess.run(
             executable: "/usr/bin/env",
@@ -575,5 +642,61 @@ private struct PRNode: Decodable {
                 )
             }
         }
+    }
+}
+
+// MARK: - listOpenPRs response wiring
+
+private struct OpenPRsRepo: Decodable {
+    let repository: PullRequestsConnection?
+    struct PullRequestsConnection: Decodable {
+        let pullRequests: Nodes
+        struct Nodes: Decodable { let nodes: [PRSummaryNode] }
+    }
+}
+
+private struct PRSummaryNode: Decodable {
+    let number: Int
+    let title: String
+    let isDraft: Bool
+    let updatedAt: String
+    let headRefName: String
+    let baseRefName: String
+    let headRepositoryOwner: Owner?
+    let author: Author?
+    let commits: Commits?
+
+    struct Owner: Decodable { let login: String }
+    struct Author: Decodable { let login: String? }
+    struct Commits: Decodable {
+        let nodes: [CommitNode]
+        struct CommitNode: Decodable { let commit: CommitDetail }
+        struct CommitDetail: Decodable { let statusCheckRollup: Rollup? }
+        struct Rollup: Decodable { let state: String }
+    }
+
+    func toSummary() -> PRSummary? {
+        guard let date = ISO8601DateFormatter().date(from: updatedAt) else { return nil }
+        let rollupState = commits?.nodes.first?.commit.statusCheckRollup?.state.uppercased()
+        let bucket: CheckBucket? = {
+            switch rollupState {
+            case "SUCCESS": return .pass
+            case "FAILURE", "ERROR": return .fail
+            case "PENDING", "EXPECTED": return .pending
+            case nil: return nil
+            default: return .unknown
+            }
+        }()
+        return PRSummary(
+            number: number,
+            title: title,
+            authorLogin: author?.login ?? "unknown",
+            headRefName: headRefName,
+            headRepositoryOwner: headRepositoryOwner?.login ?? "",
+            baseRefName: baseRefName,
+            isDraft: isDraft,
+            updatedAt: date,
+            checkBucket: bucket
+        )
     }
 }

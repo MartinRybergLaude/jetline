@@ -27,6 +27,7 @@ struct GitActionState: Equatable {
     private static let priority: [GitAction] = [
         .commit,
         .pullUpdates,
+        .rebaseOnMain,
         .fixCI,
         .fixComments,
         .mergePR,
@@ -37,7 +38,8 @@ struct GitActionState: Equatable {
     static func derive(
         diff: DiffSnapshot?,
         pr: PRSnapshot?,
-        hasUncommitted: Bool
+        hasUncommitted: Bool,
+        branchPosition: BranchPosition?
     ) -> GitActionState {
         let hasDiffVsBase = !(diff?.isEmpty ?? true)
 
@@ -46,26 +48,30 @@ struct GitActionState: Equatable {
 
         avail[.commit] = hasUncommitted
         avail[.review] = hasDiffVsBase
+        // Local git facts, independent of PR existence: pull-updates fires
+        // when origin/<branch> has commits we don't; rebase-on-main fires
+        // when the base has commits the branch doesn't.
+        avail[.pullUpdates] = branchPosition?.remoteHasNewCommits ?? false
+        avail[.rebaseOnMain] = branchPosition?.isBehindBase ?? false
 
         switch pr {
         case .loaded(let pull, let checks):
             let isOpen = pull.state.uppercased() == "OPEN"
             guard isOpen else { break }
 
-            let mergeStatus = pull.mergeStateStatus?.uppercased()
-            let isBehind = mergeStatus == "BEHIND"
-            let isClean = mergeStatus == "CLEAN"
             let hasFailing = checks.contains { $0.bucket == .fail }
             let hasComments = pull.hasOpenComments
+            let conflicting = pull.mergeable?.uppercased() == "CONFLICTING"
 
-            avail[.pullUpdates] = isBehind
             avail[.fixCI] = hasFailing
             avail[.fixComments] = hasComments
-            // Trust GitHub's `mergeStateStatus`. CLEAN already encodes
-            // "required checks passed and approvals satisfied" — comments
-            // and non-required failing checks don't block merging there, so
-            // they shouldn't block it here either.
-            avail[.mergePR] = isClean && !pull.isDraft
+            // Permissive merge gate: open + not draft + no conflicts. We
+            // intentionally don't require `mergeStateStatus == CLEAN` —
+            // GitHub returns UNSTABLE for non-required failing checks and
+            // UNKNOWN while it's recomputing after a force-push, both of
+            // which are still mergeable from the UI. If branch protection
+            // would block the merge, `gh pr merge` surfaces the error.
+            avail[.mergePR] = !conflicting && !pull.isDraft
 
         case .absent:
             avail[.createPR] = hasDiffVsBase

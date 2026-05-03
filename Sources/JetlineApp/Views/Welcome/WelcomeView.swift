@@ -9,7 +9,7 @@ struct WelcomeView: View {
             JetMark()
                 .frame(width: 200, height: 200)
                 .padding(.bottom, -28)
-            ShimmerText(text: "Jetline", font: .system(size: 28, weight: .semibold).italic())
+            ShimmerText(text: "Jetline", font: .system(size: 28, weight: .bold).italic())
             Text(state.repositories.isEmpty
                  ? "Add a git repository to get started."
                  : "Pick a workspace, or create a new one.")

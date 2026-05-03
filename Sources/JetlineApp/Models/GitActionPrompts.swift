@@ -20,9 +20,16 @@ enum GitActionPrompts {
         Include a "Test plan" section if relevant.
         """,
         .pullUpdates: """
-        Branch {branch} is behind {baseBranch}. Merge {baseBranch} into {branch}, \
-        resolve any conflicts with judgement (don't blindly accept either side), \
-        and push when clean.
+        The remote branch origin/{branch} has commits the local worktree \
+        doesn't. Run `git pull --rebase` to bring the local branch up to \
+        date, resolving any conflicts with judgement (don't blindly accept \
+        either side).
+        """,
+        .rebaseOnMain: """
+        Rebase {branch} onto the latest {baseBranch}. Fetch first, then \
+        `git rebase origin/{baseBranch}`, resolving any conflicts with \
+        judgement (don't blindly accept either side). Force-push with \
+        `--force-with-lease` when the rebase is clean.
         """,
         .fixCI: """
         PR #{prNumber} ({prUrl}) has failing CI checks: {ciFailures}.

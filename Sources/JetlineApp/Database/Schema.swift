@@ -114,5 +114,14 @@ enum Schema {
                 t.add(column: "lastMergeMethod", .text)
             }
         }
+
+        migrator.registerMigration("v8_rebase_on_main_prompt") { db in
+            try db.alter(table: "app_settings") { t in
+                t.add(column: "rebaseOnMainPrompt", .text)
+            }
+            try db.alter(table: "repositories") { t in
+                t.add(column: "rebaseOnMainPrompt", .text)
+            }
+        }
     }
 }

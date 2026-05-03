@@ -8,6 +8,7 @@ enum GitAction: String, CaseIterable, Hashable {
     case commit
     case createPR
     case pullUpdates
+    case rebaseOnMain
     case fixCI
     case fixComments
     case mergePR
@@ -15,25 +16,27 @@ enum GitAction: String, CaseIterable, Hashable {
 
     var displayName: String {
         switch self {
-        case .commit:       return "Commit"
-        case .createPR:     return "Create PR"
-        case .pullUpdates:  return "Pull updates"
-        case .fixCI:        return "Fix CI"
-        case .fixComments:  return "Fix comments"
-        case .mergePR:      return "Merge PR"
-        case .review:       return "Review"
+        case .commit:        return "Commit"
+        case .createPR:      return "Create PR"
+        case .pullUpdates:   return "Pull updates"
+        case .rebaseOnMain:  return "Rebase on main"
+        case .fixCI:         return "Fix CI"
+        case .fixComments:   return "Fix comments"
+        case .mergePR:       return "Merge PR"
+        case .review:        return "Review"
         }
     }
 
     var systemImage: String {
         switch self {
-        case .commit:       return "square.and.pencil"
-        case .createPR:     return "arrow.triangle.pull"
-        case .pullUpdates:  return "arrow.down.to.line"
-        case .fixCI:        return "exclamationmark.arrow.triangle.2.circlepath"
-        case .fixComments:  return "text.bubble"
-        case .mergePR:      return "arrow.triangle.merge"
-        case .review:       return "text.magnifyingglass"
+        case .commit:        return "square.and.pencil"
+        case .createPR:      return "arrow.triangle.pull"
+        case .pullUpdates:   return "arrow.down.to.line"
+        case .rebaseOnMain:  return "arrow.triangle.2.circlepath"
+        case .fixCI:         return "exclamationmark.arrow.triangle.2.circlepath"
+        case .fixComments:   return "text.bubble"
+        case .mergePR:       return "arrow.triangle.merge"
+        case .review:        return "text.magnifyingglass"
         }
     }
 
@@ -49,7 +52,7 @@ enum GitAction: String, CaseIterable, Hashable {
     /// because it doesn't spawn an agent. Single source of truth for the
     /// settings-tab and per-repo-overrides-sheet iteration.
     static let promptable: [GitAction] = [
-        .commit, .createPR, .pullUpdates, .fixCI, .fixComments, .review
+        .commit, .createPR, .pullUpdates, .rebaseOnMain, .fixCI, .fixComments, .review
     ]
 
     /// KeyPath into `AppSettings` for this action's prompt override. `nil`
@@ -58,26 +61,28 @@ enum GitAction: String, CaseIterable, Hashable {
     /// helpers in the settings views).
     var settingsKeyPath: WritableKeyPath<AppSettings, String?>? {
         switch self {
-        case .commit:       return \.commitPrompt
-        case .createPR:     return \.createPRPrompt
-        case .pullUpdates:  return \.pullUpdatesPrompt
-        case .fixCI:        return \.fixCIPrompt
-        case .fixComments:  return \.fixCommentsPrompt
-        case .review:       return \.reviewPrompt
-        case .mergePR:      return nil
+        case .commit:        return \.commitPrompt
+        case .createPR:      return \.createPRPrompt
+        case .pullUpdates:   return \.pullUpdatesPrompt
+        case .rebaseOnMain:  return \.rebaseOnMainPrompt
+        case .fixCI:         return \.fixCIPrompt
+        case .fixComments:   return \.fixCommentsPrompt
+        case .review:        return \.reviewPrompt
+        case .mergePR:       return nil
         }
     }
 
     /// KeyPath into `Repository` for the per-repo prompt override.
     var repositoryKeyPath: WritableKeyPath<Repository, String?>? {
         switch self {
-        case .commit:       return \.commitPrompt
-        case .createPR:     return \.createPRPrompt
-        case .pullUpdates:  return \.pullUpdatesPrompt
-        case .fixCI:        return \.fixCIPrompt
-        case .fixComments:  return \.fixCommentsPrompt
-        case .review:       return \.reviewPrompt
-        case .mergePR:      return nil
+        case .commit:        return \.commitPrompt
+        case .createPR:      return \.createPRPrompt
+        case .pullUpdates:   return \.pullUpdatesPrompt
+        case .rebaseOnMain:  return \.rebaseOnMainPrompt
+        case .fixCI:         return \.fixCIPrompt
+        case .fixComments:   return \.fixCommentsPrompt
+        case .review:        return \.reviewPrompt
+        case .mergePR:       return nil
         }
     }
 }

@@ -2,7 +2,7 @@ import SwiftUI
 
 struct SidebarView: View {
     @EnvironmentObject private var state: AppState
-    @State private var showingNewWorkspace: Repository?
+    @State private var showingCreation: Repository?
     @State private var showingRepoSettings: Repository?
 
     var body: some View {
@@ -10,7 +10,7 @@ struct SidebarView: View {
             ForEach(state.repositories) { repo in
                 RepositorySection(
                     repo: repo,
-                    onNewWorkspace: { showingNewWorkspace = repo },
+                    onNewWorkspace: { showingCreation = repo },
                     onOpenSettings: { showingRepoSettings = repo }
                 )
             }
@@ -23,8 +23,8 @@ struct SidebarView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             sidebarFooter
         }
-        .sheet(item: $showingNewWorkspace) { repo in
-            NewWorkspaceSheet(repository: repo)
+        .sheet(item: $showingCreation) { repo in
+            WorkspaceCreationSheet(repository: repo)
         }
         .sheet(item: $showingRepoSettings) { repo in
             RepositorySettingsSheet(repository: repo)

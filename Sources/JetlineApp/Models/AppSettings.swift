@@ -35,6 +35,7 @@ struct AppSettings: Codable, FetchableRecord, PersistableRecord {
     var commitPrompt: String?
     var createPRPrompt: String?
     var pullUpdatesPrompt: String?
+    var rebaseOnMainPrompt: String?
     var fixCIPrompt: String?
     var fixCommentsPrompt: String?
     var reviewPrompt: String?

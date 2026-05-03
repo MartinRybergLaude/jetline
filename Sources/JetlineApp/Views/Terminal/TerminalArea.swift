@@ -9,7 +9,6 @@ struct TerminalArea: View {
         VStack(spacing: 0) {
             sessionTabStrip
             terminalSurface
-                .padding(.leading, 8)
         }
         .background(Color(nsColor: .textBackgroundColor))
         .navigationTitle(workspace.name)

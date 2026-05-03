@@ -18,6 +18,9 @@ final class AppState: ObservableObject {
     /// also flags untracked files, which `git diff` ignores.
     @Published var hasUncommittedByWorkspace: [String: Bool] = [:]
     @Published var prByWorkspace: [String: PRSnapshot] = [:]
+    /// Local ahead/behind state per workspace, refreshed by `PRTracker` on
+    /// each poll. Drives availability of `Pull updates` and `Rebase on main`.
+    @Published var branchPositionByWorkspace: [String: BranchPosition] = [:]
     /// Per-repo GitHub metadata (owner/name + allowed merge methods),
     /// resolved on the first PR poll and reused for the app's lifetime.
     /// Drives the merge confirmation dialog's button set.
@@ -104,11 +107,12 @@ final class AppState: ObservableObject {
 
     // MARK: - Workspaces
 
-    func createWorkspace(in repo: Repository, name: String, agent: Workspace.AgentKind) async {
+    func createWorkspace(in repo: Repository, name: String) async {
         let id = UUID().uuidString
         let slug = WorktreeOps.slug(name)
         let prefix = effectiveBranchPrefix(for: repo)
         let branch = "\(prefix)\(slug)-\(id.prefix(6))"
+        let agent = settings.defaultAgent
 
         do {
             let path = try await WorktreeOps.create(
@@ -150,6 +154,108 @@ final class AppState: ObservableObject {
             }
         } catch {
             await presentError(error.localizedDescription)
+        }
+    }
+
+    /// Spin up a workspace against an existing PR's head branch. Picker
+    /// already filters forks; if a fork slips through, the underlying
+    /// `git fetch` will fail with a clear message.
+    func createWorkspaceFromPR(
+        in repo: Repository,
+        pr: PRSummary,
+        name: String
+    ) async {
+        await importBranchAsWorkspace(
+            in: repo,
+            branchName: pr.headRefName,
+            baseBranch: pr.baseRefName,
+            name: name
+        )
+    }
+
+    /// Spin up a workspace against an existing remote branch. `remoteRef` is
+    /// what `git for-each-ref` emits — e.g. `origin/feature`. The remote
+    /// prefix is stripped to derive the local branch name.
+    func createWorkspaceFromBranch(
+        in repo: Repository,
+        remoteRef: String,
+        name: String
+    ) async {
+        await importBranchAsWorkspace(
+            in: repo,
+            branchName: repo.localName(forRemoteRef: remoteRef),
+            baseBranch: repo.defaultBranch,
+            name: name
+        )
+    }
+
+    /// Shared body for the two import entry points. Branch identity is
+    /// preserved verbatim — none of `effectiveBranchPrefix` / slug / id-suffix
+    /// applies here.
+    private func importBranchAsWorkspace(
+        in repo: Repository,
+        branchName: String,
+        baseBranch: String,
+        name: String
+    ) async {
+        let id = UUID().uuidString
+        let agent = settings.defaultAgent
+        let path: String
+        do {
+            path = try await WorktreeOps.importExisting(
+                repoPath: repo.path,
+                worktreeId: id,
+                repoId: repo.id,
+                branchName: branchName,
+                remote: repo.remoteOrigin
+            )
+        } catch {
+            await presentError(error.localizedDescription)
+            return
+        }
+
+        let now = Date()
+        let ws = Workspace(
+            id: id,
+            repositoryId: repo.id,
+            name: name,
+            branchName: branchName,
+            baseBranch: baseBranch,
+            worktreePath: path,
+            agent: agent,
+            createdAt: now,
+            lastActiveAt: now
+        )
+        do {
+            try Workspaces.insert(ws)
+        } catch {
+            // Worktree was created; the DB insert is the only thing that
+            // failed. Tear the worktree down again so we don't leak it.
+            // Pass `branchName: nil` — the local branch is the user's, not
+            // ours, and they may want it for a retry.
+            try? await WorktreeOps.remove(
+                repoPath: repo.path,
+                worktreePath: path,
+                branchName: nil,
+                force: true
+            )
+            await presentError(error.localizedDescription)
+            return
+        }
+        workspacesByRepo[repo.id, default: []].insert(ws, at: 0)
+        prTracker.kick(repoId: repo.id)
+        selectWorkspace(ws.id)
+
+        if let setup = repo.trimmedSetupScript {
+            if let result = await ScriptRunner.run(
+                setup,
+                cwd: path,
+                env: ScriptRunner.defaultEnv(repoPath: repo.path)
+            ), !result.success {
+                await presentError(
+                    "Setup script failed (\(result.status)).\n\n\(result.stderr.isEmpty ? result.stdout : result.stderr)"
+                )
+            }
         }
     }
 
@@ -502,6 +608,14 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Single write path for branch positions. No-op writes are suppressed
+    /// so an unchanged ahead/behind state doesn't kick every observer.
+    func applyBranchPosition(_ position: BranchPosition, for workspaceId: String) {
+        if branchPositionByWorkspace[workspaceId] != position {
+            branchPositionByWorkspace[workspaceId] = position
+        }
+    }
+
     private func startWatcher(for workspace: Workspace) {
         guard watchers[workspace.id] == nil else { return }
         let id = workspace.id
@@ -529,6 +643,7 @@ final class AppState: ObservableObject {
         localDiffByWorkspace.removeValue(forKey: id)
         hasUncommittedByWorkspace.removeValue(forKey: id)
         prByWorkspace.removeValue(forKey: id)
+        branchPositionByWorkspace.removeValue(forKey: id)
     }
 
     // MARK: - Helpers

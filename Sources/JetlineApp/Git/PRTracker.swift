@@ -112,6 +112,10 @@ final class PRTracker {
             return
         }
 
+        // Local ahead/behind: independent of GitHub, so it stays fresh even
+        // for repos with no GitHub remote or while `gh` is broken.
+        await refreshBranchPositions(repo: repo, workspaces: workspaces)
+
         let identifier: RepoIdentifier
         switch await resolvedIdentifier(for: repo) {
         case .resolved(let id): identifier = id
@@ -145,6 +149,22 @@ final class PRTracker {
             failureCount[repoId, default: 0] += 1
         } catch {
             failureCount[repoId, default: 0] += 1
+        }
+    }
+
+    /// One `git fetch` per repo (cheap when nothing changed remotely), then
+    /// per-workspace ahead/behind comparison. Errors fall through silently
+    /// — a stale count is better than blocking the loop on an offline fetch.
+    private func refreshBranchPositions(repo: Repository, workspaces: [Workspace]) async {
+        await BranchPositionOps.fetch(repoPath: repo.path, remote: repo.remoteOrigin)
+        for ws in workspaces {
+            let pos = await BranchPositionOps.compute(
+                worktreePath: ws.worktreePath,
+                branchName: ws.branchName,
+                baseBranch: ws.baseBranch,
+                remote: repo.remoteOrigin
+            )
+            state?.applyBranchPosition(pos, for: ws.id)
         }
     }
 

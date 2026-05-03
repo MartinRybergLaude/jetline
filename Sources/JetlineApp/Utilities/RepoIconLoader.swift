@@ -13,6 +13,8 @@ enum RepoIconLoader {
 
     private static let validExtensions: Set<String> = ["svg", "ico", "png"]
 
+    private static let iconStems: Set<String> = ["favicon", "appicon", "app-icon", "app_icon", "icon"]
+
     private static let skipDirs: Set<String> = [
         "node_modules", ".git", ".next", ".nuxt", ".svelte-kit",
         "dist", "build", "target", "out", "coverage",
@@ -49,14 +51,11 @@ enum RepoIconLoader {
             for url in contents {
                 let stem = url.deletingPathExtension().lastPathComponent.lowercased()
                 let ext = url.pathExtension.lowercased()
-                if stem == "favicon", validExtensions.contains(ext) {
+                if iconStems.contains(stem), validExtensions.contains(ext) {
                     candidates.append((url, depth))
                 }
                 if ext == "icns" {
                     candidates.append((url, depth))
-                }
-                if ext == "icon", let resolved = resolveIconPackage(at: url) {
-                    candidates.append((resolved, depth))
                 }
                 if ext == "appiconset", let resolved = resolveAppIconSet(at: url) {
                     candidates.append((resolved, depth))
@@ -85,27 +84,6 @@ enum RepoIconLoader {
             }
         }
         return nil
-    }
-
-    private static func resolveIconPackage(at url: URL) -> URL? {
-        let assets = url.appendingPathComponent("Assets", isDirectory: true)
-        let jsonURL = url.appendingPathComponent("icon.json")
-        if let data = try? Data(contentsOf: jsonURL),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let groups = json["groups"] as? [[String: Any]] {
-            for group in groups where (group["hidden"] as? Bool) != true {
-                guard let layers = group["layers"] as? [[String: Any]] else { continue }
-                for layer in layers where (layer["hidden"] as? Bool) != true {
-                    if let name = layer["image-name"] as? String {
-                        let candidate = assets.appendingPathComponent(name)
-                        if FileManager.default.fileExists(atPath: candidate.path) {
-                            return candidate
-                        }
-                    }
-                }
-            }
-        }
-        return largestPNG(in: assets)
     }
 
     private static func resolveAppIconSet(at url: URL) -> URL? {
