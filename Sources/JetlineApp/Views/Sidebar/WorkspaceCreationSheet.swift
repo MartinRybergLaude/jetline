@@ -37,6 +37,12 @@ struct WorkspaceCreationSheet: View {
         }
         .padding(20)
         .frame(minWidth: 540, idealWidth: 580, minHeight: 540, idealHeight: 580)
+        .onAppear {
+            // Force an immediate fetch+FF so "New" branches off a fresh
+            // tip and "Import branch" lists current remote refs, instead
+            // of waiting for the next 20s poll.
+            state.prTracker.kick(repoId: repository.id)
+        }
     }
 
     @ViewBuilder

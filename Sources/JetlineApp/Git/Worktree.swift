@@ -98,7 +98,7 @@ enum WorktreeOps {
         // hostage and we'd report a phantom collision.
         _ = try? await GitRunner.run(["worktree", "prune"], cwd: repoPath)
 
-        if let path = try await worktreeUsing(branch: branchName, repoPath: repoPath) {
+        if let path = (try await worktreesUsing(branch: branchName, repoPath: repoPath)).first {
             throw ImportError.branchInUse(branch: branchName, byPath: path)
         }
         try await fetch(repoPath: repoPath, remote: remote, ref: branchName)
@@ -143,21 +143,25 @@ enum WorktreeOps {
             }
     }
 
-    /// Returns the worktree path that has `branch` checked out, or `nil` if
-    /// no worktree owns it. Parses `git worktree list --porcelain`, which
-    /// emits stanzas of `worktree`/`HEAD`/`branch` lines separated by blanks.
-    private static func worktreeUsing(branch: String, repoPath: String) async throws -> String? {
+    /// Worktree paths that currently have `branch` as their HEAD. Empty
+    /// when no worktree owns it. Multiple matches are possible if the
+    /// user manually checked the same branch out twice; callers wanting
+    /// "any one match" can take `.first`. Parses `git worktree list
+    /// --porcelain`, which emits stanzas of `worktree`/`HEAD`/`branch`
+    /// lines separated by blanks.
+    static func worktreesUsing(branch: String, repoPath: String) async throws -> [String] {
         let raw = try await GitRunner.runChecked(["worktree", "list", "--porcelain"], cwd: repoPath)
+        var paths: [String] = []
         var path: String?
         for line in raw.split(separator: "\n", omittingEmptySubsequences: false) {
             if line.hasPrefix("worktree ") {
                 path = String(line.dropFirst("worktree ".count))
             } else if line.hasPrefix("branch refs/heads/") {
                 let name = String(line.dropFirst("branch refs/heads/".count))
-                if name == branch, let path { return path }
+                if name == branch, let path { paths.append(path) }
             }
         }
-        return nil
+        return paths
     }
 
     /// Remove a worktree and (optionally) its branch.

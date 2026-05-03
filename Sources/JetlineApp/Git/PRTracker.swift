@@ -1,18 +1,24 @@
 import Foundation
 
 /// Background tracker that keeps `AppState.prByWorkspace` populated for every
-/// workspace in every repository. One poll loop per repo runs in parallel,
-/// each issuing a single batched GraphQL call per cycle (one alias per
-/// workspace branch).
+/// workspace in every repository. Two loops per repo run in parallel,
+/// decoupled because they have very different cost profiles:
 ///
-/// Cadence per repo:
-///   - 15s when any workspace in the repo has an in-flight check
-///   - 60s otherwise
-///   - exponential backoff (30s → 5min) while a repo's last poll errored
+///   - **Local loop** (`pollLocal`): `git fetch`, fast-forward the local
+///     default branch, recompute per-workspace ahead/behind. Free re:
+///     GitHub API — just bandwidth — so we run it aggressively.
+///       * 20s, always.
+///   - **GitHub loop** (`pollGitHub`): one batched `gh api graphql` per
+///     repo (one alias per workspace branch). Each query consumes 5–15
+///     points per branch against the 5000-points/hour budget, so this
+///     loop runs slower and tunes itself based on activity.
+///       * 15s when any workspace in the repo has an in-flight check
+///       * 60s otherwise
+///       * exponential backoff (30s → 5min) while a repo's last poll errored
 ///
-/// `kick(...)` cancels the current sleep so the next poll happens immediately
-/// — used by `WorktreeWatcher` (post-push), `PRPanel` (panel opened), and the
-/// "Refresh" button.
+/// `kick(...)` cancels both sleeps so the next poll of either loop
+/// happens immediately — used by `WorktreeWatcher` (post-push), `PRPanel`
+/// (panel opened), the workspace creation sheet, and the "Refresh" button.
 @MainActor
 final class PRTracker {
     enum Status: Equatable {
@@ -29,14 +35,31 @@ final class PRTracker {
         }
     }
 
+    /// Per-repo tracker state. One entry per active repository; created
+    /// in `startLoops`, torn down in `stop`.
+    private struct Loops {
+        var local: Task<Void, Never>?
+        var github: Task<Void, Never>?
+        var localSleep: Task<Void, Never>?
+        var githubSleep: Task<Void, Never>?
+        /// GitHub-only — local fetch failures don't bill against the
+        /// GitHub rate limit and shouldn't slow the whole tracker down.
+        var githubFailures: Int = 0
+
+        mutating func cancelAll() {
+            local?.cancel(); local = nil
+            github?.cancel(); github = nil
+            localSleep?.cancel(); localSleep = nil
+            githubSleep?.cancel(); githubSleep = nil
+        }
+    }
+
     private weak var state: AppState?
 
     /// Cached owner/name per repo. Outer optional = "lookup not yet attempted";
     /// inner `nil` = "looked up, repo has no GitHub remote — skip forever".
     private var repoIdentifiers: [String: RepoIdentifier?] = [:]
-    private var repoTasks: [String: Task<Void, Never>] = [:]
-    private var sleepTasks: [String: Task<Void, Never>] = [:]
-    private var failureCount: [String: Int] = [:]
+    private var loops: [String: Loops] = [:]
     /// Workspace IDs we've already kicked off auto-archive for. The archive
     /// itself removes the workspace from `workspacesByRepo`, so subsequent
     /// polls won't see it — but the archive is fire-and-forget, so this
@@ -52,26 +75,25 @@ final class PRTracker {
     func sync() {
         guard let state else { return }
         let current = Set(state.repositories.map(\.id))
-        for repoId in repoTasks.keys where !current.contains(repoId) {
+        for repoId in loops.keys where !current.contains(repoId) {
             stop(repoId: repoId)
             repoIdentifiers.removeValue(forKey: repoId)
-            failureCount.removeValue(forKey: repoId)
         }
-        for repo in state.repositories where repoTasks[repo.id] == nil {
-            startLoop(repoId: repo.id)
+        for repo in state.repositories where loops[repo.id] == nil {
+            startLoops(repoId: repo.id)
         }
     }
 
     func stopAll() {
-        for (_, t) in repoTasks { t.cancel() }
-        repoTasks.removeAll()
-        for (_, t) in sleepTasks { t.cancel() }
-        sleepTasks.removeAll()
+        for repoId in loops.keys { stop(repoId: repoId) }
+        repoIdentifiers.removeAll()
+        autoArchived.removeAll()
     }
 
-    /// Wake a repo's loop so the next poll happens immediately.
+    /// Wake both loops so the next poll of each fires immediately.
     func kick(repoId: String) {
-        sleepTasks[repoId]?.cancel()
+        loops[repoId]?.localSleep?.cancel()
+        loops[repoId]?.githubSleep?.cancel()
     }
 
     func kick(workspaceId: String) {
@@ -79,42 +101,104 @@ final class PRTracker {
         kick(repoId: ws.repositoryId)
     }
 
-    // MARK: - Private
+    // MARK: - Lifecycle
 
     private func stop(repoId: String) {
-        repoTasks.removeValue(forKey: repoId)?.cancel()
-        sleepTasks.removeValue(forKey: repoId)?.cancel()
+        loops[repoId]?.cancelAll()
+        loops.removeValue(forKey: repoId)
     }
 
-    private func startLoop(repoId: String) {
-        let task = Task<Void, Never> { [weak self] in
-            await self?.loop(repoId: repoId)
+    private func startLoops(repoId: String) {
+        var entry = Loops()
+        entry.local = Task<Void, Never> { [weak self] in
+            await self?.runLoop(
+                repoId: repoId,
+                interval: { _ in 20 },
+                sleepKey: \.localSleep,
+                poll: { await $0.pollLocal(repoId: repoId) }
+            )
         }
-        repoTasks[repoId] = task
+        entry.github = Task<Void, Never> { [weak self] in
+            await self?.runLoop(
+                repoId: repoId,
+                interval: { $0.nextGitHubInterval(repoId: repoId) },
+                sleepKey: \.githubSleep,
+                poll: { await $0.pollGitHub(repoId: repoId) }
+            )
+        }
+        loops[repoId] = entry
     }
 
-    private func loop(repoId: String) async {
+    /// Drive a per-repo poll loop until cancelled. The caller owns the
+    /// poll body and the interval policy; this just sequences poll →
+    /// sleep → poll and keeps the sleep `Task` reachable so `kick(...)`
+    /// can cancel it.
+    private func runLoop(
+        repoId: String,
+        interval: @escaping (PRTracker) -> Double,
+        sleepKey: WritableKeyPath<Loops, Task<Void, Never>?>,
+        poll: @escaping (PRTracker) async -> Void
+    ) async {
         while !Task.isCancelled {
-            await pollOnce(repoId: repoId)
+            await poll(self)
             if Task.isCancelled { return }
-            await sleepUntilNext(repoId: repoId)
+            let sleep = Task<Void, Never> {
+                try? await Task.sleep(for: .seconds(interval(self)))
+            }
+            loops[repoId]?[keyPath: sleepKey] = sleep
+            await sleep.value
+            if loops[repoId]?[keyPath: sleepKey] == sleep {
+                loops[repoId]?[keyPath: sleepKey] = nil
+            }
         }
     }
 
-    private func pollOnce(repoId: String) async {
+    // MARK: - Local refs loop
+
+    private func pollLocal(repoId: String) async {
+        guard let state,
+              let repo = state.repositories.first(where: { $0.id == repoId }) else { return }
+        let workspaces = state.workspacesByRepo[repoId] ?? []
+
+        // Refresh refs first — must run even when the repo has no
+        // workspaces yet so the local default branch stays current and
+        // any worktree the user creates next inherits a fresh tip.
+        await BranchPositionOps.fetch(repoPath: repo.path, remote: repo.remoteOrigin)
+        let baseMoved = await BaseBranchSync.fastForward(
+            repoPath: repo.path,
+            remote: repo.remoteOrigin,
+            baseBranch: repo.defaultBranch
+        ) != nil
+        if baseMoved {
+            // Merge-base shifted under every workspace's diff — recompute
+            // so the inspector reflects reality. No-op when no diff is
+            // open; refreshDiff is deduped on equality.
+            for ws in workspaces {
+                await state.refreshDiff(for: ws)
+            }
+        }
+
+        for ws in workspaces {
+            let pos = await BranchPositionOps.compute(
+                worktreePath: ws.worktreePath,
+                branchName: ws.branchName,
+                baseBranch: ws.baseBranch,
+                remote: repo.remoteOrigin
+            )
+            state.applyBranchPosition(pos, for: ws.id)
+        }
+    }
+
+    // MARK: - GitHub loop
+
+    private func pollGitHub(repoId: String) async {
         guard let state,
               let repo = state.repositories.first(where: { $0.id == repoId }) else { return }
         let workspaces = state.workspacesByRepo[repoId] ?? []
         guard !workspaces.isEmpty else {
-            // No workspaces yet — nothing to fetch. Reset failure count so we
-            // don't accumulate backoff while the user is still setting up.
-            failureCount[repoId] = 0
+            loops[repoId]?.githubFailures = 0
             return
         }
-
-        // Local ahead/behind: independent of GitHub, so it stays fresh even
-        // for repos with no GitHub remote or while `gh` is broken.
-        await refreshBranchPositions(repo: repo, workspaces: workspaces)
 
         let identifier: RepoIdentifier
         switch await resolvedIdentifier(for: repo) {
@@ -129,7 +213,7 @@ final class PRTracker {
                 branches: workspaces.map(\.branchName),
                 cwd: repo.path
             )
-            failureCount[repoId] = 0
+            loops[repoId]?.githubFailures = 0
             updateStatus(.ok)
             for ws in workspaces {
                 let snap: PRSnapshot
@@ -143,28 +227,12 @@ final class PRTracker {
             }
         } catch GitHubRunner.Error.ghMissing {
             updateStatus(.ghMissing)
-            failureCount[repoId, default: 0] += 1
+            loops[repoId]?.githubFailures += 1
         } catch GitHubRunner.Error.authRequired {
             updateStatus(.authRequired)
-            failureCount[repoId, default: 0] += 1
+            loops[repoId]?.githubFailures += 1
         } catch {
-            failureCount[repoId, default: 0] += 1
-        }
-    }
-
-    /// One `git fetch` per repo (cheap when nothing changed remotely), then
-    /// per-workspace ahead/behind comparison. Errors fall through silently
-    /// — a stale count is better than blocking the loop on an offline fetch.
-    private func refreshBranchPositions(repo: Repository, workspaces: [Workspace]) async {
-        await BranchPositionOps.fetch(repoPath: repo.path, remote: repo.remoteOrigin)
-        for ws in workspaces {
-            let pos = await BranchPositionOps.compute(
-                worktreePath: ws.worktreePath,
-                branchName: ws.branchName,
-                baseBranch: ws.baseBranch,
-                remote: repo.remoteOrigin
-            )
-            state?.applyBranchPosition(pos, for: ws.id)
+            loops[repoId]?.githubFailures += 1
         }
     }
 
@@ -189,34 +257,22 @@ final class PRTracker {
             }
         } catch GitHubRunner.Error.ghMissing {
             updateStatus(.ghMissing)
-            failureCount[repo.id, default: 0] += 1
+            loops[repo.id]?.githubFailures += 1
             return .deferred
         } catch GitHubRunner.Error.authRequired {
             updateStatus(.authRequired)
-            failureCount[repo.id, default: 0] += 1
+            loops[repo.id]?.githubFailures += 1
             return .deferred
         } catch {
-            failureCount[repo.id, default: 0] += 1
+            loops[repo.id]?.githubFailures += 1
             return .deferred
-        }
-    }
-
-    private func sleepUntilNext(repoId: String) async {
-        let interval = nextInterval(repoId: repoId)
-        let task = Task<Void, Never> {
-            try? await Task.sleep(for: .seconds(interval))
-        }
-        sleepTasks[repoId] = task
-        await task.value
-        if sleepTasks[repoId] == task {
-            sleepTasks.removeValue(forKey: repoId)
         }
     }
 
     /// 30s, 60s, 120s, 240s, capped at 300s while errored. Otherwise 15s
     /// when any workspace has an active check, 60s when quiescent.
-    private func nextInterval(repoId: String) -> Double {
-        let failures = failureCount[repoId] ?? 0
+    private func nextGitHubInterval(repoId: String) -> Double {
+        let failures = loops[repoId]?.githubFailures ?? 0
         if failures > 0 {
             return min(300, 30 * pow(2, Double(failures - 1)))
         }

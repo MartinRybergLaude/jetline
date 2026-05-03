@@ -85,12 +85,22 @@ enum BranchPositionOps {
         return ref.hasPrefix(prefix) ? String(ref.dropFirst(prefix.count)) : ref
     }
 
-    private static func refExists(_ ref: String, cwd: String) async -> Bool {
+    /// Resolve `ref` to its SHA, or `nil` if it doesn't exist or git
+    /// errors out. Shared with `BaseBranchSync` — both want the same
+    /// `git rev-parse --verify --quiet` semantics.
+    static func resolveRef(_ ref: String, cwd: String) async -> String? {
         let result = try? await GitRunner.run(
             ["rev-parse", "--verify", "--quiet", ref],
             cwd: cwd
         )
-        return result?.success ?? false
+        guard result?.success == true,
+              let sha = result?.stdout.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sha.isEmpty else { return nil }
+        return sha
+    }
+
+    private static func refExists(_ ref: String, cwd: String) async -> Bool {
+        await resolveRef(ref, cwd: cwd) != nil
     }
 
     private static func leftRightCount(
