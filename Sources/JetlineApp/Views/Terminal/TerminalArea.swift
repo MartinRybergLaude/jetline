@@ -82,7 +82,19 @@ struct TerminalArea: View {
                     NewSessionMenu(
                         defaultAgent: state.settings.defaultAgent,
                         visibleAgents: Workspace.AgentKind.allCases.filter(state.settings.isAgentVisible),
-                        onStart: { state.startNewSession(for: workspace, agent: $0) }
+                        // Resolve the workspace at click time rather than capturing it.
+                        // SwiftUI keeps NewSessionMenu's view identity stable across
+                        // workspace switches, so the NSMenuItem actions inside the
+                        // dropdown end up bound to the closure from first build —
+                        // a captured `workspace` would route new tabs to whichever
+                        // workspace was active when the menu was first realized.
+                        // `primaryAction:` (the plus button) refreshes correctly,
+                        // which is why only the dropdown shows the bug.
+                        onStart: { agent in
+                            guard let id = state.selectedWorkspaceId,
+                                  let ws = state.workspaceById(id) else { return }
+                            state.startNewSession(for: ws, agent: agent)
+                        }
                     )
                     .id("new-session-menu")
                     Spacer(minLength: 0)
@@ -562,7 +574,8 @@ struct TerminalHostView: NSViewRepresentable {
     let isActive: Bool
 
     func makeNSView(context: Context) -> NSView {
-        let container = NSView()
+        let container = TerminalDropContainer()
+        container.session = session
         let term = session.emulator.nsView
         term.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(term)
@@ -573,6 +586,18 @@ struct TerminalHostView: NSViewRepresentable {
             term.trailingAnchor.constraint(equalTo: container.trailingAnchor)
         ])
         session.emulator.setActive(isActive)
+        if isActive {
+            // SwiftUI's first updateNSView for a freshly-mounted representable
+            // can fire before the container is attached to the window, so the
+            // focus path there early-returns on `term.window == nil`. Schedule
+            // the assertion here so a brand-new tab (e.g. one just spawned
+            // from the + button or agent dropdown) lands focused and ready
+            // for typing.
+            DispatchQueue.main.async {
+                guard let win = term.window, win.firstResponder !== term else { return }
+                win.makeFirstResponder(term)
+            }
+        }
         return container
     }
 
@@ -585,5 +610,97 @@ struct TerminalHostView: NSViewRepresentable {
         let term = session.emulator.nsView
         guard isActive, let win = term.window, win.firstResponder !== term else { return }
         DispatchQueue.main.async { win.makeFirstResponder(term) }
+    }
+}
+
+/// Terminal-area drop target. libghostty's `AppTerminalView` doesn't register
+/// for any drag types, so dragging a file or image from Finder, a browser, or
+/// a screenshot tool does nothing — agents like Claude Code that read paths
+/// from their input never see the drop. This container sits underneath the
+/// terminal view in the responder chain and translates drops into a paste
+/// (so libghostty wraps the path in DECSET-2004 brackets when the host
+/// program is in bracketed-paste mode — without that Claude treats the path
+/// as typed text and just echoes it). Bare images (browser drags, screenshot
+/// apps) are spilled to a temp PNG first so the agent has a file to read.
+private final class TerminalDropContainer: NSView {
+    weak var session: PTYSession?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        registerForDraggedTypes([.fileURL, .tiff, .png])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        acceptableOperation(for: sender)
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        acceptableOperation(for: sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let paths = collectPaths(from: sender)
+        guard !paths.isEmpty, let session else { return false }
+        let text = paths.map(Self.shellEscape).joined(separator: " ") + " "
+        session.emulator.paste(text)
+        return true
+    }
+
+    private func acceptableOperation(for sender: NSDraggingInfo) -> NSDragOperation {
+        let pb = sender.draggingPasteboard
+        if pb.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) {
+            return .copy
+        }
+        if pb.canReadObject(forClasses: [NSImage.self], options: nil) {
+            return .copy
+        }
+        return []
+    }
+
+    private func collectPaths(from sender: NSDraggingInfo) -> [String] {
+        let pb = sender.draggingPasteboard
+        // File URLs win when present — `kUTType.fileURL` covers Finder drags,
+        // and most browsers/screenshot tools that promise a real file expose
+        // it here too.
+        if let urls = pb.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL], !urls.isEmpty {
+            return urls.map(\.path)
+        }
+        // Fall back to bare image payloads (e.g. dragging an <img> from
+        // Safari, or pasting a screenshot from CleanShot). Persist to a temp
+        // PNG so the agent has a path it can actually open.
+        if let images = pb.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage],
+           !images.isEmpty {
+            return images.compactMap(Self.persistImage)
+        }
+        return []
+    }
+
+    private static func persistImage(_ image: NSImage) -> String? {
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return nil }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("jetline-drop-\(UUID().uuidString.prefix(8)).png")
+        do {
+            try png.write(to: url)
+            return url.path
+        } catch {
+            return nil
+        }
+    }
+
+    /// POSIX single-quote shell escape: wrap in single quotes, replacing any
+    /// embedded `'` with `'\''`. Works whether the receiving agent feeds the
+    /// path into a shell or parses it directly — single-quoted whitespace and
+    /// special characters round-trip cleanly in both.
+    private static func shellEscape(_ path: String) -> String {
+        let escaped = path.replacingOccurrences(of: "'", with: "'\\''")
+        return "'\(escaped)'"
     }
 }

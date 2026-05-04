@@ -105,6 +105,31 @@ final class GhosttyEmulator: TerminalEmulatorView {
         pty?.write(data)
     }
 
+    /// Route through libghostty's `paste_from_clipboard` action so the
+    /// surface adds the DECSET-2004 brackets when the host program is in
+    /// bracketed-paste mode (Claude Code, modern shells, etc.). libghostty's
+    /// only public paste path reads from the system clipboard, so we
+    /// trample it for the synchronous paste roundtrip and put the original
+    /// contents back. The `read_clipboard` callback fires synchronously
+    /// inside `performBindingAction`, so the restore that follows is safe.
+    func paste(_ text: String) {
+        let pasteboard = NSPasteboard.general
+        let saved = pasteboard.pasteboardItems?.compactMap { item -> (NSPasteboard.PasteboardType, Data)? in
+            guard let type = item.types.first(where: { $0 == .string }),
+                  let data = item.data(forType: type) else { return nil }
+            return (type, data)
+        }
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        view.performBindingAction("paste_from_clipboard")
+        pasteboard.clearContents()
+        if let saved {
+            for (type, data) in saved {
+                pasteboard.setData(data, forType: type)
+            }
+        }
+    }
+
     func updateFont(family: String, size: CGFloat) {
         controller.setTerminalConfiguration(
             Self.makeConfiguration(family: family, size: Float(size))

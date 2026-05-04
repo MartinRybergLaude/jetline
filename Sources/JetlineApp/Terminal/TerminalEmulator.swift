@@ -19,6 +19,14 @@ protocol TerminalEmulatorView: AnyObject {
     /// Write raw bytes to the PTY input.
     func write(_ string: String)
 
+    /// Paste `text` as if the user hit ⌘V — bracketed-paste-wrapped when
+    /// the host program has DECSET 2004 enabled, raw otherwise. Required
+    /// for agents like Claude Code that branch on "is this a paste?" to
+    /// decide whether a file path is a typed string or an image
+    /// attachment. Routing drag-and-drop through `write` instead skips the
+    /// brackets and the agent treats the path as literal text.
+    func paste(_ text: String)
+
     /// Adopt new font/size at runtime.
     func updateFont(family: String, size: CGFloat)
 
