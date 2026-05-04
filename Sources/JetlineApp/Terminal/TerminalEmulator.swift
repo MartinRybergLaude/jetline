@@ -11,7 +11,16 @@ protocol TerminalEmulatorView: AnyObject {
     var nsView: NSView { get }
 
     /// Spawn a process inside this terminal. Replaces any existing one.
-    func spawn(executable: String, args: [String], cwd: String, env: [String: String])
+    /// `outputTap` (when set) is called with each chunk of bytes received
+    /// from the child — used by the run-output panel to keep a copy buffer
+    /// alongside the rendered terminal.
+    func spawn(
+        executable: String,
+        args: [String],
+        cwd: String,
+        env: [String: String],
+        outputTap: (@Sendable (Data) -> Void)?
+    )
 
     /// Send `^C` (or equivalent) to the process.
     func sendInterrupt()
@@ -46,6 +55,10 @@ protocol TerminalEmulatorView: AnyObject {
 
 extension TerminalEmulatorView {
     func setActive(_ active: Bool) {}
+
+    func spawn(executable: String, args: [String], cwd: String, env: [String: String]) {
+        spawn(executable: executable, args: args, cwd: cwd, env: env, outputTap: nil)
+    }
 }
 
 @MainActor

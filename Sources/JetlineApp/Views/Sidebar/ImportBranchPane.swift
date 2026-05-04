@@ -55,20 +55,25 @@ struct ImportBranchPane: View {
                     Task { await runImport() }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(selectedRef == nil || trimmedName.isEmpty || importing)
+                .disabled(!canImport)
             }
         }
         .task { await refresh() }
         .onChange(of: selectedRef) { _, new in
-            guard let new else { return }
-            if importedBranchNames.contains(repository.localName(forRemoteRef: new)) {
-                selectedRef = nil
-                return
-            }
-            if let row = branches.first(where: { $0.ref == new }) {
-                name = defaultName(for: row.ref)
-            }
+            // Pre-fill the name field for the picked branch. We don't clear
+            // already-imported selections here — `canImport` gates the
+            // button, which is the single source of truth for the action.
+            guard let new,
+                  let row = branches.first(where: { $0.ref == new }) else { return }
+            name = defaultName(for: row.ref)
         }
+    }
+
+    private var canImport: Bool {
+        guard let ref = selectedRef,
+              !trimmedName.isEmpty,
+              !importing else { return false }
+        return !importedBranchNames.contains(repository.localName(forRemoteRef: ref))
     }
 
     private var searchField: some View {

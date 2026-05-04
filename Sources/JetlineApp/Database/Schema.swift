@@ -123,5 +123,14 @@ enum Schema {
                 t.add(column: "rebaseOnMainPrompt", .text)
             }
         }
+
+        migrator.registerMigration("v9_branch_prefix_mode") { db in
+            try db.alter(table: "repositories") { t in
+                // Discriminator for the new branch-prefix UI: "username" |
+                // "custom" | "none". Existing rows stay nil so the legacy
+                // fallback (custom value or inherited global) keeps working.
+                t.add(column: "branchPrefixMode", .text)
+            }
+        }
     }
 }

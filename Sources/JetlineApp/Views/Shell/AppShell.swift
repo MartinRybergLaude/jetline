@@ -22,6 +22,7 @@ struct AppShell: View {
                 }
         }
         .background(WindowTabbingDisabler())
+        .task { await state.load() }
     }
 
     /// Inspector hides when nothing is selected (mirrors the previous logic),
@@ -36,14 +37,18 @@ struct AppShell: View {
 
 /// Disables NSWindow tabbing for the hosting window — removes the
 /// View → Show Tab Bar / Merge All Windows / Move Tab to New Window items.
+/// Applied once per window via `viewDidMoveToWindow`; SwiftUI reuses the
+/// same NSView across updates, so we don't need to re-apply on every
+/// `updateNSView`.
 private struct WindowTabbingDisabler: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView {
-        let v = NSView()
-        DispatchQueue.main.async { v.window?.tabbingMode = .disallowed }
-        return v
-    }
-    func updateNSView(_ view: NSView, context: Context) {
-        view.window?.tabbingMode = .disallowed
+    func makeNSView(context: Context) -> TabbingDisablerView { TabbingDisablerView() }
+    func updateNSView(_ view: TabbingDisablerView, context: Context) {}
+}
+
+private final class TabbingDisablerView: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        window?.tabbingMode = .disallowed
     }
 }
 

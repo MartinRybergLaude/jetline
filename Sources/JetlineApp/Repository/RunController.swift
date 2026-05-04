@@ -1,10 +1,12 @@
 import Foundation
 import Combine
-import Darwin
+import AppKit
 
 /// Long-running process started by the "Run" button on a workspace. Owns
-/// the `Process`, tails stdout+stderr into `output`, and exposes `phase`
-/// for the UI. One instance per active workspace; tracked by `AppState`.
+/// a libghostty-backed terminal emulator that renders the script's output
+/// directly inside the inspector, plus a parallel byte buffer captured for
+/// the panel's "copy" button. One instance per active workspace; tracked by
+/// `AppState`.
 @MainActor
 final class RunController: ObservableObject, Identifiable {
     enum Phase {
@@ -17,22 +19,23 @@ final class RunController: ObservableObject, Identifiable {
     let workspaceId: String
 
     @Published private(set) var phase: Phase = .idle
-    @Published private(set) var output: String = ""
     @Published private(set) var exitStatus: Int32?
+    /// The terminal hosting the current (or most recent) run. Replaced on
+    /// each `start` so a fresh script begins on a clean screen; the previous
+    /// emulator is dropped along with its NSView.
+    @Published private(set) var emulator: TerminalEmulatorView?
 
     var isRunning: Bool { phase != .idle }
 
-    private var process: Process?
-    private var killWorkItem: DispatchWorkItem?
     private var warmupItem: DispatchWorkItem?
     private let onExit: @MainActor (RunController) -> Void
 
-    /// ~200 KB cap so a chatty `npm run dev` doesn't unbounded-grow memory.
-    /// Trim drops to 75% so we don't re-trim on every chunk.
-    private let maxOutputBytes = 200_000
+    /// Raw PTY bytes kept around for the copy button. Capped so a chatty
+    /// `npm run dev` doesn't unbounded-grow memory; trim drops to 75% so we
+    /// don't re-trim on every chunk.
+    private var capturedBytes = Data()
+    private let maxCapturedBytes = 200_000
     private let trimTargetBytes = 150_000
-    /// Tracked alongside `output` so we don't pay an O(n) `utf8.count` walk per chunk.
-    private var outputBytes = 0
 
     /// `.starting` flips to `.running` once the process has stayed alive this
     /// long — proxy for "spawn actually took effect".
@@ -47,62 +50,25 @@ final class RunController: ObservableObject, Identifiable {
         guard phase == .idle, let trimmed = script.nonBlank else { return }
 
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: shell)
-        proc.arguments = ["-lc", trimmed]
-        proc.currentDirectoryURL = URL(fileURLWithPath: cwd)
-
-        proc.environment = Subprocess.inheritedEnvironment(overrides: env)
-
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        proc.standardOutput = outPipe
-        proc.standardError = errPipe
-        proc.standardInput = FileHandle.nullDevice
-
-        let stdoutFH = outPipe.fileHandleForReading
-        let stderrFH = errPipe.fileHandleForReading
-        // Pipe handlers fire on a background thread; hop to main before
-        // touching `output` (a @MainActor-isolated @Published).
-        let pipeHandler: @Sendable (FileHandle) -> Void = { [weak self] handle in
-            let data = handle.availableData
-            if data.isEmpty { handle.readabilityHandler = nil; return }
-            Task { @MainActor [weak self] in self?.appendAsync(data: data) }
-        }
-        stdoutFH.readabilityHandler = pipeHandler
-        stderrFH.readabilityHandler = pipeHandler
-
-        proc.terminationHandler = { [weak self] p in
-            Task { @MainActor in
-                guard let self else { return }
-                stdoutFH.readabilityHandler = nil
-                stderrFH.readabilityHandler = nil
-                // Cancel any pending SIGKILL — we already exited.
-                self.killWorkItem?.cancel()
-                self.killWorkItem = nil
-                self.warmupItem?.cancel()
-                self.warmupItem = nil
-                self.process = nil
-                self.phase = .idle
-                self.exitStatus = p.terminationStatus
-                self.onExit(self)
-            }
+        let term = GhosttyEmulator()
+        term.setExitHandler { [weak self] code in
+            Task { @MainActor [weak self] in self?.handleExit(code: code) }
         }
 
-        output = ""
-        outputBytes = 0
+        capturedBytes.removeAll(keepingCapacity: true)
         exitStatus = nil
+        phase = .starting
+        emulator = term
 
-        do {
-            try proc.run()
-        } catch {
-            output = "spawn failed: \(error)\n"
-            outputBytes = output.utf8.count
-            return
-        }
-
-        self.process = proc
-        self.phase = .starting
+        term.spawn(
+            executable: shell,
+            args: ["-lc", trimmed],
+            cwd: cwd,
+            env: env,
+            outputTap: { [weak self] data in
+                Task { @MainActor [weak self] in self?.appendCapture(data) }
+            }
+        )
 
         let warmup = DispatchWorkItem { [weak self] in
             Task { @MainActor [weak self] in
@@ -114,80 +80,106 @@ final class RunController: ObservableObject, Identifiable {
         DispatchQueue.main.asyncAfter(deadline: .now() + startupGrace, execute: warmup)
     }
 
-    /// SIGTERM the whole process tree, then SIGKILL anything still alive
-    /// after a short grace. Foundation's `Process.terminate()` only signals
-    /// the shell we spawned — long-running scripts (e.g. `npm run dev`) fork
-    /// children that survive the shell exit, so we walk descendants from `ps`
-    /// and signal them too.
+    /// Stop the run. SIGKILL via PTYProcess.terminate() — the run script
+    /// trampoline (`zsh -lc`) puts the script in its own process group, so
+    /// killing the group catches every descendant.
     func stop() {
-        guard let proc = process, proc.isRunning else { return }
-        let pid = proc.processIdentifier
-        let descendants = Self.descendantPids(of: pid)
-
-        // Children first, parent last.
-        for d in descendants.reversed() { kill(d, SIGTERM) }
-        proc.terminate()
-
-        let item = DispatchWorkItem { [weak proc] in
-            for d in descendants.reversed() { kill(d, SIGKILL) }
-            if let proc, proc.isRunning {
-                kill(proc.processIdentifier, SIGKILL)
-            }
-        }
-        killWorkItem?.cancel()
-        killWorkItem = item
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.3, execute: item)
+        emulator?.terminate()
     }
 
-    /// BFS over `ps -A` output to collect every transitive descendant of `root`.
-    /// Snapshot-at-stop-time — children that fork after this call won't be
-    /// caught, but in practice that's rare for "Run" scripts.
-    private static func descendantPids(of root: pid_t) -> [pid_t] {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/ps")
-        proc.arguments = ["-Ao", "pid=,ppid="]
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = FileHandle.nullDevice
-        do { try proc.run() } catch { return [] }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-
-        var byParent: [pid_t: [pid_t]] = [:]
-        let str = String(decoding: data, as: UTF8.self)
-        for line in str.split(separator: "\n") {
-            let parts = line.split(whereSeparator: { $0 == " " }).filter { !$0.isEmpty }
-            guard parts.count >= 2,
-                  let pid = pid_t(parts[0]),
-                  let ppid = pid_t(parts[1]) else { continue }
-            byParent[ppid, default: []].append(pid)
-        }
-
-        var result: [pid_t] = []
-        var queue = [root]
-        while !queue.isEmpty {
-            let p = queue.removeFirst()
-            if let kids = byParent[p] {
-                result.append(contentsOf: kids)
-                queue.append(contentsOf: kids)
-            }
-        }
-        return result
+    /// Plaintext bytes for the copy button, with terminal control sequences
+    /// stripped so the clipboard doesn't carry `\x1b[…m` noise.
+    func copyableOutput() -> String {
+        let raw = String(data: capturedBytes, encoding: .utf8) ?? ""
+        return Self.stripControlSequences(raw)
     }
 
-    private func appendAsync(data: Data) {
-        guard let chunk = String(data: data, encoding: .utf8) else { return }
-        output.append(chunk)
-        outputBytes += chunk.utf8.count
-        guard outputBytes > maxOutputBytes else { return }
-        let drop = outputBytes - trimTargetBytes
-        if let idx = output.utf8.index(
-            output.utf8.startIndex,
-            offsetBy: drop,
-            limitedBy: output.utf8.endIndex
-        ) {
-            output = String(output[idx...])
-            outputBytes = output.utf8.count
+    /// Place the current copyable output on the general pasteboard.
+    @discardableResult
+    func copyOutputToPasteboard() -> Bool {
+        let text = copyableOutput()
+        guard !text.isEmpty else { return false }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+        return true
+    }
+
+    private func handleExit(code: Int32) {
+        guard phase != .idle else { return }
+        warmupItem?.cancel()
+        warmupItem = nil
+        phase = .idle
+        exitStatus = code
+        onExit(self)
+    }
+
+    private func appendCapture(_ data: Data) {
+        capturedBytes.append(data)
+        if capturedBytes.count > maxCapturedBytes {
+            let drop = capturedBytes.count - trimTargetBytes
+            capturedBytes.removeFirst(drop)
         }
+    }
+
+    /// Strip CSI / OSC / single-char ESC sequences and collapse `\r\n` to
+    /// `\n`. Keeps printable text + `\n` + `\t` so copy/paste from a long
+    /// run is readable. Standalone `\r` (carriage return without newline,
+    /// used by progress bars to redraw a line) becomes a newline so the
+    /// clipboard shows the redraws as separate lines instead of overlap.
+    static func stripControlSequences(_ s: String) -> String {
+        var out = String()
+        out.reserveCapacity(s.count)
+        var i = s.startIndex
+        while i < s.endIndex {
+            let c = s[i]
+            switch c {
+            case "\u{1B}":
+                let next = s.index(after: i)
+                guard next < s.endIndex else { return out }
+                let n = s[next]
+                if n == "[" {
+                    // CSI: ESC [ params final-byte (0x40-0x7E)
+                    var j = s.index(after: next)
+                    while j < s.endIndex {
+                        let cc = s[j]
+                        j = s.index(after: j)
+                        if let ascii = cc.asciiValue, ascii >= 0x40, ascii <= 0x7E { break }
+                    }
+                    i = j
+                } else if n == "]" {
+                    // OSC: ESC ] ... BEL  or  ESC ] ... ESC \
+                    var j = s.index(after: next)
+                    while j < s.endIndex {
+                        if s[j] == "\u{07}" { j = s.index(after: j); break }
+                        if s[j] == "\u{1B}" {
+                            let after = s.index(after: j)
+                            if after < s.endIndex, s[after] == "\\" {
+                                j = s.index(after: after); break
+                            }
+                        }
+                        j = s.index(after: j)
+                    }
+                    i = j
+                } else {
+                    // Two-byte ESC sequences (e.g. character-set selection).
+                    i = s.index(after: next)
+                }
+            case "\r":
+                let next = s.index(after: i)
+                if next < s.endIndex, s[next] == "\n" {
+                    out.append("\n"); i = s.index(after: next)
+                } else {
+                    out.append("\n"); i = next
+                }
+            case "\u{07}", "\u{08}":
+                // BEL and BS — drop, they don't survive a copy meaningfully.
+                i = s.index(after: i)
+            default:
+                out.append(c)
+                i = s.index(after: i)
+            }
+        }
+        return out
     }
 }

@@ -177,6 +177,12 @@ private struct UnborderHost: NSViewRepresentable {
 }
 
 private final class UnborderProbe: NSView {
+    /// Pending retry items. Held so a fresh `unborderHostItem()` (e.g. from
+    /// SwiftUI's `updateNSView`) can cancel any still-queued attempts before
+    /// scheduling its own — otherwise repeated layout passes pile up dozens
+    /// of stale closures, each capturing self.
+    private var pendingRetries: [DispatchWorkItem] = []
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         unborderHostItem()
@@ -186,10 +192,15 @@ private final class UnborderProbe: NSView {
     /// our host view is wired into a `ToolbarItemHostingView` whose
     /// `NSToolbarItem` we can reach. Idempotent.
     func unborderHostItem() {
+        for item in pendingRetries { item.cancel() }
+        pendingRetries.removeAll(keepingCapacity: true)
+
         for delay: TimeInterval in [0.0, 0.05, 0.2, 0.6] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            let item = DispatchWorkItem { [weak self] in
                 self?.tryUnborder()
             }
+            pendingRetries.append(item)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
         }
     }
 
@@ -198,6 +209,10 @@ private final class UnborderProbe: NSView {
               let toolbar = window?.toolbar else { return }
         for item in toolbar.items where item.view === host {
             if item.isBordered { item.isBordered = false }
+            // Once we've found and unbordered the item, drop any still-queued
+            // retries — they'd just repeat the same successful work.
+            for r in pendingRetries { r.cancel() }
+            pendingRetries.removeAll(keepingCapacity: true)
             return
         }
     }
@@ -506,8 +521,7 @@ private struct NewSessionMenu: View {
         } label: {
             Image(systemName: "plus")
                 .font(.callout)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 9)
+                .padding(10)
         } primaryAction: {
             onStart(defaultAgent)
         }
@@ -556,6 +570,7 @@ private struct OpenInAppButton: View {
             HStack(spacing: 5) {
                 if let icon = current.icon(size: 14) {
                     Image(nsImage: icon)
+                        .frame(width: 14, height: 14)
                 }
                 Text(current.displayName)
             }
@@ -609,7 +624,15 @@ struct TerminalHostView: NSViewRepresentable {
         // that crashes with `_postWindowNeedsUpdateConstraints`.
         let term = session.emulator.nsView
         guard isActive, let win = term.window, win.firstResponder !== term else { return }
-        DispatchQueue.main.async { win.makeFirstResponder(term) }
+        // Re-check at fire time: between dispatch and execution another tab
+        // may have grabbed focus, the window may have closed, or the
+        // emulator view may have been detached. Without these guards we'd
+        // steal focus back from whatever the user is now interacting with.
+        DispatchQueue.main.async {
+            guard let win = term.window,
+                  win.firstResponder !== term else { return }
+            win.makeFirstResponder(term)
+        }
     }
 }
 

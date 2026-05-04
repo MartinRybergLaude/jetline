@@ -1,6 +1,19 @@
 import Foundation
 import GRDB
 
+/// How the branch prefix for new workspaces in a repository is derived.
+/// Stored as the raw string in `Repository.branchPrefixMode`.
+enum BranchPrefixMode: String, CaseIterable, Hashable {
+    /// Slugged `git config user.name` followed by `/`. The most useful
+    /// default when collaborators share a remote — branches are clearly
+    /// owned without each user typing their name into settings.
+    case username
+    /// User-supplied prefix (the existing `branchPrefix` string).
+    case custom
+    /// No prefix; branch names start with the workspace slug directly.
+    case none
+}
+
 /// A git repository the user has added to Jetline.
 /// Workspaces are git worktrees rooted off this repo.
 struct Repository: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
@@ -15,6 +28,10 @@ struct Repository: Codable, Identifiable, Hashable, FetchableRecord, Persistable
     var remoteOrigin: String = "origin"
     /// `nil` means "inherit `AppSettings.globalBranchPrefix`".
     var branchPrefix: String?
+    /// Discriminator for the per-repo branch-prefix UI. `nil` is legacy:
+    /// fall back to the inherited globalBranchPrefix / custom string.
+    /// Recognised values: `username`, `custom`, `none`.
+    var branchPrefixMode: String?
     var setupScript: String?
     var runScript: String?
     /// When true, starting a run stops every other active runner in the same repo.
@@ -68,6 +85,7 @@ struct Repository: Codable, Identifiable, Hashable, FetchableRecord, Persistable
         static let lastOpenedAt = Column(CodingKeys.lastOpenedAt)
         static let remoteOrigin = Column(CodingKeys.remoteOrigin)
         static let branchPrefix = Column(CodingKeys.branchPrefix)
+        static let branchPrefixMode = Column(CodingKeys.branchPrefixMode)
         static let setupScript = Column(CodingKeys.setupScript)
         static let runScript = Column(CodingKeys.runScript)
         static let runExclusive = Column(CodingKeys.runExclusive)

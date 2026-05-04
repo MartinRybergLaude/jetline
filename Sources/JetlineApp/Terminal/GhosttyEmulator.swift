@@ -59,7 +59,13 @@ final class GhosttyEmulator: TerminalEmulatorView {
     }
     private let ptyHolder: PTYHolder
 
-    func spawn(executable: String, args: [String], cwd: String, env: [String: String]) {
+    func spawn(
+        executable: String,
+        args: [String],
+        cwd: String,
+        env: [String: String],
+        outputTap: (@Sendable (Data) -> Void)? = nil
+    ) {
         var environment = Subprocess.inheritedEnvironment(overrides: env)
         environment["TERM"] = environment["TERM"] ?? "xterm-256color"
         environment["COLORTERM"] = "truecolor"
@@ -72,6 +78,7 @@ final class GhosttyEmulator: TerminalEmulatorView {
             env: environment,
             output: { data in
                 session.receive(data)
+                outputTap?(data)
             },
             exit: { [weak self] exitCode in
                 Task { @MainActor in

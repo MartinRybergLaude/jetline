@@ -135,7 +135,7 @@ struct PromptOverrideEditor: View {
                             .font(.callout)
                             .foregroundStyle(.tertiary)
                             .padding(.horizontal, 11)
-                            .padding(.vertical, 13)
+                            .padding(.vertical, 7)
                             .allowsHitTesting(false)
                     }
                 }
@@ -166,6 +166,14 @@ struct PromptOverrideEditor: View {
                         .background(Color.secondary.opacity(0.15))
                         .clipShape(Capsule())
                 }
+            }
+            // Without an explicit content shape the label is only hit-testable
+            // where the symbol/text actually paints; the trailing Spacer
+            // becomes dead space. Promoting the whole row to a Rectangle hit
+            // area makes the entire row behave like the chevron.
+            .contentShape(Rectangle())
+            .onTapGesture {
+                withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() }
             }
         }
     }

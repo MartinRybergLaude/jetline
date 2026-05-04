@@ -18,6 +18,10 @@ struct FileDiff: Identifiable, Equatable {
     var additions: Int
     var deletions: Int
     var hunks: [Hunk]
+    /// True if git emitted "Binary files … differ" (or "GIT binary patch")
+    /// for this entry. UI uses it to suppress empty-hunk rendering and show
+    /// a "binary" hint instead.
+    var isBinary: Bool = false
 
     enum Status: String {
         case added = "A"
@@ -146,7 +150,8 @@ enum DiffComputer {
                 status: status,
                 additions: stat.0,
                 deletions: stat.1,
-                hunks: parsedFile.hunks
+                hunks: parsedFile.hunks,
+                isBinary: parsedFile.isBinary
             )
             files.append(file)
             totalAdds += stat.0
@@ -162,6 +167,7 @@ enum PatchParser {
     struct ParsedFile {
         var path: String
         var hunks: [FileDiff.Hunk]
+        var isBinary: Bool = false
     }
 
     static func parse(_ patch: String) -> [ParsedFile] {
@@ -191,12 +197,29 @@ enum PatchParser {
                 let path = extractPath(fromDiffHeader: line) ?? ""
                 currentFile = ParsedFile(path: path, hunks: [])
             } else if line.hasPrefix("+++ ") {
-                // Use +++ to refine path (handles renames)
+                // Use +++ to refine path (handles renames). Path may be
+                // git-quoted ("\"b/foo bar\"") when it contains spaces or
+                // non-ASCII bytes — same encoding as the diff --git header.
                 let after = String(line.dropFirst(4))
                 if after != "/dev/null", currentFile != nil {
-                    let trimmed = after.hasPrefix("b/") ? String(after.dropFirst(2)) : after
+                    let unquoted: String
+                    if after.hasPrefix("\""), after.hasSuffix("\""), after.count >= 2 {
+                        unquoted = unquoteCStyle(String(after.dropFirst().dropLast()))
+                    } else {
+                        unquoted = after
+                    }
+                    let trimmed = unquoted.hasPrefix("b/")
+                        ? String(unquoted.dropFirst(2))
+                        : unquoted
                     currentFile?.path = trimmed
                 }
+            } else if line.hasPrefix("Binary files ") || line == "GIT binary patch" {
+                flushHunk()
+                currentFile?.isBinary = true
+                // Stop accumulating hunks for this file; binary patch content
+                // following "GIT binary patch" is base85-encoded deltas, not
+                // unified-diff text.
+                currentHunk = nil
             } else if line.hasPrefix("@@") {
                 flushHunk()
                 currentHunk = FileDiff.Hunk(header: line, lines: [])
@@ -225,11 +248,91 @@ enum PatchParser {
         return files
     }
 
+    /// Recover the b-side path from a `diff --git ...` header. Handles both
+    /// the bare form (`diff --git a/foo b/foo`) and git's quoted form for
+    /// paths with spaces or non-ASCII bytes (`diff --git "a/foo bar" "b/foo
+    /// bar"`). For bare headers we anchor on the last occurrence of ` b/`,
+    /// not index-based splitting, so filenames containing spaces parse
+    /// correctly. The +++ refinement downstream still wins for non-rename,
+    /// non-binary cases — this parse is what binary and rename diffs rely on.
     private static func extractPath(fromDiffHeader header: String) -> String? {
-        // "diff --git a/foo/bar b/foo/bar"
-        let parts = header.split(separator: " ")
-        guard parts.count >= 4 else { return nil }
-        let bPart = String(parts[3])
-        return bPart.hasPrefix("b/") ? String(bPart.dropFirst(2)) : bPart
+        let prefix = "diff --git "
+        guard header.hasPrefix(prefix) else { return nil }
+        let rest = header.dropFirst(prefix.count)
+
+        if rest.last == "\"" {
+            // Quoted b-path: scan back for the matching unescaped opening quote.
+            let chars = Array(rest)
+            var i = chars.count - 2
+            while i >= 0 {
+                if chars[i] == "\"" {
+                    // Count preceding backslashes; even count = unescaped quote.
+                    var bs = 0
+                    var k = i - 1
+                    while k >= 0, chars[k] == "\\" { bs += 1; k -= 1 }
+                    if bs % 2 == 0 {
+                        let inner = String(chars[(i + 1)..<(chars.count - 1)])
+                        let unquoted = unquoteCStyle(inner)
+                        return unquoted.hasPrefix("b/")
+                            ? String(unquoted.dropFirst(2))
+                            : unquoted
+                    }
+                }
+                i -= 1
+            }
+            return nil
+        }
+
+        // Bare: take everything after the last " b/".
+        if let range = rest.range(of: " b/", options: .backwards) {
+            return String(rest[range.upperBound...])
+        }
+        return nil
+    }
+
+    /// Decode git's C-style quoted-path encoding: `\n`, `\t`, `\r`, `\\`, `\"`,
+    /// and 1–3-digit octal byte escapes (used for non-ASCII bytes when
+    /// `core.quotePath` is on). Returns the original substring's bytes
+    /// reassembled as UTF-8.
+    private static func unquoteCStyle(_ s: String) -> String {
+        var bytes: [UInt8] = []
+        var i = s.startIndex
+        while i < s.endIndex {
+            let c = s[i]
+            guard c == "\\" else {
+                bytes.append(contentsOf: String(c).utf8)
+                i = s.index(after: i)
+                continue
+            }
+            let next = s.index(after: i)
+            guard next < s.endIndex else {
+                bytes.append(0x5C)
+                break
+            }
+            let n = s[next]
+            switch n {
+            case "n":  bytes.append(0x0A); i = s.index(after: next)
+            case "t":  bytes.append(0x09); i = s.index(after: next)
+            case "r":  bytes.append(0x0D); i = s.index(after: next)
+            case "\\": bytes.append(0x5C); i = s.index(after: next)
+            case "\"": bytes.append(0x22); i = s.index(after: next)
+            case "0", "1", "2", "3":
+                var j = next
+                var val: UInt8 = 0
+                var count = 0
+                while count < 3, j < s.endIndex,
+                      let d = s[j].asciiValue, d >= 0x30 && d <= 0x37 {
+                    val = (val &* 8) &+ (d - 0x30)
+                    j = s.index(after: j)
+                    count += 1
+                }
+                bytes.append(val)
+                i = j
+            default:
+                bytes.append(0x5C)
+                i = next
+            }
+        }
+        return String(decoding: bytes, as: UTF8.self)
     }
 }

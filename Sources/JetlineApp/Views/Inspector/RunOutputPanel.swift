@@ -1,7 +1,9 @@
 import SwiftUI
+import AppKit
 
 /// Live tail of the workspace's run-script output, hosted inside the
-/// inspector. Replaces the previous modal sheet.
+/// inspector. Renders through libghostty so chatty TUIs (vite, jest watchers)
+/// don't bog the panel down.
 struct RunOutputPanel: View {
     @EnvironmentObject private var state: AppState
 
@@ -34,6 +36,7 @@ struct RunOutputPanel: View {
 
 private struct RunOutputContent: View {
     @ObservedObject var controller: RunController
+    @State private var copyFeedback = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -52,6 +55,17 @@ private struct RunOutputContent: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
+            Button {
+                if controller.copyOutputToPasteboard() {
+                    showCopyFeedback()
+                }
+            } label: {
+                Image(systemName: copyFeedback ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .help("Copy run output")
             if controller.isRunning {
                 Button("Stop") { controller.stop() }
                     .buttonStyle(.borderless)
@@ -62,27 +76,88 @@ private struct RunOutputContent: View {
         .padding(.vertical, 6)
     }
 
+    @ViewBuilder
     private var outputArea: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                Text(controller.output.isEmpty ? "(no output yet)" : controller.output)
-                    .font(.system(.caption, design: .monospaced))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-                    .padding(8)
-                    .id("tail")
+        if let emulator = controller.emulator {
+            RunTerminalHost(emulator: emulator)
+                .background(Color(nsColor: .textBackgroundColor))
+        } else {
+            // First mount before any run started.
+            VStack {
+                Spacer()
+                Text("(no output yet)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
             }
-            .onChange(of: controller.output) { _, _ in
-                withAnimation(.linear(duration: 0.05)) {
-                    proxy.scrollTo("tail", anchor: .bottom)
-                }
-            }
+            .frame(maxWidth: .infinity)
+            .background(Color(nsColor: .textBackgroundColor))
         }
-        .background(Color(nsColor: .textBackgroundColor))
     }
 
     private var exitDescription: String {
         if let s = controller.exitStatus { return "Exited (\(s))" }
         return "Idle"
+    }
+
+    private func showCopyFeedback() {
+        copyFeedback = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            copyFeedback = false
+        }
+    }
+}
+
+/// SwiftUI ↔ AppKit bridge for the run output's terminal. The emulator
+/// itself is owned by `RunController` and outlives this host — when the
+/// panel is dismounted (Run tab deselected, inspector hidden) we reparent
+/// the underlying NSView away so the next mount can adopt it again.
+private struct RunTerminalHost: NSViewRepresentable {
+    let emulator: TerminalEmulatorView
+
+    final class Coordinator {
+        weak var emulator: AnyObject?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSView {
+        let container = NSView()
+        context.coordinator.emulator = emulator as AnyObject
+        attach(emulator.nsView, to: container)
+        emulator.setActive(true)
+        return container
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        let term = emulator.nsView
+        if term.superview !== nsView {
+            for sub in nsView.subviews { sub.removeFromSuperview() }
+            attach(term, to: nsView)
+        }
+        context.coordinator.emulator = emulator as AnyObject
+        emulator.setActive(true)
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        // Pause the GPU surface when the panel goes away. The emulator
+        // outlives the host (RunController owns it), so we don't terminate.
+        if let emulator = coordinator.emulator as? TerminalEmulatorView {
+            MainActor.assumeIsolated {
+                emulator.setActive(false)
+            }
+        }
+        for sub in nsView.subviews { sub.removeFromSuperview() }
+    }
+
+    private func attach(_ term: NSView, to container: NSView) {
+        term.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(term)
+        NSLayoutConstraint.activate([
+            term.topAnchor.constraint(equalTo: container.topAnchor),
+            term.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            term.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            term.trailingAnchor.constraint(equalTo: container.trailingAnchor)
+        ])
     }
 }

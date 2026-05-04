@@ -33,14 +33,18 @@ final class AppState: ObservableObject {
 
     private var watchers: [String: WorktreeWatcher] = [:]
     private(set) lazy var prTracker: PRTracker = PRTracker(state: self)
+    private var hasLoaded = false
 
-    init() {
-        Task { await load() }
-    }
+    init() {}
 
     // MARK: - Load
 
+    /// Idempotent. Driven by `AppShell`'s `.task` so SwiftUI owns the
+    /// lifecycle (instead of an init-time `Task { ... }` that escapes the
+    /// SwiftUI graph and runs even when nothing observes the state).
     func load() async {
+        guard !hasLoaded else { return }
+        hasLoaded = true
         do {
             settings = try SettingsStore.load()
             let repos = try Repositories.all()
@@ -110,7 +114,7 @@ final class AppState: ObservableObject {
     func createWorkspace(in repo: Repository, name: String) async {
         let id = UUID().uuidString
         let slug = WorktreeOps.slug(name)
-        let prefix = effectiveBranchPrefix(for: repo)
+        let prefix = await effectiveBranchPrefix(for: repo)
         let branch = "\(prefix)\(slug)-\(id.prefix(6))"
         let agent = settings.defaultAgent
 
@@ -287,8 +291,26 @@ final class AppState: ObservableObject {
         if selectedWorkspaceId == workspace.id { selectedWorkspaceId = nil }
     }
 
-    private func effectiveBranchPrefix(for repo: Repository) -> String {
-        repo.branchPrefix?.nonBlank
+    /// Compute the prefix prepended to a fresh workspace's branch name.
+    ///
+    /// The `branchPrefixMode` field is the source of truth when set:
+    /// `.username` derives from `git config user.name`, `.custom` uses the
+    /// stored `branchPrefix`, `.none` produces an empty string. Repos
+    /// migrated from before the mode field have nil mode, in which case we
+    /// honour the legacy fallback chain (custom value → global → built-in).
+    private func effectiveBranchPrefix(for repo: Repository) async -> String {
+        if let raw = repo.branchPrefixMode, let mode = BranchPrefixMode(rawValue: raw) {
+            switch mode {
+            case .username:
+                let slug = await WorktreeOps.usernameSlug(at: repo.path)
+                return slug.isEmpty ? "" : slug + "/"
+            case .custom:
+                return repo.branchPrefix?.nonBlank ?? ""
+            case .none:
+                return ""
+            }
+        }
+        return repo.branchPrefix?.nonBlank
             ?? settings.globalBranchPrefix.nonBlank
             ?? "jetline/"
     }

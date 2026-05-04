@@ -105,7 +105,8 @@ struct GitActionMenu: View {
     private func label(for action: GitAction) -> some View {
         HStack(spacing: 5) {
             Image(systemName: action.systemImage)
-                .imageScale(.small)
+                .font(.system(size: 13))
+                .frame(width: 14, height: 14)
             Text(action.displayName)
         }
     }
@@ -113,7 +114,8 @@ struct GitActionMenu: View {
     private var idleLabel: some View {
         HStack(spacing: 5) {
             Image(systemName: "arrow.triangle.branch")
-                .imageScale(.small)
+                .font(.system(size: 13))
+                .frame(width: 14, height: 14)
             Text("Git")
         }
     }

@@ -237,10 +237,27 @@ final class PTYProcess: @unchecked Sendable {
             return
         }
 
-        // Block briefly to harvest the exit code. The child should already
-        // be exiting (we either saw EOF or asked it to terminate) so this
-        // returns almost immediately.
-        let waited = waitpid(pid, &status, 0)
+        // Poll with WNOHANG so a child that hasn't fully exited (rare —
+        // master EOF usually means the kernel already collected it) can't
+        // wedge the io queue. After ~1s we SIGKILL the group and wait one
+        // more pass; after ~2s we give up and report exit anyway.
+        let deadline = DispatchTime.now() + .seconds(2)
+        var waited: pid_t = 0
+        var killed = false
+        while DispatchTime.now() < deadline {
+            waited = waitpid(pid, &status, WNOHANG)
+            if waited == pid { break }
+            if waited < 0 {
+                // ECHILD (already reaped) or other error — nothing to do.
+                break
+            }
+            if !killed && DispatchTime.now() > deadline - .seconds(1) {
+                _ = kill(-pid, SIGKILL)
+                killed = true
+            }
+            usleep(20_000)
+        }
+
         let exitCode: Int32
         if waited == pid && (status & 0x7f) == 0 {
             exitCode = (status >> 8) & 0xff

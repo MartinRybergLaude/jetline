@@ -60,19 +60,28 @@ struct ImportPRPane: View {
                     Task { await runImport() }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(selectedNumber == nil || trimmedName.isEmpty || importing)
+                .disabled(!canImport)
             }
         }
         .task { await refresh() }
         .onChange(of: selectedNumber) { _, new in
-            guard let new, case let .loaded(prs) = fetchState,
+            // Pre-fill the name field for the picked PR. We don't clear
+            // already-imported selections here — `canImport` gates the
+            // action button, which is the single source of truth.
+            guard let new,
+                  case let .loaded(prs) = fetchState,
                   let pr = prs.first(where: { $0.number == new }) else { return }
-            if importedBranchNames.contains(pr.headRefName) {
-                selectedNumber = nil
-                return
-            }
             name = defaultName(for: pr)
         }
+    }
+
+    private var canImport: Bool {
+        guard let number = selectedNumber,
+              !trimmedName.isEmpty,
+              !importing,
+              case let .loaded(prs) = fetchState,
+              let pr = prs.first(where: { $0.number == number }) else { return false }
+        return !importedBranchNames.contains(pr.headRefName)
     }
 
     private var searchField: some View {

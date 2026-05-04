@@ -373,7 +373,10 @@ enum GitHubRunner {
         fragment PR on PullRequest {
           number title url state isDraft headRefName baseRefName
           mergeable mergeStateStatus
-          reviewThreads(first: 50) { nodes { isResolved } }
+          reviewThreads(first: 50) {
+            nodes { isResolved }
+            pageInfo { hasNextPage }
+          }
           comments { totalCount }
           author { login }
           commits(last: 1) {
@@ -391,6 +394,7 @@ enum GitHubRunner {
                         context state targetUrl createdAt
                       }
                     }
+                    pageInfo { hasNextPage }
                   }
                 }
               }
@@ -419,6 +423,14 @@ enum GitHubRunner {
         for a in aliases {
             guard let result = aliasMap[a.alias],
                   let node = result.nodes.first else { continue }
+            // Surface truncation as a warning so capped counts don't
+            // silently drop tail review threads / check contexts on busy PRs.
+            if node.reviewThreads?.pageInfo?.hasNextPage == true {
+                print("batchFetchPRs: PR #\(node.number) in \(repo.owner)/\(repo.name) has more than 50 review threads; tail truncated.")
+            }
+            if node.commits?.nodes.first?.commit.statusCheckRollup?.contexts.pageInfo?.hasNextPage == true {
+                print("batchFetchPRs: PR #\(node.number) in \(repo.owner)/\(repo.name) has more than 100 check contexts; tail truncated.")
+            }
             out[a.branch] = (node.toPullRequest(), node.checkRuns)
         }
         return out
@@ -433,7 +445,9 @@ enum GitHubRunner {
 
     /// Open PRs on the repo, newest-update first. Slimmer than
     /// `batchFetchPRs` — the picker only needs enough metadata to render a
-    /// row and decide forks. Capped at 100 (one GraphQL page).
+    /// row and decide forks. Capped at 100 (one GraphQL page); if the repo
+    /// has more than 100 open PRs we log a warning so silent truncation
+    /// can be diagnosed.
     static func listOpenPRs(
         repo: RepoIdentifier,
         cwd: String
@@ -453,6 +467,7 @@ enum GitHubRunner {
                   }
                 }
               }
+              pageInfo { hasNextPage }
             }
           }
         }
@@ -470,7 +485,11 @@ enum GitHubRunner {
         if let errors = decoded.errors, !errors.isEmpty {
             throw Error.other(errors.map(\.message).joined(separator: "; "))
         }
-        let nodes = decoded.data?.repository?.pullRequests.nodes ?? []
+        let connection = decoded.data?.repository?.pullRequests
+        if connection?.pageInfo?.hasNextPage == true {
+            print("listOpenPRs: \(repo.owner)/\(repo.name) has more than 100 open PRs; results truncated to first page.")
+        }
+        let nodes = connection?.nodes ?? []
         return nodes.compactMap { $0.toSummary() }
     }
 
@@ -558,8 +577,14 @@ private struct PRNode: Decodable {
     struct CommitNode: Decodable { let commit: CommitDetail }
     struct CommitDetail: Decodable { let statusCheckRollup: Rollup? }
     struct Rollup: Decodable { let contexts: ContextsConnection }
-    struct ContextsConnection: Decodable { let nodes: [ContextNode] }
-    struct ReviewThreadsConnection: Decodable { let nodes: [ReviewThread] }
+    struct ContextsConnection: Decodable {
+        let nodes: [ContextNode]
+        let pageInfo: PageInfo?
+    }
+    struct ReviewThreadsConnection: Decodable {
+        let nodes: [ReviewThread]
+        let pageInfo: PageInfo?
+    }
     struct ReviewThread: Decodable { let isResolved: Bool }
     struct CommentsConnection: Decodable { let totalCount: Int }
 
@@ -647,11 +672,18 @@ private struct PRNode: Decodable {
 
 // MARK: - listOpenPRs response wiring
 
+private struct PageInfo: Decodable {
+    let hasNextPage: Bool
+}
+
 private struct OpenPRsRepo: Decodable {
-    let repository: PullRequestsConnection?
-    struct PullRequestsConnection: Decodable {
+    let repository: RepoConnection?
+    struct RepoConnection: Decodable {
         let pullRequests: Nodes
-        struct Nodes: Decodable { let nodes: [PRSummaryNode] }
+    }
+    struct Nodes: Decodable {
+        let nodes: [PRSummaryNode]
+        let pageInfo: PageInfo?
     }
 }
 

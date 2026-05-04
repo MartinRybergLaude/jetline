@@ -46,7 +46,15 @@ final class WorktreeWatcher {
         )
         guard let s else { return }
         FSEventStreamSetDispatchQueue(s, .main)
-        FSEventStreamStart(s)
+        // FSEventStreamStart returns false on failure (rare — usually
+        // permissions or fd exhaustion). Without cleanup the stream ref
+        // leaks for the watcher's lifetime.
+        guard FSEventStreamStart(s) else {
+            FSEventStreamSetDispatchQueue(s, nil)
+            FSEventStreamInvalidate(s)
+            FSEventStreamRelease(s)
+            return
+        }
         stream = s
     }
 

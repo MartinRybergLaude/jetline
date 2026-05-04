@@ -8,8 +8,21 @@ struct FileDiffSection: View {
         VStack(alignment: .leading, spacing: 4) {
             header
             if expanded {
-                ForEach(Array(file.hunks.enumerated()), id: \.offset) { _, hunk in
-                    HunkView(hunk: hunk)
+                if file.isBinary {
+                    Text("Binary file — not shown")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 4)
+                } else {
+                    // Hunk header (`@@ -a,b +c,d @@`) is unique within a
+                    // file's hunks for non-pathological diffs; using it as
+                    // the id keeps SwiftUI's diff stable when surrounding
+                    // file content shifts. Falls back to position when
+                    // headers happen to collide.
+                    ForEach(Array(file.hunks.enumerated()), id: \.element.header) { _, hunk in
+                        HunkView(hunk: hunk)
+                    }
                 }
             }
         }

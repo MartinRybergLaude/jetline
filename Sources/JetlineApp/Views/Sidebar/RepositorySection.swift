@@ -8,10 +8,13 @@ struct RepositorySection: View {
 
     @State private var expanded: Bool = true
 
+    private var workspaces: [Workspace] { state.workspacesByRepo[repo.id] ?? [] }
+    private var hasWorkspaces: Bool { !workspaces.isEmpty }
+
     var body: some View {
         Section {
             if expanded {
-                ForEach(state.workspacesByRepo[repo.id] ?? []) { ws in
+                ForEach(workspaces) { ws in
                     Button {
                         state.selectWorkspace(ws.id)
                     } label: {
@@ -29,10 +32,16 @@ struct RepositorySection: View {
                     withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
                 } label: {
                     HStack(spacing: 6) {
-                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 12, alignment: .center)
+                        Group {
+                            if hasWorkspaces {
+                                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Color.clear
+                            }
+                        }
+                        .frame(width: 12, alignment: .center)
                         Group {
                             if let favicon = RepoIconLoader.icon(for: repo.path) {
                                 Image(nsImage: favicon)
@@ -56,6 +65,7 @@ struct RepositorySection: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .disabled(!hasWorkspaces)
                 Button(action: onNewWorkspace) {
                     Image(systemName: "plus")
                         .font(.system(size: 13, weight: .regular))

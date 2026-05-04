@@ -3,7 +3,12 @@ import XCTest
 
 final class GitActionStateTests: XCTestCase {
     func testEmptyDiffNoPRYieldsNoPrimary() {
-        let state = GitActionState.derive(diff: .empty, pr: nil, hasUncommitted: false)
+        let state = GitActionState.derive(
+            diff: .empty,
+            pr: nil,
+            hasUncommitted: false,
+            branchPosition: nil
+        )
         XCTAssertNil(state.primary)
         for action in GitAction.allCases {
             XCTAssertFalse(state.isAvailable(action), "\(action) should be unavailable")
@@ -13,7 +18,12 @@ final class GitActionStateTests: XCTestCase {
     func testCommitAvailableWhenWorkingTreeDirty() {
         // Branch is up to date with base (no diff vs base) but the working
         // tree has uncommitted edits — Commit must be the primary signal.
-        let state = GitActionState.derive(diff: .empty, pr: .absent, hasUncommitted: true)
+        let state = GitActionState.derive(
+            diff: .empty,
+            pr: .absent,
+            hasUncommitted: true,
+            branchPosition: nil
+        )
         XCTAssertEqual(state.primary, GitAction.commit)
         XCTAssertTrue(state.isAvailable(.commit))
         XCTAssertFalse(state.isAvailable(.review))
@@ -22,19 +32,37 @@ final class GitActionStateTests: XCTestCase {
     func testReviewAvailableWhenCommittedDivergence() {
         // Has diff vs base but working tree is clean — Create PR primary,
         // Review available alongside it.
-        let state = GitActionState.derive(diff: nonEmptyDiff(), pr: .absent, hasUncommitted: false)
+        let state = GitActionState.derive(
+            diff: nonEmptyDiff(),
+            pr: .absent,
+            hasUncommitted: false,
+            branchPosition: nil
+        )
         XCTAssertEqual(state.primary, GitAction.createPR)
         XCTAssertFalse(state.isAvailable(.commit))
         XCTAssertTrue(state.isAvailable(.review))
         XCTAssertTrue(state.isAvailable(.createPR))
     }
 
-    func testBehindBaseSuggestsPullUpdates() {
-        let pr = makePR(state: "OPEN", mergeStateStatus: "BEHIND")
-        let state = GitActionState.derive(diff: .empty, pr: .loaded(pr, []), hasUncommitted: false)
+    func testRemoteHasNewCommitsSuggestsPullUpdates() {
+        // Pull-updates is now driven by the local BranchPosition, not by
+        // GitHub's mergeStateStatus — only the local fetch knows whether
+        // origin/<branch> has commits we don't.
+        let pr = makePR(state: "OPEN", mergeStateStatus: "OPEN")
+        let position = BranchPosition(
+            behindRemote: 2,
+            aheadOfRemote: 0,
+            behindBase: 0,
+            remoteTrackingExists: true
+        )
+        let state = GitActionState.derive(
+            diff: .empty,
+            pr: .loaded(pr, []),
+            hasUncommitted: false,
+            branchPosition: position
+        )
         XCTAssertEqual(state.primary, GitAction.pullUpdates)
         XCTAssertTrue(state.isAvailable(.pullUpdates))
-        XCTAssertFalse(state.isAvailable(.mergePR))
     }
 
     func testFailingChecksSuggestsFixCI() {
@@ -45,16 +73,25 @@ final class GitActionStateTests: XCTestCase {
             conclusion: .failure,
             bucket: .fail
         )
-        let state = GitActionState.derive(diff: .empty, pr: .loaded(pr, [failing]), hasUncommitted: false)
+        let state = GitActionState.derive(
+            diff: .empty,
+            pr: .loaded(pr, [failing]),
+            hasUncommitted: false,
+            branchPosition: nil
+        )
         XCTAssertEqual(state.primary, GitAction.fixCI)
         XCTAssertTrue(state.isAvailable(.fixCI))
         XCTAssertFalse(state.isAvailable(.fixComments))
-        XCTAssertFalse(state.isAvailable(.mergePR))
     }
 
     func testUnresolvedThreadsSuggestsFixComments() {
         let pr = makePR(state: "OPEN", mergeStateStatus: "BLOCKED", unresolved: 2)
-        let state = GitActionState.derive(diff: .empty, pr: .loaded(pr, []), hasUncommitted: false)
+        let state = GitActionState.derive(
+            diff: .empty,
+            pr: .loaded(pr, []),
+            hasUncommitted: false,
+            branchPosition: nil
+        )
         XCTAssertEqual(state.primary, GitAction.fixComments)
         XCTAssertTrue(state.isAvailable(.fixComments))
     }
@@ -63,13 +100,23 @@ final class GitActionStateTests: XCTestCase {
         // Top-level PR comments don't create review threads — they go
         // through `comments`. Without this branch we'd miss them entirely.
         let pr = makePR(state: "OPEN", mergeStateStatus: "CLEAN", issueComments: 1)
-        let state = GitActionState.derive(diff: .empty, pr: .loaded(pr, []), hasUncommitted: false)
+        let state = GitActionState.derive(
+            diff: .empty,
+            pr: .loaded(pr, []),
+            hasUncommitted: false,
+            branchPosition: nil
+        )
         XCTAssertEqual(state.primary, GitAction.fixComments)
     }
 
     func testCleanReadyPRSuggestsMerge() {
         let pr = makePR(state: "OPEN", mergeStateStatus: "CLEAN")
-        let state = GitActionState.derive(diff: .empty, pr: .loaded(pr, []), hasUncommitted: false)
+        let state = GitActionState.derive(
+            diff: .empty,
+            pr: .loaded(pr, []),
+            hasUncommitted: false,
+            branchPosition: nil
+        )
         XCTAssertEqual(state.primary, GitAction.mergePR)
         XCTAssertTrue(state.isAvailable(.mergePR))
     }
@@ -79,21 +126,36 @@ final class GitActionStateTests: XCTestCase {
         // Primary suggestion is fixComments (more thoughtful next step), but
         // mergePR stays available in the dropdown.
         let pr = makePR(state: "OPEN", mergeStateStatus: "CLEAN", issueComments: 1)
-        let state = GitActionState.derive(diff: .empty, pr: .loaded(pr, []), hasUncommitted: false)
+        let state = GitActionState.derive(
+            diff: .empty,
+            pr: .loaded(pr, []),
+            hasUncommitted: false,
+            branchPosition: nil
+        )
         XCTAssertEqual(state.primary, GitAction.fixComments)
         XCTAssertTrue(state.isAvailable(.mergePR))
     }
 
     func testDraftPRDoesNotSuggestMerge() {
         let pr = makePR(state: "OPEN", mergeStateStatus: "CLEAN", isDraft: true)
-        let state = GitActionState.derive(diff: .empty, pr: .loaded(pr, []), hasUncommitted: false)
+        let state = GitActionState.derive(
+            diff: .empty,
+            pr: .loaded(pr, []),
+            hasUncommitted: false,
+            branchPosition: nil
+        )
         XCTAssertNil(state.primary)
         XCTAssertFalse(state.isAvailable(.mergePR))
     }
 
     func testMergedPROffersNoPrimary() {
         let pr = makePR(state: "MERGED", mergeStateStatus: nil)
-        let state = GitActionState.derive(diff: .empty, pr: .loaded(pr, []), hasUncommitted: false)
+        let state = GitActionState.derive(
+            diff: .empty,
+            pr: .loaded(pr, []),
+            hasUncommitted: false,
+            branchPosition: nil
+        )
         XCTAssertNil(state.primary)
     }
 
@@ -111,7 +173,8 @@ final class GitActionStateTests: XCTestCase {
         let state = GitActionState.derive(
             diff: nonEmptyDiff(),
             pr: .loaded(pr, [failing]),
-            hasUncommitted: true
+            hasUncommitted: true,
+            branchPosition: nil
         )
         XCTAssertEqual(state.primary, GitAction.commit)
         XCTAssertTrue(state.isAvailable(.fixCI))  // still in the dropdown

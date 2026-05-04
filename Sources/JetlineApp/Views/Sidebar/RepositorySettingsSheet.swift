@@ -11,6 +11,10 @@ struct RepositorySettingsSheet: View {
     @State private var remotes: [String] = []
     @State private var baseRefs: [String] = []
     @State private var confirmingDelete = false
+    /// Slugged `git config user.name`, loaded once per sheet open so the
+    /// branch-prefix preview can show the live value the workspace creator
+    /// will pick up.
+    @State private var usernameSlug: String = ""
 
     init(repository: Repository) {
         self.repository = repository
@@ -100,24 +104,48 @@ struct RepositorySettingsSheet: View {
                 .labelsHidden()
                 .fixedSize()
             }
-            describedRow(
-                title: "Branch prefix",
-                description: "Leave empty to inherit the global prefix."
-            ) {
-                TextField(
-                    state.settings.globalBranchPrefix,
-                    text: Binding(
-                        get: { draft.branchPrefix ?? "" },
-                        set: { draft.branchPrefix = $0.isEmpty ? nil : $0 }
-                    )
-                )
-                .multilineTextAlignment(.trailing)
-                .textFieldStyle(.plain)
-                .frame(width: 160)
-            }
+            branchPrefixRow
         } header: {
             Text("Branching")
         }
+    }
+
+    private var branchPrefixRow: some View {
+        BranchPrefixField(
+            mode: branchPrefixModeBinding,
+            customValue: branchPrefixCustomBinding,
+            usernameSlug: usernameSlug
+        )
+    }
+
+    private var branchPrefixModeBinding: Binding<BranchPrefixMode> {
+        Binding(
+            get: {
+                if let raw = draft.branchPrefixMode, let mode = BranchPrefixMode(rawValue: raw) {
+                    return mode
+                }
+                // Migrate-on-display: legacy rows with a non-empty custom
+                // value land on `.custom`; everything else defaults to the
+                // new `.username` behaviour.
+                return draft.branchPrefix?.nonBlank == nil ? .username : .custom
+            },
+            set: { newMode in
+                draft.branchPrefixMode = newMode.rawValue
+                if newMode != .custom {
+                    // Clear the legacy custom string so a later switch back
+                    // to .custom starts from an explicit blank rather than
+                    // a value the user didn't type in this session.
+                    draft.branchPrefix = nil
+                }
+            }
+        )
+    }
+
+    private var branchPrefixCustomBinding: Binding<String> {
+        Binding(
+            get: { draft.branchPrefix ?? "" },
+            set: { draft.branchPrefix = $0.isEmpty ? nil : $0 }
+        )
     }
 
     private var scriptsSection: some View {
@@ -193,13 +221,24 @@ struct RepositorySettingsSheet: View {
 
     private var dangerZoneSection: some View {
         Section {
-            describedRow(
-                title: "Delete repository",
-                description: "Removes Jetline's record and all its worktrees. The original checkout is untouched."
-            ) {
+            // Custom row layout (rather than `describedRow`) so the button
+            // sits centred against the multi-line label instead of baseline-
+            // aligned with the title alone, and tints to the destructive
+            // accent — `role: .destructive` alone doesn't colourise plain
+            // bordered buttons on macOS.
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Delete repository")
+                    Text("Removes Jetline's record and all its worktrees. The original checkout is untouched.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
                 Button("Delete…", role: .destructive) {
                     confirmingDelete = true
                 }
+                .tint(.red)
             }
         }
     }
@@ -252,11 +291,15 @@ struct RepositorySettingsSheet: View {
                     )
                     .frame(minHeight: 64, maxHeight: 96)
                 if text.wrappedValue.isEmpty {
+                    // Matches the TextEditor's actual content origin: outer
+                    // `.padding(6)` + the underlying NSTextView's default
+                    // textContainerInset (zero on macOS 15+), so the
+                    // placeholder lines up with where the user types.
                     Text(placeholder)
                         .font(.system(.callout, design: .monospaced))
                         .foregroundStyle(.tertiary)
                         .padding(.horizontal, 11)
-                        .padding(.vertical, 13)
+                        .padding(.vertical, 7)
                         .allowsHitTesting(false)
                 }
             }
@@ -284,8 +327,77 @@ struct RepositorySettingsSheet: View {
     private func loadRefs() async {
         async let r = WorktreeOps.listRemotes(at: repository.path)
         async let b = WorktreeOps.listBaseRefs(at: repository.path)
-        let (remotes, refs) = await (r, b)
+        async let u = WorktreeOps.usernameSlug(at: repository.path)
+        let (remotes, refs, slug) = await (r, b, u)
         self.remotes = remotes.isEmpty ? [draft.remoteOrigin] : remotes
         self.baseRefs = refs.contains(draft.defaultBranch) ? refs : ([draft.defaultBranch] + refs)
+        self.usernameSlug = slug
+    }
+}
+
+/// Three-mode picker for the branch prefix: derive from the user's git
+/// identity, a hand-typed custom prefix, or no prefix at all. A live
+/// preview of the resulting branch name sits at the right edge so the
+/// formatting impact of each choice is immediate.
+private struct BranchPrefixField: View {
+    @Binding var mode: BranchPrefixMode
+    @Binding var customValue: String
+    let usernameSlug: String
+
+    /// Workspace name used in the preview only. A short, plausible English
+    /// noun reads more naturally than "<workspace-name>" or `slug` and
+    /// matches the design reference image.
+    private let exampleSlug = "tokyo"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Branch prefix")
+                    Text("Prefix added to branch names when creating new workspaces in this repo.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                HStack(spacing: 4) {
+                    Text("Preview:")
+                        .foregroundStyle(.secondary)
+                    Text(previewBranch)
+                        .font(.system(.body, design: .monospaced))
+                }
+            }
+
+            Picker(selection: $mode) {
+                Text("Username").tag(BranchPrefixMode.username)
+                Text("Custom").tag(BranchPrefixMode.custom)
+                Text("None").tag(BranchPrefixMode.none)
+            } label: {
+                EmptyView()
+            }
+            .pickerStyle(.radioGroup)
+            .labelsHidden()
+
+            if mode == .custom {
+                TextField("Custom prefix (e.g. team/)", text: $customValue)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 320, alignment: .leading)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var previewBranch: String {
+        let prefix: String = {
+            switch mode {
+            case .username:
+                return usernameSlug.isEmpty ? "" : usernameSlug + "/"
+            case .custom:
+                return customValue
+            case .none:
+                return ""
+            }
+        }()
+        return prefix + exampleSlug
     }
 }

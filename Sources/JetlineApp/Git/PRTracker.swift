@@ -132,7 +132,9 @@ final class PRTracker {
     /// Drive a per-repo poll loop until cancelled. The caller owns the
     /// poll body and the interval policy; this just sequences poll →
     /// sleep → poll and keeps the sleep `Task` reachable so `kick(...)`
-    /// can cancel it.
+    /// can cancel it. The cancellation handler propagates parent
+    /// cancellation into the inner sleep — without it, stopping the
+    /// loop would block until the current sleep finished naturally.
     private func runLoop(
         repoId: String,
         interval: @escaping (PRTracker) -> Double,
@@ -146,7 +148,11 @@ final class PRTracker {
                 try? await Task.sleep(for: .seconds(interval(self)))
             }
             loops[repoId]?[keyPath: sleepKey] = sleep
-            await sleep.value
+            await withTaskCancellationHandler {
+                await sleep.value
+            } onCancel: {
+                sleep.cancel()
+            }
             if loops[repoId]?[keyPath: sleepKey] == sleep {
                 loops[repoId]?[keyPath: sleepKey] = nil
             }

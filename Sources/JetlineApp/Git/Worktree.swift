@@ -40,6 +40,21 @@ enum WorktreeOps {
         URL(fileURLWithPath: path).lastPathComponent
     }
 
+    /// `git config user.name` with whitespace stripped — used as the auto
+    /// branch prefix when the repo's prefix mode is `.username`. Returns the
+    /// system login (`NSUserName()`) if git's user.name isn't set, and an
+    /// empty string only as the absolute last resort.
+    static func usernameSlug(at repoPath: String) async -> String {
+        let raw = try? await GitRunner.runChecked(
+            ["config", "--get", "user.name"],
+            cwd: repoPath
+        )
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let stripped = trimmed.unicodeScalars.filter { !CharacterSet.whitespacesAndNewlines.contains($0) }
+        if !stripped.isEmpty { return String(String.UnicodeScalarView(stripped)) }
+        return NSUserName()
+    }
+
     /// True if the path is the top of a git working tree.
     static func isGitRepo(at path: String) async -> Bool {
         let result = try? await GitRunner.run(
