@@ -201,6 +201,24 @@ private struct ChecksSection: View {
     }
 }
 
+/// Filled yellow dot that fades in and out — visual match for the
+/// "in-progress" check state. Matches the sizing of the other SF Symbol
+/// check icons by reusing `circle.fill` instead of a raw Circle shape.
+private struct PulsingCheckIcon: View {
+    @State private var pulse = false
+
+    var body: some View {
+        Image(systemName: "circle.fill")
+            .foregroundStyle(.yellow)
+            .opacity(pulse ? 0.35 : 1.0)
+            .animation(
+                .easeInOut(duration: 0.7).repeatForever(autoreverses: true),
+                value: pulse
+            )
+            .onAppear { pulse = true }
+    }
+}
+
 private struct CheckRow: View {
     let run: CheckRun
 
@@ -237,7 +255,7 @@ private struct CheckRow: View {
         case .pending:
             Image(systemName: "circle.dotted").foregroundStyle(.yellow)
         case .running:
-            Image(systemName: "circle.dashed").foregroundStyle(.yellow)
+            PulsingCheckIcon()
         case .skipped:
             Image(systemName: "minus.circle").foregroundStyle(.secondary)
         case .cancelled:
