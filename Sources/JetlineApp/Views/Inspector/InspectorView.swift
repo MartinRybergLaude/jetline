@@ -19,8 +19,8 @@ struct InspectorView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 5)
+            .overlay(alignment: .bottom) { Divider() }
 
-            Divider()
             content
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
