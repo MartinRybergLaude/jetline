@@ -1,17 +1,14 @@
 import SwiftUI
 
 /// Xcode-style segmented tab bar: a recessed capsule "track" with equal-width
-/// segments. The selected segment is an inset accent capsule that slides
-/// between positions via `matchedGeometryEffect`. The label closure decides
-/// what each segment renders (icon or text).
+/// segments. The selected segment is filled with an accent capsule. The
+/// label closure decides what each segment renders (icon or text).
 struct CapsuleTabs<Tab: Hashable, Label: View>: View {
     @Binding var selection: Tab
     let tabs: [Tab]
     var height: CGFloat = 22
     var help: ((Tab) -> String?)? = nil
     @ViewBuilder let label: (Tab, Bool) -> Label
-
-    @Namespace private var ns
 
     var body: some View {
         HStack(spacing: 0) {
@@ -28,7 +25,7 @@ struct CapsuleTabs<Tab: Hashable, Label: View>: View {
         let showDivider = idx > 0 && !prevSelected && !isSelected
         return Button {
             guard !isSelected else { return }
-            withAnimation(.snappy(duration: 0.18)) { selection = tab }
+            selection = tab
         } label: {
             label(tab, isSelected)
                 .font(.system(size: 13, weight: .semibold))
@@ -47,9 +44,7 @@ struct CapsuleTabs<Tab: Hashable, Label: View>: View {
         .buttonStyle(.plain)
         .background {
             if isSelected {
-                Capsule()
-                    .fill(Color.accentColor)
-                    .matchedGeometryEffect(id: "selection", in: ns)
+                Capsule().fill(Color.accentColor)
             }
         }
         .help(help?(tab) ?? "")

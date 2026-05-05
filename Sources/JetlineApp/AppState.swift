@@ -395,13 +395,18 @@ final class AppState: ObservableObject {
     }
 
     /// Claude Code stores each conversation as
-    /// `~/.claude/projects/<cwd-with-slashes-as-dashes>/<sessionId>.jsonl`.
-    /// File presence is the most reliable signal that `--resume` will
-    /// succeed; absence means the session was registered but never had a
-    /// turn (so nothing was persisted).
+    /// `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl`, where
+    /// `<encoded-cwd>` replaces every non-alphanumeric character with `-`.
+    /// That means `/Users/x/.jetline/...` becomes `-Users-x--jetline-...`
+    /// (the `/.` collapses to `--`), so a naïve `/`-only swap misses the
+    /// dot and looks at a path that never exists — which would mark every
+    /// Jetline-spawned Claude row ended on the next launch and break
+    /// resume entirely.
     private static func claudeConversationExists(cwd: String, sessionId: String) -> Bool {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let encoded = cwd.replacingOccurrences(of: "/", with: "-")
+        let encoded = String(cwd.map { ch in
+            ch.isLetter || ch.isNumber || ch == "-" ? ch : "-"
+        })
         let path = "\(home)/.claude/projects/\(encoded)/\(sessionId).jsonl"
         return FileManager.default.fileExists(atPath: path)
     }
