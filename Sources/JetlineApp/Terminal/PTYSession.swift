@@ -33,6 +33,22 @@ final class PTYSession: ObservableObject, Identifiable {
         self.cwd = cwd
         self.initialPrompt = initialPrompt
         self.emulator = TerminalEmulatorFactory.make()
+        // Keep the AppTerminalView in a window from the moment it exists.
+        // libghostty's InMemoryTerminalSession drops every byte until the
+        // surface is built, and the surface only exists once the view has
+        // a window. Without this, two races produce empty-canvas tabs:
+        //   1. Fresh tab: SwiftUI hasn't yet mounted the host view when
+        //      the spawn Task fires, so the agent's startup banner is
+        //      written into a nil surface and lost.
+        //   2. Tab switch: SwiftUI dismantles the host on `.id` change,
+        //      orphaning the term (no window → surface destroyed). When
+        //      the user returns, addSubview rebuilds an empty surface.
+        // Parking offscreen by default keeps the surface alive across
+        // both transitions; SwiftUI's `addSubview` in makeNSView pulls
+        // the view back out into the active container, and
+        // `dismantleNSView` parks it back when the tab is hidden.
+        TerminalIncubator.park(emulator.nsView)
+        emulator.setActive(false)
     }
 
     /// Resolve the binary path and start the agent process. Idempotent —

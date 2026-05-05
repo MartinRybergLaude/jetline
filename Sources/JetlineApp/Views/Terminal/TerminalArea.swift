@@ -802,6 +802,19 @@ struct TerminalHostView: NSViewRepresentable {
             win.makeFirstResponder(term)
         }
     }
+
+    /// SwiftUI is tearing this host down — typically because `.id(session.id)`
+    /// swapped to a different tab. Park the emulator back in the offscreen
+    /// incubator so it keeps a window: without this the term is orphaned,
+    /// libghostty's surface tears down, and PTY chunks that arrive while the
+    /// tab is hidden get dropped. The surface persists across the reparent
+    /// so when the user comes back the conversation is intact.
+    static func dismantleNSView(_ nsView: NSView, coordinator: ()) {
+        guard let container = nsView as? TerminalDropContainer,
+              let session = container.session else { return }
+        TerminalIncubator.park(session.emulator.nsView)
+        session.emulator.setActive(false)
+    }
 }
 
 /// Terminal-area drop target. libghostty's `AppTerminalView` doesn't register

@@ -538,6 +538,11 @@ final class AppState: ObservableObject {
               let idx = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
         let session = sessions.remove(at: idx)
         session.terminate()
+        // Detach from the incubator (or whichever container hosts it) so
+        // dropping the PTYSession actually releases the AppTerminalView —
+        // otherwise the parked subview keeps a strong ref and the
+        // libghostty allocations outlive the close.
+        session.emulator.nsView.removeFromSuperview()
         sessionsByWorkspace[workspaceId] = sessions
 
         if activeSessionByWorkspace[workspaceId] == sessionId {
@@ -742,7 +747,10 @@ final class AppState: ObservableObject {
     private func detachWorkspace(_ id: String) {
         watchers[id]?.stop()
         watchers.removeValue(forKey: id)
-        for s in sessionsByWorkspace[id] ?? [] { s.terminate() }
+        for s in sessionsByWorkspace[id] ?? [] {
+            s.terminate()
+            s.emulator.nsView.removeFromSuperview()
+        }
         sessionsByWorkspace.removeValue(forKey: id)
         activeSessionByWorkspace.removeValue(forKey: id)
         diffByWorkspace.removeValue(forKey: id)
