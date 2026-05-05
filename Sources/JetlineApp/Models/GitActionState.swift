@@ -65,13 +65,19 @@ struct GitActionState: Equatable {
 
             avail[.fixCI] = hasFailing
             avail[.fixComments] = hasComments
-            // Permissive merge gate: open + not draft + no conflicts. We
-            // intentionally don't require `mergeStateStatus == CLEAN` —
-            // GitHub returns UNSTABLE for non-required failing checks and
-            // UNKNOWN while it's recomputing after a force-push, both of
-            // which are still mergeable from the UI. If branch protection
-            // would block the merge, `gh pr merge` surfaces the error.
-            avail[.mergePR] = !conflicting && !pull.isDraft
+            // Merge gate: open + not draft + no conflicts + review not
+            // blocking. `reviewDecision` is `nil` when the repo doesn't
+            // require review, `APPROVED` once the required reviewers have
+            // signed off, and `REVIEW_REQUIRED`/`CHANGES_REQUESTED` while
+            // protection rules still block the merge — match what GitHub's
+            // own merge button does. We stay permissive on `mergeStateStatus`
+            // (UNSTABLE for non-required failing checks, UNKNOWN while it's
+            // recomputing after a force-push) since those still mergeable.
+            let reviewBlocks = pull.reviewDecision.map {
+                let upper = $0.uppercased()
+                return upper == "REVIEW_REQUIRED" || upper == "CHANGES_REQUESTED"
+            } ?? false
+            avail[.mergePR] = !conflicting && !pull.isDraft && !reviewBlocks
 
         case .absent:
             avail[.createPR] = hasDiffVsBase

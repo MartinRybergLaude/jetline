@@ -132,5 +132,9 @@ enum Schema {
                 t.add(column: "branchPrefixMode", .text)
             }
         }
+
+        migrator.registerMigration("v10_drop_sessions") { db in
+            try db.drop(table: "sessions")
+        }
     }
 }

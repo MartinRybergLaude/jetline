@@ -3,6 +3,7 @@ import AppKit
 
 @main
 struct JetlineApp: App {
+    @NSApplicationDelegateAdaptor(JetlineAppDelegate.self) private var appDelegate
     @StateObject private var state = AppState()
 
     var body: some Scene {
@@ -10,6 +11,7 @@ struct JetlineApp: App {
             AppShell()
                 .environmentObject(state)
                 .preferredColorScheme(colorScheme(for: state.settings.theme))
+                .task { appDelegate.state = state }
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified(showsTitle: true))
@@ -79,5 +81,25 @@ struct JetlineApp: App {
         case .light: return .light
         case .dark: return .dark
         }
+    }
+}
+
+/// Intercepts ⌘Q / Quit-menu so the user gets a chance to bail when there
+/// are live agent tabs. SwiftUI on macOS otherwise tears the windows down
+/// without warning, killing every running PTY mid-conversation.
+@MainActor
+final class JetlineAppDelegate: NSObject, NSApplicationDelegate {
+    weak var state: AppState?
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let state, state.hasOpenTabs else { return .terminateNow }
+        let alert = NSAlert()
+        alert.messageText = "Quit Jetline?"
+        alert.informativeText = "You have active conversations. Quitting will end those sessions."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Quit")
+        let cancel = alert.addButton(withTitle: "Cancel")
+        cancel.keyEquivalent = "\u{1b}"
+        return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
     }
 }

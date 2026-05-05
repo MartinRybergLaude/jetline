@@ -56,8 +56,6 @@ struct Workspace: Codable, Identifiable, Hashable, FetchableRecord, PersistableR
     }
 
     static let repository = belongsTo(Repository.self)
-    static let sessions = hasMany(Session.self)
 
     var repository: QueryInterfaceRequest<Repository> { request(for: Workspace.repository) }
-    var sessions: QueryInterfaceRequest<Session> { request(for: Workspace.sessions) }
 }

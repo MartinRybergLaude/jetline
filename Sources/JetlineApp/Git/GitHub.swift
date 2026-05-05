@@ -27,6 +27,10 @@ struct PullRequest: Codable, Sendable, Hashable {
     /// Number of top-level issue comments on the PR. Distinct from review
     /// threads — a general PR comment doesn't create a thread.
     var issueCommentCount: Int = 0
+    /// `APPROVED` / `CHANGES_REQUESTED` / `REVIEW_REQUIRED`, or `nil` when
+    /// the repo doesn't require review (no branch protection configured).
+    /// Drives the merge gate so the toolbar matches GitHub's UI.
+    var reviewDecision: String?
 
     var hasOpenComments: Bool {
         unresolvedThreadCount > 0 || issueCommentCount > 0
@@ -44,7 +48,8 @@ struct PullRequest: Codable, Sendable, Hashable {
         mergeable: String? = nil,
         mergeStateStatus: String? = nil,
         unresolvedThreadCount: Int = 0,
-        issueCommentCount: Int = 0
+        issueCommentCount: Int = 0,
+        reviewDecision: String? = nil
     ) {
         self.number = number
         self.title = title
@@ -58,11 +63,13 @@ struct PullRequest: Codable, Sendable, Hashable {
         self.mergeStateStatus = mergeStateStatus
         self.unresolvedThreadCount = unresolvedThreadCount
         self.issueCommentCount = issueCommentCount
+        self.reviewDecision = reviewDecision
     }
 
     enum CodingKeys: String, CodingKey {
         case number, title, url, state, isDraft, headRefName, baseRefName, author
         case mergeable, mergeStateStatus, unresolvedThreadCount, issueCommentCount
+        case reviewDecision
     }
 
     /// Custom decode so PR snapshots persisted before the comment-tracking
@@ -84,6 +91,7 @@ struct PullRequest: Codable, Sendable, Hashable {
         mergeStateStatus = try c.decodeIfPresent(String.self, forKey: .mergeStateStatus)
         unresolvedThreadCount = try c.decodeIfPresent(Int.self, forKey: .unresolvedThreadCount) ?? 0
         issueCommentCount = try c.decodeIfPresent(Int.self, forKey: .issueCommentCount) ?? 0
+        reviewDecision = try c.decodeIfPresent(String.self, forKey: .reviewDecision)
     }
 }
 
@@ -372,7 +380,7 @@ enum GitHubRunner {
         }
         fragment PR on PullRequest {
           number title url state isDraft headRefName baseRefName
-          mergeable mergeStateStatus
+          mergeable mergeStateStatus reviewDecision
           reviewThreads(first: 50) {
             nodes { isResolved }
             pageInfo { hasNextPage }
@@ -567,6 +575,7 @@ private struct PRNode: Decodable {
     let baseRefName: String
     let mergeable: String?
     let mergeStateStatus: String?
+    let reviewDecision: String?
     let reviewThreads: ReviewThreadsConnection?
     let comments: CommentsConnection?
     let author: AuthorNode?
@@ -625,7 +634,8 @@ private struct PRNode: Decodable {
             mergeable: mergeable,
             mergeStateStatus: mergeStateStatus,
             unresolvedThreadCount: unresolved,
-            issueCommentCount: comments?.totalCount ?? 0
+            issueCommentCount: comments?.totalCount ?? 0,
+            reviewDecision: reviewDecision
         )
     }
 

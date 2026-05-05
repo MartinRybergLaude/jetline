@@ -10,10 +10,9 @@ final class PTYSession: ObservableObject, Identifiable {
     let workspaceId: String
     let agent: Workspace.AgentKind
     let cwd: String
-    let isResume: Bool
     /// Initial prompt to send to the agent on first start, as a positional
     /// argument. Used by the inspector's git action bar; nil for plain new
-    /// tabs. Ignored on resume.
+    /// tabs.
     let initialPrompt: String?
     let emulator: TerminalEmulatorView
 
@@ -21,25 +20,17 @@ final class PTYSession: ObservableObject, Identifiable {
     @Published private(set) var lastError: String?
     @Published private(set) var fellBackToShell: Bool = false
 
-    /// Called once when the underlying agent process exits, regardless of
-    /// status. Owner (AppState) sets this after construction to reconcile
-    /// DB state — e.g. mark the session row ended so a stale resume row
-    /// doesn't keep getting retried on subsequent launches.
-    var onExit: (() -> Void)?
-
     init(
         id: String = UUID().uuidString,
         workspaceId: String,
         agent: Workspace.AgentKind,
         cwd: String,
-        isResume: Bool = false,
         initialPrompt: String? = nil
     ) {
         self.id = id
         self.workspaceId = workspaceId
         self.agent = agent
         self.cwd = cwd
-        self.isResume = isResume
         self.initialPrompt = initialPrompt
         self.emulator = TerminalEmulatorFactory.make()
     }
@@ -55,14 +46,9 @@ final class PTYSession: ObservableObject, Identifiable {
             let spec = try await AgentLauncher.spec(
                 for: agent,
                 settings: settings,
-                sessionId: id,
-                isResume: isResume,
                 initialPrompt: initialPrompt
             )
             fellBackToShell = spec.fellBackToShell
-            emulator.setExitHandler { [weak self] _ in
-                self?.onExit?()
-            }
             emulator.spawn(executable: spec.executable, args: spec.args, cwd: cwd, env: spec.env)
             emulator.updateFont(family: settings.terminalFontFamily, size: settings.terminalFontSize)
         } catch {

@@ -71,6 +71,46 @@ final class PTYProcess: @unchecked Sendable {
             ws_ypixel: 0
         )
 
+        // All argv/envp/path C strings are built in the parent before
+        // forkpty. After fork, the child inherits a COW copy of memory but
+        // only the calling thread — any other thread holding the malloc
+        // lock at fork time leaves malloc effectively locked forever in
+        // the child. The moment the child tries to allocate (Swift String
+        // bridging, NSString, Array.map, strdup, lazy metadata init) it
+        // deadlocks before reaching execve, the parent never sees PTY
+        // output or EOF, and the new tab paints as libghostty's idle
+        // cursor with no shell ever appearing. Async-signal-safety rules
+        // (POSIX) say only a fixed list of C calls are allowed between
+        // fork and exec — the child path below sticks to that list.
+        let basename = (executable as NSString).lastPathComponent
+        let argvSource = [basename] + args
+        let envpSource = env.map { "\($0.key)=\($0.value)" }
+        let argvCount = argvSource.count
+        let envpCount = envpSource.count
+        let argv = UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>.allocate(
+            capacity: argvCount + 1
+        )
+        let envp = UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>.allocate(
+            capacity: envpCount + 1
+        )
+        for (i, s) in argvSource.enumerated() { argv[i] = strdup(s) }
+        argv[argvCount] = nil
+        for (i, s) in envpSource.enumerated() { envp[i] = strdup(s) }
+        envp[envpCount] = nil
+        let executableC = strdup(executable)
+        let cwdC = strdup(cwd)
+
+        defer {
+            // Parent only — the child either replaces its image via
+            // execve or exits via `_exit`, neither of which runs defers.
+            for i in 0..<argvCount { free(argv[i]) }
+            argv.deallocate()
+            for i in 0..<envpCount { free(envp[i]) }
+            envp.deallocate()
+            free(executableC)
+            free(cwdC)
+        }
+
         var master: Int32 = -1
         let pid = withUnsafePointer(to: &ws) { wsPtr -> pid_t in
             forkpty(&master, nil, nil, UnsafeMutablePointer(mutating: wsPtr))
@@ -81,26 +121,13 @@ final class PTYProcess: @unchecked Sendable {
         }
 
         if pid == 0 {
-            // Child. Set up the process group so SIGINT to -pid reaches every
-            // descendant Claude Code spawns. Then chdir, build argv/envp, and
-            // execve. argv[0] must be the executable's basename — Claude Code
-            // reads it for its own re-exec path.
+            // Child. Async-signal-safe C calls only — see comment above.
+            // setpgid groups the child so SIGINT to -pid reaches every
+            // descendant the agent spawns. argv[0] is the executable's
+            // basename because Claude Code re-execs itself by argv[0].
             _ = setpgid(0, 0)
-            _ = chdir(cwd)
-
-            let basename = (executable as NSString).lastPathComponent
-            var argvStrings: [UnsafeMutablePointer<CChar>?] = ([basename] + args).map { strdup($0) }
-            argvStrings.append(nil)
-
-            var envpStrings: [UnsafeMutablePointer<CChar>?] = env.map { strdup("\($0.key)=\($0.value)") }
-            envpStrings.append(nil)
-
-            argvStrings.withUnsafeBufferPointer { argvBP in
-                envpStrings.withUnsafeBufferPointer { envpBP in
-                    _ = execve(executable, argvBP.baseAddress, envpBP.baseAddress)
-                }
-            }
-            // execve only returns on failure.
+            _ = chdir(cwdC)
+            _ = execve(executableC, argv, envp)
             _exit(127)
         }
 

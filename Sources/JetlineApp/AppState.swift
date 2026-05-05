@@ -347,71 +347,10 @@ final class AppState: ObservableObject {
 
     // MARK: - Sessions
 
-    /// Repopulate tabs the first time a workspace is selected this app run.
-    /// If the DB has open sessions, recreate them in resume mode so each
-    /// agent reloads its conversation; otherwise start one fresh.
+    /// Spawn a fresh tab the first time a workspace is selected this app run.
     private func ensureSessionExists(for workspace: Workspace) {
         guard sessionsByWorkspace[workspace.id]?.isEmpty ?? true else { return }
-
-        let persisted = (try? Sessions.openForWorkspace(workspace.id)) ?? []
-        // Only Claude tabs come back across launches; close the rest so they
-        // don't accumulate as zombie open rows.
-        for row in persisted where row.agent != .claude {
-            try? Sessions.end(id: row.id)
-        }
-        // A Claude row is only resumable if its conversation file is on disk.
-        // Claude doesn't write the JSONL until the first turn, so a tab the
-        // user opened and never typed in leaves a row with no conversation —
-        // `claude --resume <id>` would just error with "couldn't find
-        // conversation" and re-spawn that broken state forever. End those
-        // rows here so the workspace gets a fresh tab instead.
-        let resumable = persisted.filter { row in
-            guard row.agent == .claude else { return false }
-            if Self.claudeConversationExists(cwd: workspace.worktreePath, sessionId: row.id) {
-                return true
-            }
-            try? Sessions.end(id: row.id)
-            return false
-        }
-
-        guard !resumable.isEmpty else {
-            startNewSession(for: workspace, agent: workspace.agent)
-            return
-        }
-
-        let hydrated = resumable.map { row in
-            let session = PTYSession(
-                id: row.id,
-                workspaceId: workspace.id,
-                agent: row.agent,
-                cwd: workspace.worktreePath,
-                isResume: true
-            )
-            attachExitHandler(to: session)
-            return session
-        }
-        for session in hydrated {
-            Task { await session.startIfNeeded() }
-        }
-        sessionsByWorkspace[workspace.id] = hydrated
-        activeSessionByWorkspace[workspace.id] = hydrated.last?.id
-    }
-
-    /// Claude Code stores each conversation as
-    /// `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl`, where
-    /// `<encoded-cwd>` replaces every non-alphanumeric character with `-`.
-    /// That means `/Users/x/.jetline/...` becomes `-Users-x--jetline-...`
-    /// (the `/.` collapses to `--`), so a naïve `/`-only swap misses the
-    /// dot and looks at a path that never exists — which would mark every
-    /// Jetline-spawned Claude row ended on the next launch and break
-    /// resume entirely.
-    private static func claudeConversationExists(cwd: String, sessionId: String) -> Bool {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let encoded = String(cwd.map { ch in
-            ch.isLetter || ch.isNumber || ch == "-" ? ch : "-"
-        })
-        let path = "\(home)/.claude/projects/\(encoded)/\(sessionId).jsonl"
-        return FileManager.default.fileExists(atPath: path)
+        startNewSession(for: workspace, agent: workspace.agent)
     }
 
     func startNewSession(for workspace: Workspace, agent: Workspace.AgentKind) {
@@ -420,31 +359,9 @@ final class AppState: ObservableObject {
             agent: agent,
             cwd: workspace.worktreePath
         )
-        attachExitHandler(to: session)
         sessionsByWorkspace[workspace.id, default: []].append(session)
         activeSessionByWorkspace[workspace.id] = session.id
-
-        let dbSession = Session(
-            id: session.id,
-            workspaceId: workspace.id,
-            title: "\(agent.displayName) session",
-            agent: agent,
-            startedAt: Date()
-        )
-        try? Sessions.insert(dbSession)
-
         Task { await session.startIfNeeded() }
-    }
-
-    /// Mark the persisted session row ended when the PTY exits, regardless
-    /// of cause. Without this a `--resume` that fails (Claude can't find
-    /// the conversation, broken binary, etc.) leaves the row open and the
-    /// next launch reattempts the same broken resume forever.
-    private func attachExitHandler(to session: PTYSession) {
-        let id = session.id
-        session.onExit = {
-            Task { @MainActor in try? Sessions.end(id: id) }
-        }
     }
 
     func selectSession(_ sessionId: String, in workspaceId: String) {
@@ -482,18 +399,8 @@ final class AppState: ObservableObject {
             cwd: workspace.worktreePath,
             initialPrompt: prompt
         )
-        attachExitHandler(to: session)
         sessionsByWorkspace[workspace.id, default: []].append(session)
         activeSessionByWorkspace[workspace.id] = session.id
-
-        let dbSession = Session(
-            id: session.id,
-            workspaceId: workspace.id,
-            title: "\(action.displayName) (\(agent.displayName))",
-            agent: agent,
-            startedAt: Date()
-        )
-        try? Sessions.insert(dbSession)
         Task { await session.startIfNeeded() }
     }
 
@@ -616,6 +523,13 @@ final class AppState: ObservableObject {
         return sessionsByWorkspace[workspaceId]?.first { $0.id == id }
     }
 
+    /// True iff at least one workspace currently has open tabs. Drives the
+    /// quit-confirmation dialog so the user doesn't lose an in-flight agent
+    /// run by reflex-quitting.
+    var hasOpenTabs: Bool {
+        sessionsByWorkspace.values.contains { !$0.isEmpty }
+    }
+
     /// Close one tab. Picks a neighbour to activate; if it was the last tab,
     /// spawns a fresh one with the default agent so the workspace is never
     /// empty (the surface would otherwise show only a spinner).
@@ -624,7 +538,6 @@ final class AppState: ObservableObject {
               let idx = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
         let session = sessions.remove(at: idx)
         session.terminate()
-        try? Sessions.end(id: sessionId)
         sessionsByWorkspace[workspaceId] = sessions
 
         if activeSessionByWorkspace[workspaceId] == sessionId {
@@ -637,16 +550,15 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Reorder one session before another. Used by the tab strip's drag
-    /// reorder. In-memory only — relaunch rebuilds tabs in `startedAt`
-    /// order, so a custom order doesn't survive a restart yet.
-    func moveSession(_ sourceId: String, before targetId: String, in workspaceId: String) {
+    /// Move one session to a target final index. Used by the tab strip's
+    /// drag reorder; the callsite computes the destination once on drag-end
+    /// so we don't thrash `@Published` mid-drag.
+    func moveSession(_ sourceId: String, toIndex newIndex: Int, in workspaceId: String) {
         guard var list = sessionsByWorkspace[workspaceId],
               let from = list.firstIndex(where: { $0.id == sourceId }),
-              let to = list.firstIndex(where: { $0.id == targetId }),
-              from != to else { return }
+              newIndex >= 0, newIndex < list.count, from != newIndex else { return }
         let item = list.remove(at: from)
-        list.insert(item, at: to)
+        list.insert(item, at: newIndex)
         sessionsByWorkspace[workspaceId] = list
     }
 

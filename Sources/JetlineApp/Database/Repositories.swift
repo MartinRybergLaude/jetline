@@ -79,43 +79,6 @@ enum Workspaces {
     }
 }
 
-enum Sessions {
-    static func forWorkspace(_ wsId: String) throws -> [Session] {
-        try Database.shared.writer.read { db in
-            try Session
-                .filter(Session.Columns.workspaceId == wsId)
-                .order(Session.Columns.startedAt.desc)
-                .fetchAll(db)
-        }
-    }
-
-    /// Sessions that have not been explicitly closed. Used on app launch to
-    /// rehydrate tabs and resume each agent's conversation.
-    static func openForWorkspace(_ wsId: String) throws -> [Session] {
-        try Database.shared.writer.read { db in
-            try Session
-                .filter(Session.Columns.workspaceId == wsId)
-                .filter(Session.Columns.endedAt == nil)
-                .order(Session.Columns.startedAt.asc)
-                .fetchAll(db)
-        }
-    }
-
-    static func insert(_ s: Session) throws {
-        try Database.shared.writer.write { db in
-            try s.insert(db)
-        }
-    }
-
-    static func end(id: String) throws {
-        _ = try Database.shared.writer.write { db in
-            try Session
-                .filter(key: id)
-                .updateAll(db, Session.Columns.endedAt.set(to: Date()))
-        }
-    }
-}
-
 enum SettingsStore {
     static func load() throws -> AppSettings {
         try Database.shared.writer.read { db in

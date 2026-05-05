@@ -1,15 +1,31 @@
 import SwiftUI
 import AppKit
-import UniformTypeIdentifiers
 
 struct TerminalArea: View {
     @EnvironmentObject private var state: AppState
     let workspace: Workspace
 
-    /// Session id currently being dragged in the tab strip. Set by `.onDrag`,
-    /// cleared on drop completion. The drop delegate keys reorders off this
-    /// so external text drags can't accidentally reorder tabs.
-    @State private var draggingTabId: String?
+    /// Live drag-reorder preview state. While set, the named tab is offset to
+    /// follow the cursor and neighbours slide aside; the underlying array is
+    /// not mutated until the drag ends, so `@Published sessionsByWorkspace`
+    /// only kicks once instead of on every tab-boundary crossing.
+    @State private var dragState: TabDragState?
+    /// Slot the dragged tab will land in given the current cursor position.
+    /// Lives separately from `dragState.translation` so threshold crossings
+    /// can animate via `withAnimation` without lagging the dragged tab —
+    /// translation must update 1:1 with the cursor, slot changes shouldn't.
+    @State private var visibleTargetIndex: Int?
+    @State private var tabFrames: [String: CGRect] = [:]
+
+    private struct TabDragState: Equatable {
+        let sessionId: String
+        var translation: CGFloat
+        /// Tab frames captured at drag-start. Stable: `geo.frame(in:)` inside
+        /// `.background` sits under the per-tab `.offset` modifier, so live
+        /// `tabFrames` would include each tab's preview displacement —
+        /// double-counting `translation` and producing oscillating thresholds.
+        let startFrames: [String: CGRect]
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -65,30 +81,25 @@ struct TerminalArea: View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 0) {
-                    ForEach(sessions) { session in
+                    ForEach(Array(sessions.enumerated()), id: \.element.id) { idx, session in
                         BorderedTab(
                             session: session,
                             isActive: session.id == activeId,
                             onSelect: { state.selectSession(session.id, in: workspace.id) },
                             onClose: { state.closeSession(session.id, in: workspace.id) }
                         )
-                        .id(session.id)
-                        .onDrag {
-                            draggingTabId = session.id
-                            return NSItemProvider(object: session.id as NSString)
-                        }
-                        .onDrop(
-                            of: [.text],
-                            delegate: TabReorderDelegate(
-                                targetId: session.id,
-                                draggingTabId: $draggingTabId,
-                                onReorder: { source, target in
-                                    withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
-                                        state.moveSession(source, before: target, in: workspace.id)
-                                    }
-                                }
-                            )
+                        .background(
+                            GeometryReader { geo in
+                                Color.clear.preference(
+                                    key: TabFramesKey.self,
+                                    value: [session.id: geo.frame(in: .named("tabstrip"))]
+                                )
+                            }
                         )
+                        .offset(x: dragOffset(for: session.id, index: idx, in: sessions))
+                        .zIndex(dragState?.sessionId == session.id ? 1 : 0)
+                        .gesture(reorderGesture(for: session.id, in: sessions))
+                        .id(session.id)
                     }
                     NewSessionMenu(
                         defaultAgent: state.settings.defaultAgent,
@@ -111,6 +122,8 @@ struct TerminalArea: View {
                     Spacer(minLength: 0)
                 }
                 .padding(.leading, 6)
+                .coordinateSpace(name: "tabstrip")
+                .onPreferenceChange(TabFramesKey.self) { tabFrames = $0 }
             }
             .background(Color(nsColor: .windowBackgroundColor))
             .onChange(of: activeId) { _, newId in
@@ -124,6 +137,83 @@ struct TerminalArea: View {
             }
         }
         .overlay(alignment: .bottom) { Divider() }
+    }
+
+    /// Custom drag handler — sidesteps SwiftUI's `.onDrag`/`.onDrop`, which
+    /// engage the macOS OS drag service (NSItemProvider serialization, drop
+    /// pasteboard read) and stall ~2s on drop. Pure SwiftUI gesture means
+    /// no system drag session at all.
+    private func reorderGesture(for sessionId: String, in sessions: [PTYSession]) -> some Gesture {
+        DragGesture(minimumDistance: 4)
+            .onChanged { value in
+                if dragState == nil {
+                    dragState = TabDragState(
+                        sessionId: sessionId,
+                        translation: 0,
+                        startFrames: tabFrames
+                    )
+                    visibleTargetIndex = sessions.firstIndex(where: { $0.id == sessionId })
+                }
+                guard let ds = dragState, ds.sessionId == sessionId else { return }
+                dragState?.translation = value.translation.width
+
+                let newTarget = computeTarget(
+                    translation: value.translation.width,
+                    sessionId: sessionId,
+                    frames: ds.startFrames,
+                    in: sessions
+                )
+                if newTarget != visibleTargetIndex {
+                    withAnimation(.easeOut(duration: 0.16)) {
+                        visibleTargetIndex = newTarget
+                    }
+                }
+            }
+            .onEnded { _ in
+                let dragId = dragState?.sessionId
+                let to = visibleTargetIndex
+                dragState = nil
+                visibleTargetIndex = nil
+                guard let dragId,
+                      let to,
+                      let from = sessions.firstIndex(where: { $0.id == dragId }),
+                      from != to else { return }
+                state.moveSession(dragId, toIndex: to, in: workspace.id)
+            }
+    }
+
+    private func dragOffset(for sessionId: String, index: Int, in sessions: [PTYSession]) -> CGFloat {
+        guard let ds = dragState else { return 0 }
+        if sessionId == ds.sessionId { return ds.translation }
+        guard let target = visibleTargetIndex,
+              let dragIdx = sessions.firstIndex(where: { $0.id == ds.sessionId }),
+              let dragWidth = ds.startFrames[ds.sessionId]?.width else { return 0 }
+        if target > dragIdx, index > dragIdx, index <= target { return -dragWidth }
+        if target < dragIdx, index < dragIdx, index >= target { return dragWidth }
+        return 0
+    }
+
+    /// Final slot the dragged tab will land in: the count of *other* tabs
+    /// whose pre-drag midpoint sits left of the cursor. Equivalent to "swap
+    /// when the cursor crosses the next tab's centre" — the convention used
+    /// by Safari/Chrome — and stable under non-uniform tab widths, unlike
+    /// "closest midpoint" which flips at the midpoint between two centres
+    /// and feels eager.
+    private func computeTarget(
+        translation: CGFloat,
+        sessionId: String,
+        frames: [String: CGRect],
+        in sessions: [PTYSession]
+    ) -> Int {
+        let fallback = sessions.firstIndex(where: { $0.id == sessionId }) ?? 0
+        guard let dragFrame = frames[sessionId] else { return fallback }
+        let visualMid = dragFrame.midX + translation
+        var leftCount = 0
+        for s in sessions where s.id != sessionId {
+            guard let frame = frames[s.id] else { continue }
+            if frame.midX < visualMid { leftCount += 1 }
+        }
+        return leftCount
     }
 
     @ViewBuilder
@@ -526,32 +616,10 @@ private struct BorderedTab: View {
     }
 }
 
-/// Drop delegate for reordering tabs by drag. Lives between the active
-/// drag (whose source id is parked in `draggingTabId`) and the tab being
-/// hovered. Reorder fires on `dropEntered` so the strip slides under the
-/// cursor live; `validateDrop` rejects anything not started by a tab drag
-/// so plain-text drops from other apps don't shuffle the strip.
-private struct TabReorderDelegate: DropDelegate {
-    let targetId: String
-    @Binding var draggingTabId: String?
-    let onReorder: (_ source: String, _ target: String) -> Void
-
-    func validateDrop(info: DropInfo) -> Bool {
-        draggingTabId != nil
-    }
-
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: .move)
-    }
-
-    func dropEntered(info: DropInfo) {
-        guard let source = draggingTabId, source != targetId else { return }
-        onReorder(source, targetId)
-    }
-
-    func performDrop(info: DropInfo) -> Bool {
-        draggingTabId = nil
-        return true
+private struct TabFramesKey: PreferenceKey {
+    static let defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
     }
 }
 
