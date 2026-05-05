@@ -41,30 +41,7 @@ struct TerminalArea: View {
     private var runToolbarItems: some View {
         GitActionMenu(workspace: workspace)
         OpenInAppButton(workspace: workspace)
-        let setupRunning = state.isSetupRunning(workspace.id)
-        if state.hasRunScript(workspace) || setupRunning {
-            if setupRunning {
-                Button { /* disabled */ } label: {
-                    Label {
-                        Text("Setting up")
-                    } icon: {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
-                }
-                .disabled(true)
-                .help("Setup is running. Run will be available once setup completes.")
-            } else if let runner = state.runController(for: workspace.id) {
-                RunStatusButton(runner: runner) { state.toggleRun(for: workspace) }
-            } else {
-                Button {
-                    state.toggleRun(for: workspace)
-                } label: {
-                    Label("Run", systemImage: "play.fill")
-                }
-                .help("Run the configured run script")
-            }
-        }
+        RunToolbarSlot(workspace: workspace)
         Button {
             state.inspectorVisible.toggle()
         } label: {
@@ -257,6 +234,66 @@ private struct ChangesPill: View {
             }
         }
         .font(.system(size: 11, weight: .medium, design: .monospaced))
+    }
+}
+
+/// Toolbar slot for the run/setup button. Two-stage routing so the spinner
+/// flips to "Run" the moment setup exits: the outer view depends only on
+/// `setupByWorkspace` membership (a published map), the inner view holds an
+/// `@ObservedObject` SetupController and re-renders on its phase changes.
+/// Without this split, the toolbar wouldn't know when setup finished — the
+/// AppState dict still has the controller in it, so no published change.
+private struct RunToolbarSlot: View {
+    @EnvironmentObject private var state: AppState
+    let workspace: Workspace
+
+    var body: some View {
+        if let setup = state.setupController(for: workspace.id) {
+            SetupAwareRunSlot(workspace: workspace, controller: setup)
+        } else if state.hasRunScript(workspace) {
+            ReadyOrRunningRunSlot(workspace: workspace)
+        }
+    }
+}
+
+private struct SetupAwareRunSlot: View {
+    @EnvironmentObject private var state: AppState
+    let workspace: Workspace
+    @ObservedObject var controller: SetupController
+
+    var body: some View {
+        if controller.isRunning {
+            Button { /* disabled */ } label: {
+                Label {
+                    Text("Setting up")
+                } icon: {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+            .disabled(true)
+            .help("Setup is running. Run will be available once setup completes.")
+        } else if state.hasRunScript(workspace) {
+            ReadyOrRunningRunSlot(workspace: workspace)
+        }
+    }
+}
+
+private struct ReadyOrRunningRunSlot: View {
+    @EnvironmentObject private var state: AppState
+    let workspace: Workspace
+
+    var body: some View {
+        if let runner = state.runController(for: workspace.id) {
+            RunStatusButton(runner: runner) { state.toggleRun(for: workspace) }
+        } else {
+            Button {
+                state.toggleRun(for: workspace)
+            } label: {
+                Label("Run", systemImage: "play.fill")
+            }
+            .help("Run the configured run script")
+        }
     }
 }
 

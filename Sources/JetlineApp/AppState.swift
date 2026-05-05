@@ -283,10 +283,6 @@ final class AppState: ObservableObject {
         setupByWorkspace[workspaceId]
     }
 
-    func isSetupRunning(_ workspaceId: String) -> Bool {
-        setupByWorkspace[workspaceId]?.isRunning ?? false
-    }
-
     func archiveWorkspace(_ workspace: Workspace, removeWorktree: Bool) async {
         // Stop the run script first; otherwise it keeps writing to a deleted dir.
         runByWorkspace[workspace.id]?.discard()

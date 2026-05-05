@@ -49,7 +49,10 @@ final class SetupController: ObservableObject, Identifiable {
             return
         }
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-        let term = GhosttyEmulator(fontSize: GhosttyEmulator.outputPanelFontSize)
+        let term = GhosttyEmulator(
+            fontSize: GhosttyEmulator.outputPanelFontSize,
+            notifySurfaceOnExit: false
+        )
         term.setExitHandler { [weak self] code in
             Task { @MainActor [weak self] in self?.handleExit(code: code) }
         }

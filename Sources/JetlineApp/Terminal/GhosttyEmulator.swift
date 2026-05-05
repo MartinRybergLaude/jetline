@@ -14,6 +14,13 @@ final class GhosttyEmulator: TerminalEmulatorView {
     private var pty: PTYProcess?
     private var isActive: Bool = true
     private var exitHandler: ((Int32) -> Void)?
+    /// When false, the emulator does *not* call `session.finish` on child
+    /// exit. Used by run/setup output panels: the inspector already shows
+    /// a "Setup complete" / "Exited (n)" status strip, so libghostty's
+    /// own "Press any key to close" / "failed to launch" overlay is just
+    /// noise — and worse, with our fixed `runtimeMilliseconds: 0` it
+    /// renders as a launch failure even on a clean zero exit.
+    private let notifySurfaceOnExit: Bool
 
     var nsView: NSView { view }
 
@@ -21,7 +28,8 @@ final class GhosttyEmulator: TerminalEmulatorView {
     /// default 13pt agent terminal so the inspector strip doesn't crowd.
     static let outputPanelFontSize: Float = 11
 
-    init(fontSize: Float = 13) {
+    init(fontSize: Float = 13, notifySurfaceOnExit: Bool = true) {
+        self.notifySurfaceOnExit = notifySurfaceOnExit
         let controller = TerminalController(
             configuration: Self.makeConfiguration(family: nil, size: fontSize)
         )
@@ -86,7 +94,9 @@ final class GhosttyEmulator: TerminalEmulatorView {
             },
             exit: { [weak self] exitCode in
                 Task { @MainActor in
-                    session.finish(exitCode: UInt32(clamping: exitCode), runtimeMilliseconds: 0)
+                    if self?.notifySurfaceOnExit ?? true {
+                        session.finish(exitCode: UInt32(clamping: exitCode), runtimeMilliseconds: 0)
+                    }
                     self?.exitHandler?(exitCode)
                     // Drop PTYProcess only after exit is reported. If we
                     // freed it inside `terminate()`, the dispatch source's
