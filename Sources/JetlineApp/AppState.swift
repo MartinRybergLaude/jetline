@@ -782,17 +782,36 @@ final class AppState: ObservableObject {
     private func startWatcher(for workspace: Workspace) {
         guard watchers[workspace.id] == nil else { return }
         let id = workspace.id
-        let watcher = WorktreeWatcher(path: workspace.worktreePath) { [weak self] in
+        let worktreePath = workspace.worktreePath
+        // Resolve the worktree's git-dir asynchronously so we can watch
+        // both. Without watching the git-dir, `git commit` (which mutates
+        // `<repo>/.git/worktrees/<id>/{HEAD,index}` outside the worktree
+        // path) doesn't fire FSEvents and the diff snapshot stays stale.
+        // selectWorkspace already kicks off a refreshDiff so the brief
+        // window before the watcher arms is covered.
+        Task { [weak self] in
             guard let self else { return }
-            guard let ws = self.workspaceById(id) else { return }
-            Task { await self.refreshDiff(for: ws) }
-            // Worktree changed — likely a commit or push. Wake the PR
-            // tracker so the sidebar reflects new state without waiting up
-            // to a minute for the next scheduled poll.
-            self.prTracker.kick(workspaceId: id)
+            let gitDir = await WorktreeOps.gitDir(at: worktreePath)
+            await MainActor.run {
+                guard self.watchers[id] == nil,
+                      self.workspaceById(id) != nil else { return }
+                var paths = [worktreePath]
+                if let gitDir, gitDir != worktreePath {
+                    paths.append(gitDir)
+                }
+                let watcher = WorktreeWatcher(paths: paths) { [weak self] in
+                    guard let self else { return }
+                    guard let ws = self.workspaceById(id) else { return }
+                    Task { await self.refreshDiff(for: ws) }
+                    // Worktree changed — likely a commit or push. Wake the
+                    // PR tracker so the sidebar reflects new state without
+                    // waiting up to a minute for the next scheduled poll.
+                    self.prTracker.kick(workspaceId: id)
+                }
+                watcher.start()
+                self.watchers[id] = watcher
+            }
         }
-        watcher.start()
-        watchers[workspace.id] = watcher
     }
 
     private func detachWorkspace(_ id: String) {

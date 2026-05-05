@@ -55,6 +55,21 @@ enum WorktreeOps {
         return NSUserName()
     }
 
+    /// Absolute path to the worktree's git-dir. For a regular checkout this
+    /// is `<repo>/.git`; for a linked worktree it's
+    /// `<repo>/.git/worktrees/<id>/` — separate from the main `.git` and from
+    /// the worktree path. The diff watcher needs it because `git commit`
+    /// updates `HEAD` + `index` here, which would otherwise miss FSEvents on
+    /// the worktree path alone and leave the diff snapshot stale.
+    static func gitDir(at worktreePath: String) async -> String? {
+        let raw = try? await GitRunner.runChecked(
+            ["rev-parse", "--absolute-git-dir"],
+            cwd: worktreePath
+        )
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.nonBlank
+    }
+
     /// True if the path is the top of a git working tree.
     static func isGitRepo(at path: String) async -> Bool {
         let result = try? await GitRunner.run(

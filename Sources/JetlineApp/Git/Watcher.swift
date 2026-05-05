@@ -9,17 +9,17 @@ import Foundation
 @MainActor
 final class WorktreeWatcher {
     private var stream: FSEventStreamRef?
-    private let path: String
+    private let paths: [String]
     private let onChange: @MainActor () -> Void
     private var pendingTask: Task<Void, Never>?
 
-    init(path: String, onChange: @escaping @MainActor () -> Void) {
-        self.path = path
+    init(paths: [String], onChange: @escaping @MainActor () -> Void) {
+        self.paths = paths
         self.onChange = onChange
     }
 
     func start() {
-        guard stream == nil else { return }
+        guard stream == nil, !paths.isEmpty else { return }
         var context = FSEventStreamContext(
             version: 0,
             info: Unmanaged.passUnretained(self).toOpaque(),
@@ -34,7 +34,7 @@ final class WorktreeWatcher {
             // the main thread — matches MainActor isolation.
             MainActor.assumeIsolated { watcher.scheduleNotify() }
         }
-        let pathArray = [path] as CFArray
+        let pathArray = paths as CFArray
         let s = FSEventStreamCreate(
             kCFAllocatorDefault,
             callback,
