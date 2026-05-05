@@ -31,7 +31,8 @@ final class GhosttyEmulator: TerminalEmulatorView {
     init(fontSize: Float = 13, notifySurfaceOnExit: Bool = true) {
         self.notifySurfaceOnExit = notifySurfaceOnExit
         let controller = TerminalController(
-            configuration: Self.makeConfiguration(family: nil, size: fontSize)
+            configuration: Self.makeConfiguration(family: nil, size: fontSize),
+            theme: Self.theme
         )
         self.controller = controller
 
@@ -171,6 +172,57 @@ final class GhosttyEmulator: TerminalEmulatorView {
             builder.withFontSize(size)
         }
     }
+
+    /// Pure black/white backgrounds with saturated jewel-tone palettes —
+    /// punchier than libghostty's default Afterglow/Alabaster pair.
+    /// `AppTerminalView` swaps `light`/`dark` automatically when the system
+    /// appearance changes.
+    private static let theme = TerminalTheme(
+        light: TerminalConfiguration { builder in
+            builder.withBackground("FFFFFF")
+            builder.withForeground("000000")
+            builder.withCursorColor("000000")
+            builder.withSelectionBackground("A6CFFF")
+            builder.withPalette(0, color: "#000000")
+            builder.withPalette(1, color: "#C20000")
+            builder.withPalette(2, color: "#087A00")
+            builder.withPalette(3, color: "#8B6500")
+            builder.withPalette(4, color: "#0040C0")
+            builder.withPalette(5, color: "#A300A3")
+            builder.withPalette(6, color: "#00808F")
+            builder.withPalette(7, color: "#5C5C5C")
+            builder.withPalette(8, color: "#8C8C8C")
+            builder.withPalette(9, color: "#E80000")
+            builder.withPalette(10, color: "#00A300")
+            builder.withPalette(11, color: "#A37A00")
+            builder.withPalette(12, color: "#0066D9")
+            builder.withPalette(13, color: "#D900D9")
+            builder.withPalette(14, color: "#008CA3")
+            builder.withPalette(15, color: "#1A1A1A")
+        },
+        dark: TerminalConfiguration { builder in
+            builder.withBackground("1E1E1E")
+            builder.withForeground("FFFFFF")
+            builder.withCursorColor("FFFFFF")
+            builder.withSelectionBackground("244779")
+            builder.withPalette(0, color: "#000000")
+            builder.withPalette(1, color: "#FF5555")
+            builder.withPalette(2, color: "#50FA7B")
+            builder.withPalette(3, color: "#F1FA8C")
+            builder.withPalette(4, color: "#5C9CFF")
+            builder.withPalette(5, color: "#FF79C6")
+            builder.withPalette(6, color: "#8BE9FD")
+            builder.withPalette(7, color: "#F8F8F2")
+            builder.withPalette(8, color: "#6272A4")
+            builder.withPalette(9, color: "#FF6E6E")
+            builder.withPalette(10, color: "#69FF94")
+            builder.withPalette(11, color: "#FFFFA5")
+            builder.withPalette(12, color: "#7DA9FF")
+            builder.withPalette(13, color: "#FF92DF")
+            builder.withPalette(14, color: "#A4FFFF")
+            builder.withPalette(15, color: "#FFFFFF")
+        }
+    )
 
     func terminate() {
         // The `pty = nil` cleanup is deferred to the exit closure — see spawn.
