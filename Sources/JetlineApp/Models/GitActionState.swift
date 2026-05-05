@@ -76,7 +76,13 @@ struct GitActionState: Equatable {
         case .absent:
             avail[.createPR] = hasDiffVsBase
 
-        case .loading, .error, .none:
+        case .error:
+            // Tracker couldn't determine PR state — don't strand the user.
+            // `gh pr create` will reject a duplicate with a clear message,
+            // so the worst case is a benign no-op the agent reports back.
+            avail[.createPR] = hasDiffVsBase
+
+        case .loading, .none:
             break
         }
 

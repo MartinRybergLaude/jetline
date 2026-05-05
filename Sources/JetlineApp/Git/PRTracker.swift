@@ -208,9 +208,20 @@ final class PRTracker {
 
         let identifier: RepoIdentifier
         switch await resolvedIdentifier(for: repo) {
-        case .resolved(let id): identifier = id
-        case .notOnGitHub:      return
-        case .deferred:         return  // error already recorded; backoff applies
+        case .resolved(let id):
+            identifier = id
+        case .notOnGitHub:
+            // No GitHub remote → no PR is possible. Without this, the
+            // PR panel sits on "Loading PR…" forever because the snapshot
+            // never gets written.
+            recordError("Repository has no GitHub remote.", for: workspaces, state: state)
+            return
+        case .deferred:
+            // resolvedIdentifier already bumped githubFailures + status.
+            // Surface a placeholder so the panel doesn't stall on the
+            // initial "Loading PR…" — the next successful poll overwrites.
+            recordError("Couldn't reach GitHub. Retrying…", for: workspaces, state: state)
+            return
         }
 
         do {
@@ -234,11 +245,33 @@ final class PRTracker {
         } catch GitHubRunner.Error.ghMissing {
             updateStatus(.ghMissing)
             loops[repoId]?.githubFailures += 1
+            recordError("gh CLI not found. Install via `brew install gh`.", for: workspaces, state: state)
         } catch GitHubRunner.Error.authRequired {
             updateStatus(.authRequired)
             loops[repoId]?.githubFailures += 1
+            recordError("gh not authenticated. Run `gh auth login` in a terminal.", for: workspaces, state: state)
         } catch {
             loops[repoId]?.githubFailures += 1
+            print("PRTracker.pollGitHub failed for \(identifier.owner)/\(identifier.name): \(error)")
+            recordError(error.localizedDescription, for: workspaces, state: state)
+        }
+    }
+
+    /// Write `.error` only for workspaces with no prior snapshot. Preserves
+    /// the last successful `.loaded` / `.absent` across transient outages so
+    /// the user keeps seeing real data while the next poll catches up.
+    private func recordError(
+        _ message: String,
+        for workspaces: [Workspace],
+        state: AppState
+    ) {
+        for ws in workspaces {
+            switch state.prByWorkspace[ws.id] {
+            case nil, .loading, .error:
+                state.applyPR(.error(message), for: ws.id)
+            case .absent, .loaded:
+                continue
+            }
         }
     }
 
