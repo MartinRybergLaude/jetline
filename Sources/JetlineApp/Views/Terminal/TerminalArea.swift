@@ -1,9 +1,15 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 struct TerminalArea: View {
     @EnvironmentObject private var state: AppState
     let workspace: Workspace
+
+    /// Session id currently being dragged in the tab strip. Set by `.onDrag`,
+    /// cleared on drop completion. The drop delegate keys reorders off this
+    /// so external text drags can't accidentally reorder tabs.
+    @State private var draggingTabId: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -67,6 +73,22 @@ struct TerminalArea: View {
                             onClose: { state.closeSession(session.id, in: workspace.id) }
                         )
                         .id(session.id)
+                        .onDrag {
+                            draggingTabId = session.id
+                            return NSItemProvider(object: session.id as NSString)
+                        }
+                        .onDrop(
+                            of: [.text],
+                            delegate: TabReorderDelegate(
+                                targetId: session.id,
+                                draggingTabId: $draggingTabId,
+                                onReorder: { source, target in
+                                    withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
+                                        state.moveSession(source, before: target, in: workspace.id)
+                                    }
+                                }
+                            )
+                        )
                     }
                     NewSessionMenu(
                         defaultAgent: state.settings.defaultAgent,
@@ -501,6 +523,35 @@ private struct BorderedTab: View {
                 .frame(width: 1, height: 16)
                 .padding(.vertical, 8)
         }
+    }
+}
+
+/// Drop delegate for reordering tabs by drag. Lives between the active
+/// drag (whose source id is parked in `draggingTabId`) and the tab being
+/// hovered. Reorder fires on `dropEntered` so the strip slides under the
+/// cursor live; `validateDrop` rejects anything not started by a tab drag
+/// so plain-text drops from other apps don't shuffle the strip.
+private struct TabReorderDelegate: DropDelegate {
+    let targetId: String
+    @Binding var draggingTabId: String?
+    let onReorder: (_ source: String, _ target: String) -> Void
+
+    func validateDrop(info: DropInfo) -> Bool {
+        draggingTabId != nil
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func dropEntered(info: DropInfo) {
+        guard let source = draggingTabId, source != targetId else { return }
+        onReorder(source, targetId)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        draggingTabId = nil
+        return true
     }
 }
 

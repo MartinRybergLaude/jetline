@@ -637,6 +637,19 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Reorder one session before another. Used by the tab strip's drag
+    /// reorder. In-memory only — relaunch rebuilds tabs in `startedAt`
+    /// order, so a custom order doesn't survive a restart yet.
+    func moveSession(_ sourceId: String, before targetId: String, in workspaceId: String) {
+        guard var list = sessionsByWorkspace[workspaceId],
+              let from = list.firstIndex(where: { $0.id == sourceId }),
+              let to = list.firstIndex(where: { $0.id == targetId }),
+              from != to else { return }
+        let item = list.remove(at: from)
+        list.insert(item, at: to)
+        sessionsByWorkspace[workspaceId] = list
+    }
+
     /// Activate the Nth tab (1-indexed) of the active workspace. Used by ⌘1…⌘9.
     func selectSessionByIndex(_ oneBased: Int) {
         guard let wsId = selectedWorkspaceId,
