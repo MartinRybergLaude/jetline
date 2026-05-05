@@ -173,53 +173,58 @@ final class GhosttyEmulator: TerminalEmulatorView {
         }
     }
 
-    /// Pure black/white backgrounds with saturated jewel-tone palettes —
-    /// punchier than libghostty's default Afterglow/Alabaster pair.
-    /// `AppTerminalView` swaps `light`/`dark` automatically when the system
-    /// appearance changes.
+    /// Aura-style palette: purple primary, mint/orange/pink/blue accents.
+    /// Dark variant matches the source palette directly; the light variant
+    /// preserves hue identity but darkens each accent for ≥4.5:1 contrast
+    /// against a white background. `AppTerminalView` swaps `light`/`dark`
+    /// automatically when the system appearance changes.
+    ///
+    /// ANSI mapping follows Aura's terminal config: blue→purple,
+    /// magenta→pink, cyan→sky-blue. Unconventional, but it preserves all
+    /// six accents distinctly across the 16-slot palette.
     private static let theme = TerminalTheme(
         light: TerminalConfiguration { builder in
             builder.withBackground("FFFFFF")
-            builder.withForeground("000000")
-            builder.withCursorColor("000000")
-            builder.withSelectionBackground("A6CFFF")
-            builder.withPalette(0, color: "#000000")
-            builder.withPalette(1, color: "#C20000")
-            builder.withPalette(2, color: "#087A00")
-            builder.withPalette(3, color: "#8B6500")
-            builder.withPalette(4, color: "#0040C0")
-            builder.withPalette(5, color: "#A300A3")
-            builder.withPalette(6, color: "#00808F")
-            builder.withPalette(7, color: "#5C5C5C")
-            builder.withPalette(8, color: "#8C8C8C")
-            builder.withPalette(9, color: "#E80000")
-            builder.withPalette(10, color: "#00A300")
-            builder.withPalette(11, color: "#A37A00")
-            builder.withPalette(12, color: "#0066D9")
-            builder.withPalette(13, color: "#D900D9")
-            builder.withPalette(14, color: "#008CA3")
-            builder.withPalette(15, color: "#1A1A1A")
+            builder.withForeground("15141B")
+            builder.withCursorColor("4A1FB8")
+            builder.withSelectionBackground("DCD0FF")
+            builder.withPalette(0, color: "#15141B")
+            builder.withPalette(1, color: "#A30000")
+            builder.withPalette(2, color: "#005C3D")
+            builder.withPalette(3, color: "#6F4400")
+            builder.withPalette(4, color: "#4A1FB8")
+            builder.withPalette(5, color: "#7E2693")
+            builder.withPalette(6, color: "#00558C")
+            builder.withPalette(7, color: "#2D2D2D")
+            builder.withPalette(8, color: "#6D6D6D")
+            builder.withPalette(9, color: "#A30000")
+            builder.withPalette(10, color: "#005C3D")
+            builder.withPalette(11, color: "#6F4400")
+            builder.withPalette(12, color: "#4A1FB8")
+            builder.withPalette(13, color: "#7E2693")
+            builder.withPalette(14, color: "#00558C")
+            builder.withPalette(15, color: "#000000")
         },
         dark: TerminalConfiguration { builder in
             builder.withBackground("1E1E1E")
-            builder.withForeground("FFFFFF")
-            builder.withCursorColor("FFFFFF")
-            builder.withSelectionBackground("244779")
-            builder.withPalette(0, color: "#000000")
-            builder.withPalette(1, color: "#FF5555")
-            builder.withPalette(2, color: "#50FA7B")
-            builder.withPalette(3, color: "#F1FA8C")
-            builder.withPalette(4, color: "#5C9CFF")
-            builder.withPalette(5, color: "#FF79C6")
-            builder.withPalette(6, color: "#8BE9FD")
-            builder.withPalette(7, color: "#F8F8F2")
-            builder.withPalette(8, color: "#6272A4")
-            builder.withPalette(9, color: "#FF6E6E")
-            builder.withPalette(10, color: "#69FF94")
-            builder.withPalette(11, color: "#FFFFA5")
-            builder.withPalette(12, color: "#7DA9FF")
-            builder.withPalette(13, color: "#FF92DF")
-            builder.withPalette(14, color: "#A4FFFF")
+            builder.withForeground("EDECEE")
+            builder.withCursorColor("A277FF")
+            builder.withSelectionBackground("29263C")
+            builder.withPalette(0, color: "#15141B")
+            builder.withPalette(1, color: "#FF6767")
+            builder.withPalette(2, color: "#61FFCA")
+            builder.withPalette(3, color: "#FFCA85")
+            builder.withPalette(4, color: "#A277FF")
+            builder.withPalette(5, color: "#F694FF")
+            builder.withPalette(6, color: "#82E2FF")
+            builder.withPalette(7, color: "#EDECEE")
+            builder.withPalette(8, color: "#6D6D6D")
+            builder.withPalette(9, color: "#FF6767")
+            builder.withPalette(10, color: "#61FFCA")
+            builder.withPalette(11, color: "#FFCA85")
+            builder.withPalette(12, color: "#A277FF")
+            builder.withPalette(13, color: "#F694FF")
+            builder.withPalette(14, color: "#82E2FF")
             builder.withPalette(15, color: "#FFFFFF")
         }
     )
