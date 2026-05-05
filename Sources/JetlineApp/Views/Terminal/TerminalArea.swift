@@ -3,6 +3,7 @@ import AppKit
 
 struct TerminalArea: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.colorScheme) private var colorScheme
     let workspace: Workspace
 
     /// Live drag-reorder preview state. While set, the named tab is offset to
@@ -46,11 +47,19 @@ struct TerminalArea: View {
             // to the right edge — without it they collapse next to the
             // title.
             ToolbarItem(placement: .navigation) {
+                // Toolbar items mount in their own NSHostingView. SwiftUI
+                // pushes `\.colorScheme` in at mount time but doesn't tear
+                // the host down when the system appearance flips, so the
+                // title would otherwise stay stuck on whatever scheme was
+                // active at first render. Re-keying on `colorScheme`
+                // forces a remount on each flip so the new env takes hold.
                 WorkspaceTitleBar(
                     name: workspace.name,
                     branch: workspace.branchName,
                     stats: state.diffByWorkspace[workspace.id]
                 )
+                .environment(\.colorScheme, colorScheme)
+                .id(colorScheme)
             }
             ToolbarSpacer(.flexible)
             ToolbarItemGroup(placement: .primaryAction) {
