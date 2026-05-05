@@ -5,28 +5,40 @@ import GRDB
 /// External applications that can open a workspace's worktree directory.
 enum OpenInApp: String, Codable, CaseIterable, DatabaseValueConvertible, Hashable {
     case finder
+    case terminal
     case ghostty
+    case xcode
     case zed
     case vscode
     case cursor
+    case androidStudio
+    case fork
 
     var displayName: String {
         switch self {
         case .finder: return "Finder"
+        case .terminal: return "Terminal"
         case .ghostty: return "Ghostty"
+        case .xcode: return "Xcode"
         case .zed: return "Zed"
         case .vscode: return "VS Code"
         case .cursor: return "Cursor"
+        case .androidStudio: return "Android Studio"
+        case .fork: return "Fork"
         }
     }
 
     var bundleIdentifier: String {
         switch self {
         case .finder: return "com.apple.finder"
+        case .terminal: return "com.apple.Terminal"
         case .ghostty: return "com.mitchellh.ghostty"
+        case .xcode: return "com.apple.dt.Xcode"
         case .zed: return "dev.zed.Zed"
         case .vscode: return "com.microsoft.VSCode"
         case .cursor: return "com.todesktop.230313mzl4w4u92"
+        case .androidStudio: return "com.google.android.studio"
+        case .fork: return "com.DanPristupov.Fork"
         }
     }
 
