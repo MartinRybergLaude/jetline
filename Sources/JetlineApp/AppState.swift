@@ -25,6 +25,13 @@ final class AppState: ObservableObject {
     /// resolved on the first PR poll and reused for the app's lifetime.
     /// Drives the merge confirmation dialog's button set.
     @Published var repoMetadataByRepo: [String: RepoIdentifier] = [:]
+    /// Pure-git action currently in flight for a workspace (rebase, pull,
+    /// merge). The toolbar reads this to swap the git action button for a
+    /// spinner so the user knows something is happening between click and
+    /// completion. Cleared when the operation finishes — successful pure-git
+    /// runs return here; falls-back-to-agent runs clear too because the new
+    /// session takes over the visual indication.
+    @Published var runningGitActionByWorkspace: [String: GitAction] = [:]
     @Published var prTrackerStatus: PRTracker.Status = .ok
     @Published var inspectorVisible: Bool = true
     /// Active inspector tab. Lifted out of `InspectorView` so workspace
@@ -512,6 +519,8 @@ final class AppState: ObservableObject {
     /// scheduled poll.
     func performMerge(for workspace: Workspace, method: MergeMethod) async {
         guard case let .loaded(pr, _) = prByWorkspace[workspace.id] else { return }
+        runningGitActionByWorkspace[workspace.id] = .mergePR
+        defer { runningGitActionByWorkspace.removeValue(forKey: workspace.id) }
         do {
             try await GitHubRunner.mergePR(pr.number, method: method, cwd: workspace.worktreePath)
         } catch {
@@ -526,9 +535,10 @@ final class AppState: ObservableObject {
         prTracker.kick(workspaceId: workspace.id)
     }
 
-    /// Fast path for `Rebase`. Tries `git fetch` + `git rebase` directly so
-    /// the common no-conflict case completes without spending agent tokens;
-    /// anything that goes wrong — conflicts, dirty tree, missing refs,
+    /// Fast path for `Rebase`. Tries `git fetch` + `git rebase --autostash`
+    /// directly so the common no-conflict case completes without spending
+    /// agent tokens; `--autostash` lets a dirty working tree go through
+    /// untouched. Anything that goes wrong — conflicts, missing refs,
     /// fetch failure — aborts the partial rebase and hands off to the
     /// agent flow that already knows how to recover.
     func performRebase(for workspace: Workspace) async {
@@ -536,13 +546,16 @@ final class AppState: ObservableObject {
             startGitActionSession(for: workspace, action: .rebaseOnMain)
             return
         }
+        runningGitActionByWorkspace[workspace.id] = .rebaseOnMain
+        defer { runningGitActionByWorkspace.removeValue(forKey: workspace.id) }
+
         let cwd = workspace.worktreePath
         let baseRef = "\(repo.remoteOrigin)/\(repo.localName(forRemoteRef: workspace.baseBranch))"
 
         let fellBack: Bool
         do {
             await BranchPositionOps.fetch(repoPath: cwd, remote: repo.remoteOrigin)
-            let result = try await GitRunner.run(["rebase", baseRef], cwd: cwd)
+            let result = try await GitRunner.run(["rebase", "--autostash", baseRef], cwd: cwd)
             fellBack = !result.success
         } catch {
             fellBack = true
@@ -551,6 +564,41 @@ final class AppState: ObservableObject {
         if fellBack {
             _ = try? await GitRunner.run(["rebase", "--abort"], cwd: cwd)
             startGitActionSession(for: workspace, action: .rebaseOnMain)
+            return
+        }
+
+        prTracker.kick(workspaceId: workspace.id)
+        await refreshDiff(for: workspace)
+    }
+
+    /// Fast path for `Pull updates`. Mirrors `performRebase`: tries
+    /// `git pull --rebase --autostash` directly and falls back to the agent
+    /// flow on conflict / failure. Pull-rebase leaves a partial state in
+    /// `.git/rebase-merge` on conflict; `git rebase --abort` clears it.
+    func performPull(for workspace: Workspace) async {
+        guard let repo = repositories.first(where: { $0.id == workspace.repositoryId }) else {
+            startGitActionSession(for: workspace, action: .pullUpdates)
+            return
+        }
+        runningGitActionByWorkspace[workspace.id] = .pullUpdates
+        defer { runningGitActionByWorkspace.removeValue(forKey: workspace.id) }
+
+        let cwd = workspace.worktreePath
+
+        let fellBack: Bool
+        do {
+            let result = try await GitRunner.run(
+                ["pull", "--rebase", "--autostash", repo.remoteOrigin, workspace.branchName],
+                cwd: cwd
+            )
+            fellBack = !result.success
+        } catch {
+            fellBack = true
+        }
+
+        if fellBack {
+            _ = try? await GitRunner.run(["rebase", "--abort"], cwd: cwd)
+            startGitActionSession(for: workspace, action: .pullUpdates)
             return
         }
 

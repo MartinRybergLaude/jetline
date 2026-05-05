@@ -22,18 +22,25 @@ struct GitActionMenu: View {
             hasUncommitted: state.hasUncommittedByWorkspace[workspace.id] ?? false,
             branchPosition: state.branchPositionByWorkspace[workspace.id]
         )
+        let running = state.runningGitActionByWorkspace[workspace.id]
 
-        menu(for: actionState)
-            .help(helpText(for: actionState))
-            .confirmationDialog(
-                mergeConfirmTitle,
-                isPresented: $pendingMerge,
-                titleVisibility: .visible
-            ) {
-                mergeDialogButtons
-            } message: {
-                Text("Merges PR for `\(workspace.branchName)` into `\(workspace.baseBranch)` immediately and pushes the result to the remote.")
+        Group {
+            if let running {
+                runningButton(for: running)
+            } else {
+                menu(for: actionState)
+                    .help(helpText(for: actionState))
             }
+        }
+        .confirmationDialog(
+            mergeConfirmTitle,
+            isPresented: $pendingMerge,
+            titleVisibility: .visible
+        ) {
+            mergeDialogButtons
+        } message: {
+            Text("Merges PR for `\(workspace.branchName)` into `\(workspace.baseBranch)` immediately and pushes the result to the remote.")
+        }
     }
 
     /// One button per allowed merge method, in GitHub's display order. The
@@ -103,6 +110,10 @@ struct GitActionMenu: View {
             // an agent (and burning tokens) when there are no conflicts. The
             // agent flow takes over automatically on any failure.
             Task { await state.performRebase(for: workspace) }
+        case .pullUpdates:
+            // Same fast-path treatment as rebase — the common no-conflict
+            // case is just `git pull --rebase --autostash`.
+            Task { await state.performPull(for: workspace) }
         default:
             state.startGitActionSession(for: workspace, action: action)
         }
@@ -123,6 +134,40 @@ struct GitActionMenu: View {
                 .font(.system(size: 13))
                 .frame(width: 14, height: 14)
             Text("Git")
+        }
+    }
+
+    /// Disabled stand-in shown while a pure-git action (rebase / pull /
+    /// merge) is running. Mirrors the toolbar's "Setting up" pattern so
+    /// the user gets immediate feedback that the click landed.
+    private func runningButton(for action: GitAction) -> some View {
+        Button { } label: {
+            Label {
+                Text(runningText(for: action))
+            } icon: {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+        .disabled(true)
+        .help(runningHelp(for: action))
+    }
+
+    private func runningText(for action: GitAction) -> String {
+        switch action {
+        case .rebaseOnMain: return "Rebasing"
+        case .pullUpdates:  return "Pulling"
+        case .mergePR:      return "Merging"
+        default:            return action.displayName
+        }
+    }
+
+    private func runningHelp(for action: GitAction) -> String {
+        switch action {
+        case .rebaseOnMain: return "Rebasing onto \(workspace.baseBranch)…"
+        case .pullUpdates:  return "Pulling from origin/\(workspace.branchName)…"
+        case .mergePR:      return "Merging the pull request…"
+        default:            return "\(action.displayName)…"
         }
     }
 
