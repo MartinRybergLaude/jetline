@@ -17,9 +17,13 @@ final class GhosttyEmulator: TerminalEmulatorView {
 
     var nsView: NSView { view }
 
-    init() {
+    /// Run/setup output panels render with this size — smaller than the
+    /// default 13pt agent terminal so the inspector strip doesn't crowd.
+    static let outputPanelFontSize: Float = 11
+
+    init(fontSize: Float = 13) {
         let controller = TerminalController(
-            configuration: Self.makeConfiguration(family: nil, size: 13)
+            configuration: Self.makeConfiguration(family: nil, size: fontSize)
         )
         self.controller = controller
 
@@ -84,6 +88,12 @@ final class GhosttyEmulator: TerminalEmulatorView {
                 Task { @MainActor in
                     session.finish(exitCode: UInt32(clamping: exitCode), runtimeMilliseconds: 0)
                     self?.exitHandler?(exitCode)
+                    // Drop PTYProcess only after exit is reported. If we
+                    // freed it inside `terminate()`, the dispatch source's
+                    // cancel handler (weak-self) would never fire and
+                    // exit would silently never be delivered.
+                    self?.pty = nil
+                    self?.ptyHolder.process = nil
                 }
             }
         )
@@ -153,9 +163,8 @@ final class GhosttyEmulator: TerminalEmulatorView {
     }
 
     func terminate() {
+        // The `pty = nil` cleanup is deferred to the exit closure — see spawn.
         pty?.terminate()
-        pty = nil
-        ptyHolder.process = nil
     }
 
     /// Drive Metal rendering only when the tab is active; an inactive tab's

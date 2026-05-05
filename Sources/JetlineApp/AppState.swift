@@ -19,7 +19,7 @@ final class AppState: ObservableObject {
     @Published var hasUncommittedByWorkspace: [String: Bool] = [:]
     @Published var prByWorkspace: [String: PRSnapshot] = [:]
     /// Local ahead/behind state per workspace, refreshed by `PRTracker` on
-    /// each poll. Drives availability of `Pull updates` and `Rebase on main`.
+    /// each poll. Drives availability of `Pull updates` and `Rebase`.
     @Published var branchPositionByWorkspace: [String: BranchPosition] = [:]
     /// Per-repo GitHub metadata (owner/name + allowed merge methods),
     /// resolved on the first PR poll and reused for the app's lifetime.
@@ -27,9 +27,16 @@ final class AppState: ObservableObject {
     @Published var repoMetadataByRepo: [String: RepoIdentifier] = [:]
     @Published var prTrackerStatus: PRTracker.Status = .ok
     @Published var inspectorVisible: Bool = true
+    /// Active inspector tab. Lifted out of `InspectorView` so workspace
+    /// creation can flip it to `.run` and surface live setup-script output.
+    @Published var inspectorTab: InspectorTab = .changes
     /// Run-script controllers keyed by workspace id. `nil` means "never run".
     /// Kept around after exit so the user can review the last log.
     @Published var runByWorkspace: [String: RunController] = [:]
+    /// Setup-script controllers keyed by workspace id. Created when a fresh
+    /// workspace spins up; lingers after exit so the user can scroll back
+    /// through the log until they trigger a real run.
+    @Published var setupByWorkspace: [String: SetupController] = [:]
 
     private var watchers: [String: WorktreeWatcher] = [:]
     private(set) lazy var prTracker: PRTracker = PRTracker(state: self)
@@ -66,11 +73,16 @@ final class AppState: ObservableObject {
 
     // MARK: - Repositories
 
-    func addRepository() async {
-        guard let path = await pickDirectory() else { return }
+    /// Adds a repository and returns it so the caller can chain UI (e.g. open
+    /// the settings sheet so the user configures scripts before the first
+    /// workspace is spawned). Returns `nil` if the picker was dismissed or
+    /// the path failed validation.
+    @discardableResult
+    func addRepository() async -> Repository? {
+        guard let path = await pickDirectory() else { return nil }
         guard await WorktreeOps.isGitRepo(at: path) else {
             await presentError("Not a git repository: \(path)")
-            return
+            return nil
         }
         do {
             let defaultBranch = (try? await WorktreeOps.defaultBranch(at: path)) ?? "main"
@@ -79,8 +91,10 @@ final class AppState: ObservableObject {
             repositories.insert(repo, at: 0)
             workspacesByRepo[repo.id] = []
             prTracker.sync()
+            return repo
         } catch {
             await presentError(error.localizedDescription)
+            return nil
         }
     }
 
@@ -144,18 +158,7 @@ final class AppState: ObservableObject {
             // PR snapshot for it on the next sweep.
             prTracker.kick(repoId: repo.id)
             selectWorkspace(ws.id)
-
-            if let setup = repo.trimmedSetupScript {
-                if let result = await ScriptRunner.run(
-                    setup,
-                    cwd: path,
-                    env: ScriptRunner.defaultEnv(repoPath: repo.path)
-                ), !result.success {
-                    await presentError(
-                        "Setup script failed (\(result.status)).\n\n\(result.stderr.isEmpty ? result.stdout : result.stderr)"
-                    )
-                }
-            }
+            startSetupIfNeeded(workspace: ws, repository: repo)
         } catch {
             await presentError(error.localizedDescription)
         }
@@ -249,23 +252,37 @@ final class AppState: ObservableObject {
         workspacesByRepo[repo.id, default: []].insert(ws, at: 0)
         prTracker.kick(repoId: repo.id)
         selectWorkspace(ws.id)
+        startSetupIfNeeded(workspace: ws, repository: repo)
+    }
 
-        if let setup = repo.trimmedSetupScript {
-            if let result = await ScriptRunner.run(
-                setup,
-                cwd: path,
-                env: ScriptRunner.defaultEnv(repoPath: repo.path)
-            ), !result.success {
-                await presentError(
-                    "Setup script failed (\(result.status)).\n\n\(result.stderr.isEmpty ? result.stdout : result.stderr)"
-                )
-            }
-        }
+    /// Spawn the repo's setup script for `workspace` and route its output
+    /// into the inspector's run panel. No-ops for blank scripts. The
+    /// inspector flips to `.run` so the user lands on live output instead of
+    /// the diff (which is empty for a brand-new worktree anyway).
+    private func startSetupIfNeeded(workspace: Workspace, repository: Repository) {
+        guard let script = repository.trimmedSetupScript else { return }
+        let controller = SetupController(workspaceId: workspace.id)
+        setupByWorkspace[workspace.id] = controller
+        controller.start(
+            script: script,
+            cwd: workspace.worktreePath,
+            env: ScriptRunner.defaultEnv(repoPath: repository.path)
+        )
+        inspectorTab = .run
+        inspectorVisible = true
+    }
+
+    func setupController(for workspaceId: String) -> SetupController? {
+        setupByWorkspace[workspaceId]
+    }
+
+    func isSetupRunning(_ workspaceId: String) -> Bool {
+        setupByWorkspace[workspaceId]?.isRunning ?? false
     }
 
     func archiveWorkspace(_ workspace: Workspace, removeWorktree: Bool) async {
         // Stop the run script first; otherwise it keeps writing to a deleted dir.
-        runByWorkspace[workspace.id]?.stop()
+        runByWorkspace[workspace.id]?.discard()
         runByWorkspace.removeValue(forKey: workspace.id)
         detachWorkspace(workspace.id)
 
@@ -504,6 +521,38 @@ final class AppState: ObservableObject {
         prTracker.kick(workspaceId: workspace.id)
     }
 
+    /// Fast path for `Rebase`. Tries `git fetch` + `git rebase` directly so
+    /// the common no-conflict case completes without spending agent tokens;
+    /// anything that goes wrong — conflicts, dirty tree, missing refs,
+    /// fetch failure — aborts the partial rebase and hands off to the
+    /// agent flow that already knows how to recover.
+    func performRebase(for workspace: Workspace) async {
+        guard let repo = repositories.first(where: { $0.id == workspace.repositoryId }) else {
+            startGitActionSession(for: workspace, action: .rebaseOnMain)
+            return
+        }
+        let cwd = workspace.worktreePath
+        let baseRef = "\(repo.remoteOrigin)/\(repo.localName(forRemoteRef: workspace.baseBranch))"
+
+        let fellBack: Bool
+        do {
+            await BranchPositionOps.fetch(repoPath: cwd, remote: repo.remoteOrigin)
+            let result = try await GitRunner.run(["rebase", baseRef], cwd: cwd)
+            fellBack = !result.success
+        } catch {
+            fellBack = true
+        }
+
+        if fellBack {
+            _ = try? await GitRunner.run(["rebase", "--abort"], cwd: cwd)
+            startGitActionSession(for: workspace, action: .rebaseOnMain)
+            return
+        }
+
+        prTracker.kick(workspaceId: workspace.id)
+        await refreshDiff(for: workspace)
+    }
+
     /// Last merge method the user chose for this workspace's repo. `nil`
     /// when the user has never merged here.
     func lastMergeMethod(for workspace: Workspace) -> MergeMethod? {
@@ -568,10 +617,13 @@ final class AppState: ObservableObject {
             }
         }
 
-        let runner = runByWorkspace[workspace.id] ?? RunController(
-            workspaceId: workspace.id,
-            onExit: { _ in }
-        )
+        // Drop the setup transcript so that when the run eventually exits
+        // the panel falls back to the placeholder, not to "Setup complete".
+        if let setup = setupByWorkspace.removeValue(forKey: workspace.id) {
+            setup.discard()
+        }
+
+        let runner = runByWorkspace[workspace.id] ?? RunController(workspaceId: workspace.id)
         runByWorkspace[workspace.id] = runner
         runner.start(
             script: script,
@@ -706,6 +758,8 @@ final class AppState: ObservableObject {
         hasUncommittedByWorkspace.removeValue(forKey: id)
         prByWorkspace.removeValue(forKey: id)
         branchPositionByWorkspace.removeValue(forKey: id)
+        setupByWorkspace[id]?.discard()
+        setupByWorkspace.removeValue(forKey: id)
     }
 
     // MARK: - Helpers

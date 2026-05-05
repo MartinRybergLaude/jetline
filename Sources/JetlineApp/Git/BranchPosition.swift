@@ -1,7 +1,7 @@
 import Foundation
 
 /// Local ahead/behind state for a workspace's branch. Drives the
-/// `Pull updates` and `Rebase on main` actions in the toolbar git menu.
+/// `Pull updates` and `Rebase` actions in the toolbar git menu.
 ///
 /// Computed locally (after a `git fetch`) so it's available before a PR
 /// exists, and accurate even when GitHub's `mergeStateStatus` doesn't fire
@@ -21,7 +21,7 @@ struct BranchPosition: Equatable {
     /// `Pull updates` is meaningful when the remote has commits we don't,
     /// even if we also have local commits (a rebase reconciles both).
     var remoteHasNewCommits: Bool { remoteTrackingExists && behindRemote > 0 }
-    /// `Rebase on main` is meaningful when the base has commits we don't.
+    /// `Rebase` is meaningful when the base has commits we don't.
     var isBehindBase: Bool { behindBase > 0 }
 }
 

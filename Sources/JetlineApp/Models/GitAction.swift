@@ -19,7 +19,7 @@ enum GitAction: String, CaseIterable, Hashable {
         case .commit:        return "Commit"
         case .createPR:      return "Create PR"
         case .pullUpdates:   return "Pull updates"
-        case .rebaseOnMain:  return "Rebase on main"
+        case .rebaseOnMain:  return "Rebase"
         case .fixCI:         return "Fix CI"
         case .fixComments:   return "Fix comments"
         case .mergePR:       return "Merge PR"

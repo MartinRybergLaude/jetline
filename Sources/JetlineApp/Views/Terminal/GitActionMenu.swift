@@ -95,11 +95,17 @@ struct GitActionMenu: View {
     }
 
     private func trigger(_ action: GitAction) {
-        if action == .mergePR {
+        switch action {
+        case .mergePR:
             pendingMerge = true
-            return
+        case .rebaseOnMain:
+            // Fast path: try a clean `git rebase` first to avoid spinning up
+            // an agent (and burning tokens) when there are no conflicts. The
+            // agent flow takes over automatically on any failure.
+            Task { await state.performRebase(for: workspace) }
+        default:
+            state.startGitActionSession(for: workspace, action: action)
         }
-        state.startGitActionSession(for: workspace, action: action)
     }
 
     private func label(for action: GitAction) -> some View {

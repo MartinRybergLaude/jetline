@@ -120,7 +120,7 @@ struct PRStatusIcon: View {
             }
         }
         if fail > 0   { return Badge(symbol: "xmark.circle.fill",     color: .red) }
-        if active > 0 { return Badge(symbol: "circle.dotted",         color: .yellow) }
+        if active > 0 { return Badge(symbol: "circle.fill",           color: .yellow) }
         if pass > 0   { return Badge(symbol: "checkmark.circle.fill", color: .green) }
         return nil
     }

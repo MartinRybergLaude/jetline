@@ -51,7 +51,16 @@ struct SidebarView: View {
             }
             HStack(spacing: 8) {
                 Button {
-                    Task { await state.addRepository() }
+                    Task {
+                        if let repo = await state.addRepository() {
+                            // Drop the user straight into settings for the
+                            // freshly-added repo so they can configure setup
+                            // / run scripts before spawning a workspace —
+                            // the next workspace will then see those scripts
+                            // on first creation.
+                            showingRepoSettings = repo
+                        }
+                    }
                 } label: {
                     Label("Add repository", systemImage: "plus")
                 }

@@ -41,8 +41,20 @@ struct TerminalArea: View {
     private var runToolbarItems: some View {
         GitActionMenu(workspace: workspace)
         OpenInAppButton(workspace: workspace)
-        if state.hasRunScript(workspace) {
-            if let runner = state.runController(for: workspace.id) {
+        let setupRunning = state.isSetupRunning(workspace.id)
+        if state.hasRunScript(workspace) || setupRunning {
+            if setupRunning {
+                Button { /* disabled */ } label: {
+                    Label {
+                        Text("Setting up")
+                    } icon: {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
+                .disabled(true)
+                .help("Setup is running. Run will be available once setup completes.")
+            } else if let runner = state.runController(for: workspace.id) {
                 RunStatusButton(runner: runner) { state.toggleRun(for: workspace) }
             } else {
                 Button {

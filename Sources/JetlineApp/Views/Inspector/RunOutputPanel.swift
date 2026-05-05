@@ -16,15 +16,23 @@ struct RunOutputPanel: View {
         }
     }
 
+    /// Run output wins while the script is running; once it exits we drop
+    /// back to the placeholder so the user sees the same clean slate as on
+    /// a fresh workspace instead of staring at a stale exit trace. Setup
+    /// output stays visible until the user triggers their first run (which
+    /// discards the setup controller).
     @ViewBuilder
     private func content(for workspace: Workspace) -> some View {
-        if !state.hasRunScript(workspace) {
+        if let runController = state.runController(for: workspace.id),
+           runController.isRunning {
+            RunOutputContent(controller: runController)
+        } else if let setupController = state.setupController(for: workspace.id) {
+            SetupOutputContent(controller: setupController)
+        } else if !state.hasRunScript(workspace) {
             InspectorPlaceholder(
                 systemImage: "play.slash",
                 title: "No run script configured for this repository."
             )
-        } else if let controller = state.runController(for: workspace.id) {
-            RunOutputContent(controller: controller)
         } else {
             InspectorPlaceholder(
                 systemImage: "play.circle",
@@ -34,8 +42,15 @@ struct RunOutputPanel: View {
     }
 }
 
-private struct RunOutputContent: View {
-    @ObservedObject var controller: RunController
+/// Status strip + emulator (or empty-state) shared by run + setup panels.
+/// The two panels diverged only in the strip's leading icon and label
+/// strings, so everything else lives here.
+private struct OutputShell<Status: View>: View {
+    let emulator: TerminalEmulatorView?
+    let copyHelp: String
+    let copyAction: () -> Bool
+    @ViewBuilder var status: () -> Status
+
     @State private var copyFeedback = false
 
     var body: some View {
@@ -48,29 +63,21 @@ private struct RunOutputContent: View {
 
     private var statusRow: some View {
         HStack(spacing: 6) {
-            Image(systemName: controller.isRunning ? "circle.fill" : "circle")
-                .foregroundStyle(controller.isRunning ? .green : .secondary)
-                .font(.system(size: 8))
-            Text(controller.isRunning ? "Running" : exitDescription)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            status()
             Spacer()
             Button {
-                if controller.copyOutputToPasteboard() {
-                    showCopyFeedback()
-                }
+                if copyAction() { showCopyFeedback() }
             } label: {
+                // Fixed frame: `checkmark` and `doc.on.doc` have different
+                // intrinsic heights at the same point size, otherwise the
+                // strip jiggles when feedback flashes.
                 Image(systemName: copyFeedback ? "checkmark" : "doc.on.doc")
                     .font(.system(size: 11, weight: .medium))
+                    .frame(width: 14, height: 14)
             }
             .buttonStyle(.borderless)
             .controlSize(.small)
-            .help("Copy run output")
-            if controller.isRunning {
-                Button("Stop") { controller.stop() }
-                    .buttonStyle(.borderless)
-                    .controlSize(.small)
-            }
+            .help(copyHelp)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -78,11 +85,10 @@ private struct RunOutputContent: View {
 
     @ViewBuilder
     private var outputArea: some View {
-        if let emulator = controller.emulator {
+        if let emulator {
             RunTerminalHost(emulator: emulator)
                 .background(Color(nsColor: .textBackgroundColor))
         } else {
-            // First mount before any run started.
             VStack {
                 Spacer()
                 Text("(no output yet)")
@@ -95,11 +101,6 @@ private struct RunOutputContent: View {
         }
     }
 
-    private var exitDescription: String {
-        if let s = controller.exitStatus { return "Exited (\(s))" }
-        return "Idle"
-    }
-
     private func showCopyFeedback() {
         copyFeedback = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
@@ -108,10 +109,74 @@ private struct RunOutputContent: View {
     }
 }
 
-/// SwiftUI ↔ AppKit bridge for the run output's terminal. The emulator
-/// itself is owned by `RunController` and outlives this host — when the
-/// panel is dismounted (Run tab deselected, inspector hidden) we reparent
-/// the underlying NSView away so the next mount can adopt it again.
+private struct SetupOutputContent: View {
+    @ObservedObject var controller: SetupController
+
+    var body: some View {
+        OutputShell(
+            emulator: controller.emulator,
+            copyHelp: "Copy setup output",
+            copyAction: controller.copyOutputToPasteboard
+        ) {
+            statusIcon
+            Text(statusLabel)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var statusIcon: some View {
+        if controller.isRunning {
+            ProgressView()
+                .controlSize(.mini)
+                .scaleEffect(0.7)
+                .frame(width: 10, height: 10)
+        } else {
+            Image(systemName: controller.didSucceed ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(controller.didSucceed ? .green : .orange)
+                .font(.system(size: 10))
+        }
+    }
+
+    private var statusLabel: String {
+        if controller.isRunning { return "Setting up…" }
+        if controller.didSucceed { return "Setup complete" }
+        if let code = controller.exitCode { return "Setup failed (\(code))" }
+        return "Setup finished"
+    }
+}
+
+private struct RunOutputContent: View {
+    @ObservedObject var controller: RunController
+
+    var body: some View {
+        OutputShell(
+            emulator: controller.emulator,
+            copyHelp: "Copy run output",
+            copyAction: controller.copyOutputToPasteboard
+        ) {
+            Image(systemName: controller.isRunning ? "circle.fill" : "circle")
+                .foregroundStyle(controller.isRunning ? .green : .secondary)
+                .font(.system(size: 8))
+            Text(controller.isRunning ? "Running" : exitDescription)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var exitDescription: String {
+        if let s = controller.exitStatus { return "Exited (\(s))" }
+        return "Idle"
+    }
+}
+
+/// SwiftUI ↔ AppKit bridge for the run output's terminal. The emulator is
+/// owned by `RunController` and lives in `TerminalIncubator` between
+/// mounts so its libghostty surface is built up-front and stays alive —
+/// otherwise PTY bytes that arrive while the panel isn't on screen would
+/// be silently dropped. On mount we adopt the view into the panel; on
+/// dismount we hand it back to the incubator.
 private struct RunTerminalHost: NSViewRepresentable {
     let emulator: TerminalEmulatorView
 
@@ -132,7 +197,12 @@ private struct RunTerminalHost: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {
         let term = emulator.nsView
         if term.superview !== nsView {
-            for sub in nsView.subviews { sub.removeFromSuperview() }
+            // The container can already hold a *different* emulator from a
+            // prior workspace: park that one back in the incubator so its
+            // surface stays alive instead of orphaning it.
+            for sub in nsView.subviews where sub !== term {
+                TerminalIncubator.park(sub)
+            }
             attach(term, to: nsView)
         }
         context.coordinator.emulator = emulator as AnyObject
@@ -140,19 +210,20 @@ private struct RunTerminalHost: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
-        // Pause the GPU surface when the panel goes away. The emulator
-        // outlives the host (RunController owns it), so we don't terminate.
+        // Hand the emulator back to the incubator so its surface keeps
+        // receiving PTY output even though the panel is gone. The emulator
+        // outlives this host — RunController/SetupController owns it.
         if let emulator = coordinator.emulator as? TerminalEmulatorView {
             MainActor.assumeIsolated {
                 emulator.setActive(false)
+                TerminalIncubator.park(emulator.nsView)
             }
         }
-        for sub in nsView.subviews { sub.removeFromSuperview() }
     }
 
     private func attach(_ term: NSView, to container: NSView) {
+        TerminalIncubator.adopt(term, into: container)
         term.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(term)
         NSLayoutConstraint.activate([
             term.topAnchor.constraint(equalTo: container.topAnchor),
             term.bottomAnchor.constraint(equalTo: container.bottomAnchor),

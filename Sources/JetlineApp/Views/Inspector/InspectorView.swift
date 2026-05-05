@@ -1,16 +1,17 @@
 import SwiftUI
 
+/// Top-level so `AppState` can drive selection from outside the view (e.g.
+/// switch to `.run` when a fresh workspace's setup script kicks off).
+enum InspectorTab: Hashable { case changes, pr, run }
+
 struct InspectorView: View {
     @EnvironmentObject private var state: AppState
-    @State private var tab: Tab = .changes
     @State private var diffMode: DiffMode = .pr
-
-    enum Tab: Hashable { case changes, pr, run }
 
     var body: some View {
         VStack(spacing: 0) {
             CapsuleTabs(
-                selection: $tab,
+                selection: $state.inspectorTab,
                 tabs: [.changes, .pr, .run],
                 help: { Self.tooltip(for: $0) }
             ) { tab, _ in
@@ -31,7 +32,7 @@ struct InspectorView: View {
     /// wrapped in a scroll view here.
     @ViewBuilder
     private var content: some View {
-        switch tab {
+        switch state.inspectorTab {
         case .changes:
             VStack(spacing: 0) {
                 DiffModeToggle(mode: $diffMode)
@@ -47,7 +48,7 @@ struct InspectorView: View {
         }
     }
 
-    private static func tooltip(for tab: Tab) -> String? {
+    private static func tooltip(for tab: InspectorTab) -> String? {
         switch tab {
         case .changes: return "Changes"
         case .pr: return "Pull request"
@@ -56,7 +57,7 @@ struct InspectorView: View {
     }
 
     @ViewBuilder
-    private static func icon(for tab: Tab) -> some View {
+    private static func icon(for tab: InspectorTab) -> some View {
         switch tab {
         case .changes:
             Image(systemName: "plusminus")

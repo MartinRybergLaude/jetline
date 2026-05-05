@@ -28,7 +28,6 @@ final class RunController: ObservableObject, Identifiable {
     var isRunning: Bool { phase != .idle }
 
     private var warmupItem: DispatchWorkItem?
-    private let onExit: @MainActor (RunController) -> Void
 
     /// Raw PTY bytes kept around for the copy button. Capped so a chatty
     /// `npm run dev` doesn't unbounded-grow memory; trim drops to 75% so we
@@ -41,16 +40,15 @@ final class RunController: ObservableObject, Identifiable {
     /// long — proxy for "spawn actually took effect".
     private let startupGrace: TimeInterval = 1.0
 
-    init(workspaceId: String, onExit: @escaping @MainActor (RunController) -> Void) {
+    init(workspaceId: String) {
         self.workspaceId = workspaceId
-        self.onExit = onExit
     }
 
     func start(script: String, cwd: String, env: [String: String]) {
         guard phase == .idle, let trimmed = script.nonBlank else { return }
 
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-        let term = GhosttyEmulator()
+        let term = GhosttyEmulator(fontSize: GhosttyEmulator.outputPanelFontSize)
         term.setExitHandler { [weak self] code in
             Task { @MainActor [weak self] in self?.handleExit(code: code) }
         }
@@ -58,7 +56,17 @@ final class RunController: ObservableObject, Identifiable {
         capturedBytes.removeAll(keepingCapacity: true)
         exitStatus = nil
         phase = .starting
+        // Drop the previous run's parked NSView so old emulators don't
+        // accumulate in the incubator across repeated starts.
+        emulator?.nsView.removeFromSuperview()
         emulator = term
+        // Park before spawning so libghostty builds the surface — otherwise
+        // PTY chunks that arrive before the panel mounts get dropped on the
+        // floor by `InMemoryTerminalSession.receive` (surface == nil).
+        // `setActive(false)` keeps the offscreen display link idle until
+        // the panel adopts the view.
+        TerminalIncubator.park(term.nsView)
+        term.setActive(false)
 
         term.spawn(
             executable: shell,
@@ -87,6 +95,15 @@ final class RunController: ObservableObject, Identifiable {
         emulator?.terminate()
     }
 
+    /// Detach the emulator from the incubator and tear down its PTY. Used
+    /// when the workspace is going away so the parked NSView doesn't
+    /// outlive the controller.
+    func discard() {
+        emulator?.terminate()
+        emulator?.nsView.removeFromSuperview()
+        emulator = nil
+    }
+
     /// Plaintext bytes for the copy button, with terminal control sequences
     /// stripped so the clipboard doesn't carry `\x1b[…m` noise.
     func copyableOutput() -> String {
@@ -111,7 +128,6 @@ final class RunController: ObservableObject, Identifiable {
         warmupItem = nil
         phase = .idle
         exitStatus = code
-        onExit(self)
     }
 
     private func appendCapture(_ data: Data) {
