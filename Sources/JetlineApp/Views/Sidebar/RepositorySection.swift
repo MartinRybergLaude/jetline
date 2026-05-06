@@ -2,6 +2,9 @@ import SwiftUI
 
 struct RepositorySection: View {
     @EnvironmentObject private var state: AppState
+    /// Observed so the row repaints when a deferred icon scan lands.
+    /// Singleton: the loader's lifecycle is the app's, not this view's.
+    @ObservedObject private var iconLoader = RepoIconLoader.shared
     let repo: Repository
     let onNewWorkspace: () -> Void
     let onOpenSettings: () -> Void
@@ -43,7 +46,7 @@ struct RepositorySection: View {
                         }
                         .frame(width: 12, alignment: .center)
                         Group {
-                            if let favicon = RepoIconLoader.icon(for: repo.path) {
+                            if let favicon = iconLoader.icon(for: repo.path) {
                                 Image(nsImage: favicon)
                                     .resizable()
                                     .interpolation(.high)

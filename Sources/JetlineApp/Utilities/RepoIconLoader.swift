@@ -1,21 +1,59 @@
 import AppKit
 
+/// Discovers a representative app/site icon inside a repository so the
+/// sidebar can render the repo's branding instead of a generic folder
+/// glyph. The lookup is a bounded BFS over the repo (skipping vendored /
+/// build dirs, scoring candidates by depth and path tokens), which is
+/// expensive enough that running it inline from a SwiftUI body would
+/// stall the first sidebar paint per repo.
+///
+/// Lookups are now dispatched on a detached `Task` and the cache is
+/// observable: views read `RepoIconLoader.shared.icon(for:)` and observe
+/// the loader as an `@ObservedObject`, so the sidebar paints immediately
+/// (with the folder fallback) and snaps to the resolved icon when the
+/// background scan lands.
 @MainActor
-enum RepoIconLoader {
-    private static var cache: [String: NSImage?] = [:]
+final class RepoIconLoader: ObservableObject {
+    static let shared = RepoIconLoader()
 
-    static func icon(for repoPath: String) -> NSImage? {
-        if let cached = cache[repoPath] { return cached }
-        let image = lookup(at: repoPath)
-        cache[repoPath] = image
-        return image
+    /// `nil` value = lookup completed and no icon was found; absence from
+    /// the dict = lookup not yet attempted. Storing the negative result
+    /// keeps us from re-scanning repos that legitimately have no icon.
+    @Published private var cache: [String: NSImage?] = [:]
+    /// Paths whose lookup is currently dispatched. Guards against firing
+    /// duplicate scans when `icon(for:)` is called many times before the
+    /// first scan returns (which is normal — the sidebar repaints on
+    /// every AppState publish).
+    private var inFlight: Set<String> = []
+
+    private init() {}
+
+    /// Returns the cached icon for `repoPath`, dispatching a background
+    /// scan the first time we see it. Re-renders observing views when
+    /// the scan lands.
+    func icon(for repoPath: String) -> NSImage? {
+        if let stored = cache[repoPath] {
+            return stored
+        }
+        guard !inFlight.contains(repoPath) else { return nil }
+        inFlight.insert(repoPath)
+        Task.detached(priority: .userInitiated) {
+            let image = Self.lookup(at: repoPath)
+            await self.store(image: image, for: repoPath)
+        }
+        return nil
     }
 
-    private static let validExtensions: Set<String> = ["svg", "ico", "png"]
+    private func store(image: NSImage?, for path: String) {
+        cache[path] = image
+        inFlight.remove(path)
+    }
 
-    private static let iconStems: Set<String> = ["favicon", "appicon", "app-icon", "app_icon", "icon"]
+    nonisolated private static let validExtensions: Set<String> = ["svg", "ico", "png"]
 
-    private static let skipDirs: Set<String> = [
+    nonisolated private static let iconStems: Set<String> = ["favicon", "appicon", "app-icon", "app_icon", "icon"]
+
+    nonisolated private static let skipDirs: Set<String> = [
         "node_modules", ".git", ".next", ".nuxt", ".svelte-kit",
         "dist", "build", "target", "out", "coverage",
         ".turbo", ".cache", ".parcel-cache",
@@ -23,18 +61,21 @@ enum RepoIconLoader {
         ".idea", ".vscode", ".swiftpm", ".build", "DerivedData"
     ]
 
-    private static let maxDepth = 5
+    nonisolated private static let maxDepth = 5
 
-    private static let demoteTokens = [
+    nonisolated private static let demoteTokens = [
         "storybook", "docs", "doc", "demo", "example", "examples",
         "playground", "fixture", "fixtures", "sandbox", "tests", "__tests__"
     ]
 
-    private static let promoteTokens = [
+    nonisolated private static let promoteTokens = [
         "web", "app", "apps", "frontend", "client", "www", "site"
     ]
 
-    private static func lookup(at repoPath: String) -> NSImage? {
+    /// Pure: safe to call from a detached Task. NSImage construction
+    /// reads file data only — actual rendering happens later on main when
+    /// SwiftUI displays the image, which is the thread-touchy step.
+    nonisolated private static func lookup(at repoPath: String) -> NSImage? {
         let base = URL(fileURLWithPath: repoPath, isDirectory: true)
         var queue: [(URL, Int)] = [(base, 0)]
         var candidates: [(url: URL, depth: Int)] = []
@@ -86,7 +127,7 @@ enum RepoIconLoader {
         return nil
     }
 
-    private static func resolveAppIconSet(at url: URL) -> URL? {
+    nonisolated private static func resolveAppIconSet(at url: URL) -> URL? {
         let contentsURL = url.appendingPathComponent("Contents.json")
         if let data = try? Data(contentsOf: contentsURL),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -105,7 +146,7 @@ enum RepoIconLoader {
         return largestPNG(in: url)
     }
 
-    private static func largestPNG(in dir: URL) -> URL? {
+    nonisolated private static func largestPNG(in dir: URL) -> URL? {
         let fm = FileManager.default
         guard let contents = try? fm.contentsOfDirectory(
             at: dir,
@@ -121,17 +162,17 @@ enum RepoIconLoader {
             }
     }
 
-    private static func parseDimension(_ s: String?) -> Int {
+    nonisolated private static func parseDimension(_ s: String?) -> Int {
         guard let s, let dim = s.split(separator: "x").first, let n = Int(dim) else { return 0 }
         return n
     }
 
-    private static func parseScale(_ s: String?) -> Int {
+    nonisolated private static func parseScale(_ s: String?) -> Int {
         guard let s, let n = Int(s.replacingOccurrences(of: "x", with: "")) else { return 1 }
         return n
     }
 
-    private static func score(_ url: URL, depth: Int) -> Int {
+    nonisolated private static func score(_ url: URL, depth: Int) -> Int {
         let components = url.pathComponents.map { $0.lowercased() }
         var score = -depth * 2
         for component in components {
