@@ -118,83 +118,21 @@ enum AgentLauncher {
     }
 
     /// Run `command -v <name>` inside a non-interactive login shell.
-    /// Bounded with a hard timeout so a misbehaving shell can't hang the app.
+    /// Bounded with a hard timeout so a misbehaving shell can't hang the app,
+    /// and routed through `Subprocess.run` so its readabilityHandler-based
+    /// drain handles the case where shell init spawns a daemon that inherits
+    /// fd 1/2 (fsmonitor, gpg-agent, etc.) — otherwise the read end never
+    /// sees EOF and the continuation never resumes.
     private static func shellCommand(_ name: String) async -> String? {
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-        return await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: shell)
-                process.arguments = ["-l", "-c", "command -v \(name)"]
-
-                let outPipe = Pipe()
-                let errPipe = Pipe()
-                process.standardOutput = outPipe
-                process.standardError = errPipe
-                process.standardInput = FileHandle.nullDevice
-
-                // Drain the output pipe concurrently. We can't call
-                // `readDataToEndOfFile` after `waitUntilExit`: shells run
-                // for `-lc "command -v foo"` frequently spawn detaching
-                // children during profile load (fsmonitor daemons, gpg /
-                // ssh agents, etc.) that inherit fd 1/2 and keep the pipe
-                // write ends open after the parent shell exits. The read
-                // would then block forever, the continuation would never
-                // resume, and `startIfNeeded` would hang — leaving the
-                // tab on a blinking cursor with no agent attached.
-                let outHandle = outPipe.fileHandleForReading
-                let errHandle = errPipe.fileHandleForReading
-                var data = Data()
-                let group = DispatchGroup()
-                let readQ = DispatchQueue.global(qos: .userInitiated)
-                group.enter()
-                readQ.async {
-                    data = outHandle.readDataToEndOfFile()
-                    group.leave()
-                }
-                group.enter()
-                readQ.async {
-                    _ = errHandle.readDataToEndOfFile()
-                    group.leave()
-                }
-
-                do {
-                    try process.run()
-                } catch {
-                    try? outHandle.close()
-                    try? errHandle.close()
-                    group.wait()
-                    continuation.resume(returning: nil)
-                    return
-                }
-
-                // Hard timeout: 4 seconds. Some user .zprofile setups can stall.
-                let deadline = DispatchTime.now() + .seconds(4)
-                let killer = DispatchWorkItem {
-                    if process.isRunning { process.terminate() }
-                }
-                DispatchQueue.global().asyncAfter(deadline: deadline, execute: killer)
-
-                process.waitUntilExit()
-                killer.cancel()
-
-                // Same bounded-drain dance as `Subprocess.runSync`. Without
-                // the force-close, a long-lived descendant holding the pipe
-                // open turns this into a permanent thread leak.
-                if group.wait(timeout: .now() + .milliseconds(250)) == .timedOut {
-                    try? outHandle.close()
-                    try? errHandle.close()
-                    group.wait()
-                }
-
-                guard process.terminationStatus == 0 else {
-                    continuation.resume(returning: nil)
-                    return
-                }
-                let trimmed = (String(data: data, encoding: .utf8) ?? "")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                continuation.resume(returning: trimmed.isEmpty ? nil : trimmed)
-            }
-        }
+        let result = await Subprocess.run(
+            executable: shell,
+            args: ["-l", "-c", "command -v \(name)"],
+            closeStdin: true,
+            timeout: 4
+        )
+        guard result.success else { return nil }
+        let trimmed = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }

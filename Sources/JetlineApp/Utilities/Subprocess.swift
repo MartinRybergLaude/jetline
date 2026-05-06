@@ -61,31 +61,29 @@ enum Subprocess {
         process.standardError = errPipe
         if closeStdin { process.standardInput = FileHandle.nullDevice }
 
+        // Drain stdout/stderr via Foundation's `readabilityHandler` so reads
+        // run on its private kqueue source instead of pinning a Task thread
+        // inside `readDataToEndOfFile`. Two reasons we can't just bound the
+        // synchronous read by closing the fd from another thread:
+        //
+        // 1. `close()` on a `FileHandle` while a parallel `read()` syscall
+        //    is in flight raises an ObjC `NSFileHandleOperationException`
+        //    that Swift can't catch with `try?` — it crashes the app.
+        // 2. On macOS, closing a pipe fd from another thread doesn't even
+        //    unblock the read; the kernel keeps the read alive against the
+        //    file table entry. So the close would crash without helping.
+        //
+        // With `readabilityHandler`, "stop draining" is just clearing the
+        // handler — no blocking syscall to interrupt.
+        let outReader = PipeDrain(handle: outPipe.fileHandleForReading)
+        let errReader = PipeDrain(handle: errPipe.fileHandleForReading)
+
         do {
             try process.run()
         } catch {
+            outReader.cancel()
+            errReader.cancel()
             return Result(stdout: "", stderr: "spawn failed: \(error)", status: -1)
-        }
-
-        // Drain pipes concurrently — without this, output larger than the
-        // pipe buffer (~16KB on macOS) blocks the child on write while the
-        // parent blocks on waitUntilExit.
-        let outHandle = outPipe.fileHandleForReading
-        let errHandle = errPipe.fileHandleForReading
-        var outData = Data()
-        var errData = Data()
-        let group = DispatchGroup()
-        let readQ = DispatchQueue.global(qos: .userInitiated)
-
-        group.enter()
-        readQ.async {
-            outData = outHandle.readDataToEndOfFile()
-            group.leave()
-        }
-        group.enter()
-        readQ.async {
-            errData = errHandle.readDataToEndOfFile()
-            group.leave()
         }
 
         if let timeout {
@@ -99,25 +97,74 @@ enum Subprocess {
             process.waitUntilExit()
         }
 
-        // Bounded drain. The process is dead, so anything still in the pipe
-        // is whatever the kernel buffered before the write end closed —
-        // which usually drains in microseconds. If readers are still
-        // pending after a grace period, a forked-and-detached descendant
-        // (git's `fsmonitor--daemon`, SSH `ControlMaster`, a credential
-        // helper) inherited fd 1/2 and is keeping the write ends open.
-        // We don't want that descendant's output, but `readDataToEndOfFile`
-        // will block until *every* writer closes — pinning a Task thread
-        // forever, which compounds across calls until new agent tabs and
-        // git ops both wedge. Force-close the read ends so the readers
-        // see EBADF and unwind.
-        if group.wait(timeout: .now() + .milliseconds(250)) == .timedOut {
-            try? outHandle.close()
-            try? errHandle.close()
-            group.wait()
-        }
+        // Bounded drain. The process is dead, so anything still buffered in
+        // the pipe will arrive in microseconds. If reads are still pending
+        // after the grace period, a forked-and-detached descendant
+        // (git's `fsmonitor--daemon`, SSH `ControlMaster`, credential
+        // helpers, shell-init agents) inherited fd 1/2 and is keeping the
+        // write ends open. EOF will never come; we don't want its output
+        // anyway. Cancel the drainers and move on.
+        let stdoutData = outReader.waitAndCollect(timeout: .milliseconds(250))
+        let stderrData = errReader.waitAndCollect(timeout: .milliseconds(250))
 
-        let stdout = String(data: outData, encoding: .utf8) ?? ""
-        let stderr = String(data: errData, encoding: .utf8) ?? ""
+        let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
+        let stderr = String(data: stderrData, encoding: .utf8) ?? ""
         return Result(stdout: stdout, stderr: stderr, status: process.terminationStatus)
+    }
+}
+
+/// Pulls bytes off a child-process pipe via `readabilityHandler`.
+/// The drain runs on Foundation's private dispatch source, not on the
+/// caller's thread, so the caller can abandon the drain at any time
+/// (`cancel`) by clearing the handler — no in-flight syscall to
+/// interrupt, and no need to close the fd from a parallel thread,
+/// which raises an uncatchable ObjC exception inside the read.
+private final class PipeDrain: @unchecked Sendable {
+    private let handle: FileHandle
+    private let lock = NSLock()
+    private var data = Data()
+    private var done = false
+    private let semaphore = DispatchSemaphore(value: 0)
+
+    init(handle: FileHandle) {
+        self.handle = handle
+        handle.readabilityHandler = { [weak self] handle in
+            guard let self else { return }
+            let chunk = handle.availableData
+            if chunk.isEmpty {
+                self.markDone()
+            } else {
+                self.lock.lock()
+                self.data.append(chunk)
+                self.lock.unlock()
+            }
+        }
+    }
+
+    /// Wait for EOF up to `timeout`, then return whatever has been
+    /// collected so far. After return, the handler is detached and no
+    /// further bytes are appended.
+    func waitAndCollect(timeout: DispatchTimeInterval) -> Data {
+        _ = semaphore.wait(timeout: .now() + timeout)
+        cancel()
+        lock.lock()
+        defer { lock.unlock() }
+        return data
+    }
+
+    func cancel() {
+        markDone()
+    }
+
+    private func markDone() {
+        let wasFirst: Bool
+        lock.lock()
+        wasFirst = !done
+        done = true
+        lock.unlock()
+        if wasFirst {
+            handle.readabilityHandler = nil
+            semaphore.signal()
+        }
     }
 }
