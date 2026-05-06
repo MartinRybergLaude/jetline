@@ -89,27 +89,60 @@ enum DiffComputer {
         return result.stdout.nonBlank != nil
     }
 
+    /// Resolve `merge-base HEAD baseBranch`. Hoisted so the caller can share
+    /// one resolution across the three diff modes — combined and pr need the
+    /// same SHA, and re-running it for each is two extra subprocesses per
+    /// `refreshDiff` tick.
+    static func mergeBase(worktreePath: String, baseBranch: String) async throws -> String {
+        try await GitRunner.runChecked(
+            ["merge-base", "HEAD", baseBranch],
+            cwd: worktreePath
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// Diff (tracked files only) against the revspec implied by `mode`.
     /// Throws if the base ref is missing or any of the three `git diff` calls fail —
-    /// callers decide how to surface that.
+    /// callers decide how to surface that. Pass `precomputedMergeBase` when the
+    /// caller has already resolved `merge-base HEAD baseBranch` so we don't
+    /// repeat the lookup; ignored when `mode == .local`.
     static func compute(
         worktreePath: String,
         baseBranch: String,
-        mode: DiffMode = .combined
+        mode: DiffMode = .combined,
+        precomputedMergeBase: String? = nil
     ) async throws -> DiffSnapshot {
-        let mergeBase: String? = mode.needsMergeBase
-            ? try await GitRunner.runChecked(
-                ["merge-base", "HEAD", baseBranch],
-                cwd: worktreePath
-            ).trimmingCharacters(in: .whitespacesAndNewlines)
-            : nil
+        let mergeBase: String?
+        if mode.needsMergeBase {
+            if let pre = precomputedMergeBase {
+                mergeBase = pre
+            } else {
+                mergeBase = try await Self.mergeBase(
+                    worktreePath: worktreePath,
+                    baseBranch: baseBranch
+                )
+            }
+        } else {
+            mergeBase = nil
+        }
         let revspec = mode.revspec(mergeBase: mergeBase)
 
-        // numstat for tallies
-        let numstatOut = try await GitRunner.runChecked(
+        // numstat / name-status / patch are independent reads against the
+        // same revspec — fan them out so the wall time is max(of three)
+        // instead of sum.
+        async let numstatTask = GitRunner.runChecked(
             ["diff", "--numstat", revspec],
             cwd: worktreePath
         )
+        async let nameStatusTask = GitRunner.runChecked(
+            ["diff", "--name-status", revspec],
+            cwd: worktreePath
+        )
+        async let patchTask = GitRunner.runChecked(
+            ["diff", "--no-color", "-U3", revspec],
+            cwd: worktreePath
+        )
+
+        let numstatOut = try await numstatTask
         var stats: [String: (Int, Int)] = [:]
         for line in numstatOut.split(separator: "\n") {
             let parts = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
@@ -119,11 +152,7 @@ enum DiffComputer {
             stats[String(parts[2])] = (adds, dels)
         }
 
-        // name-status for status flags
-        let nameStatusOut = try await GitRunner.runChecked(
-            ["diff", "--name-status", revspec],
-            cwd: worktreePath
-        )
+        let nameStatusOut = try await nameStatusTask
         var statuses: [String: FileDiff.Status] = [:]
         for line in nameStatusOut.split(separator: "\n") {
             let parts = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
@@ -132,11 +161,7 @@ enum DiffComputer {
             statuses[String(parts[1])] = FileDiff.Status(rawValue: code) ?? .unknown
         }
 
-        // Patch for hunks
-        let patchOut = try await GitRunner.runChecked(
-            ["diff", "--no-color", "-U3", revspec],
-            cwd: worktreePath
-        )
+        let patchOut = try await patchTask
         let parsed = PatchParser.parse(patchOut)
 
         var files: [FileDiff] = []

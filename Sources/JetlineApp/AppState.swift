@@ -648,18 +648,29 @@ final class AppState: ObservableObject {
     // MARK: - Diff & watcher
 
     func refreshDiff(for workspace: Workspace) async {
+        // Resolve merge-base once and share with combined+pr. nil means the
+        // lookup itself failed (offline base / brand-new repo); each mode's
+        // compute then falls back to its own resolution and surfaces the
+        // error there.
+        let mergeBase = try? await DiffComputer.mergeBase(
+            worktreePath: workspace.worktreePath,
+            baseBranch: workspace.baseBranch
+        )
+
         async let combined: DiffSnapshot? = {
             try? await DiffComputer.compute(
                 worktreePath: workspace.worktreePath,
                 baseBranch: workspace.baseBranch,
-                mode: .combined
+                mode: .combined,
+                precomputedMergeBase: mergeBase
             )
         }()
         async let prSnap: DiffSnapshot? = {
             try? await DiffComputer.compute(
                 worktreePath: workspace.worktreePath,
                 baseBranch: workspace.baseBranch,
-                mode: .pr
+                mode: .pr,
+                precomputedMergeBase: mergeBase
             )
         }()
         async let localSnap: DiffSnapshot? = {
