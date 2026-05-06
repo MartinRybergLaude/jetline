@@ -713,7 +713,12 @@ final class AppState: ObservableObject {
     }
 
     func endPRRefresh(workspaceId: String) {
-        refreshingPRsByWorkspace.remove(workspaceId)
+        // Mutating an `@Published` Set fires Combine even when the element
+        // is absent — guard so the per-poll defer doesn't notify the whole
+        // UI for every workspace whose marker was already cleared.
+        if refreshingPRsByWorkspace.contains(workspaceId) {
+            refreshingPRsByWorkspace.remove(workspaceId)
+        }
     }
 
     /// Single write path for the repo metadata cache. PRTracker calls this

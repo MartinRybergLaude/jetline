@@ -60,6 +60,17 @@ final class PRTracker {
         }
     }
 
+    /// Pair of keypaths identifying which sleep slot and pending-kick flag
+    /// a poll loop owns. Lets `kick`, `runLoop`, and `startLoops` parameterize
+    /// over local-vs-github without restating the field names.
+    private struct LoopBinding: Sendable {
+        let sleep: WritableKeyPath<Loops, Task<Void, Never>?> & Sendable
+        let kickPending: WritableKeyPath<Loops, Bool> & Sendable
+
+        static let local = LoopBinding(sleep: \.localSleep, kickPending: \.localKickPending)
+        static let github = LoopBinding(sleep: \.githubSleep, kickPending: \.githubKickPending)
+    }
+
     private weak var state: AppState?
 
     /// Cached owner/name per repo. Outer optional = "lookup not yet attempted";
@@ -101,15 +112,15 @@ final class PRTracker {
     /// nothing to land on — the pending flag carries the kick across into
     /// `runLoop`'s post-poll check.
     func kick(repoId: String) {
-        if let sleep = loops[repoId]?.localSleep {
+        cancelOrPend(repoId: repoId, binding: .local)
+        cancelOrPend(repoId: repoId, binding: .github)
+    }
+
+    private func cancelOrPend(repoId: String, binding: LoopBinding) {
+        if let sleep = loops[repoId]?[keyPath: binding.sleep] {
             sleep.cancel()
         } else {
-            loops[repoId]?.localKickPending = true
-        }
-        if let sleep = loops[repoId]?.githubSleep {
-            sleep.cancel()
-        } else {
-            loops[repoId]?.githubKickPending = true
+            loops[repoId]?[keyPath: binding.kickPending] = true
         }
     }
 
@@ -131,8 +142,7 @@ final class PRTracker {
             await self?.runLoop(
                 repoId: repoId,
                 interval: { _ in 20 },
-                sleepKey: \.localSleep,
-                kickPendingKey: \.localKickPending,
+                binding: .local,
                 poll: { await $0.pollLocal(repoId: repoId) }
             )
         }
@@ -140,8 +150,7 @@ final class PRTracker {
             await self?.runLoop(
                 repoId: repoId,
                 interval: { $0.nextGitHubInterval(repoId: repoId) },
-                sleepKey: \.githubSleep,
-                kickPendingKey: \.githubKickPending,
+                binding: .github,
                 poll: { await $0.pollGitHub(repoId: repoId) }
             )
         }
@@ -157,8 +166,7 @@ final class PRTracker {
     private func runLoop(
         repoId: String,
         interval: @escaping (PRTracker) -> Double,
-        sleepKey: WritableKeyPath<Loops, Task<Void, Never>?>,
-        kickPendingKey: WritableKeyPath<Loops, Bool>,
+        binding: LoopBinding,
         poll: @escaping (PRTracker) async -> Void
     ) async {
         while !Task.isCancelled {
@@ -167,21 +175,21 @@ final class PRTracker {
             // Honor a kick that landed while the poll was running (sleep
             // was `nil`, so the cancel had nowhere to go). Skip the
             // upcoming sleep and re-poll immediately.
-            if loops[repoId]?[keyPath: kickPendingKey] == true {
-                loops[repoId]?[keyPath: kickPendingKey] = false
+            if loops[repoId]?[keyPath: binding.kickPending] == true {
+                loops[repoId]?[keyPath: binding.kickPending] = false
                 continue
             }
             let sleep = Task<Void, Never> {
                 try? await Task.sleep(for: .seconds(interval(self)))
             }
-            loops[repoId]?[keyPath: sleepKey] = sleep
+            loops[repoId]?[keyPath: binding.sleep] = sleep
             await withTaskCancellationHandler {
                 await sleep.value
             } onCancel: {
                 sleep.cancel()
             }
-            if loops[repoId]?[keyPath: sleepKey] == sleep {
-                loops[repoId]?[keyPath: sleepKey] = nil
+            if loops[repoId]?[keyPath: binding.sleep] == sleep {
+                loops[repoId]?[keyPath: binding.sleep] = nil
             }
         }
     }

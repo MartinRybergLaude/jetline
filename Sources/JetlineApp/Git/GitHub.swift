@@ -678,10 +678,8 @@ private struct PRNode: Decodable {
             }
         }
 
-        // `statusCheckRollup.contexts` returns every run across every check
-        // suite, so a rerun shows up as two CheckRun entries with the same
-        // (workflow, name). Dedupe to the latest run per id; ISO 8601
-        // timestamps sort chronologically as strings.
+        // GitHub returns one entry per rerun, so the same (workflow, name)
+        // can appear multiple times. Keep the latest by ISO 8601 timestamp.
         var deduped: [CheckRun] = []
         var indexById: [String: Int] = [:]
         for run in raw {
