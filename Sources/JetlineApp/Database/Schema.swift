@@ -136,5 +136,11 @@ enum Schema {
         migrator.registerMigration("v10_drop_sessions") { db in
             try db.drop(table: "sessions")
         }
+
+        migrator.registerMigration("v11_drop_global_branch_prefix") { db in
+            try db.alter(table: "app_settings") { t in
+                t.drop(column: "globalBranchPrefix")
+            }
+        }
     }
 }

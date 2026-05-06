@@ -317,24 +317,26 @@ final class AppState: ObservableObject {
     ///
     /// The `branchPrefixMode` field is the source of truth when set:
     /// `.username` derives from `git config user.name`, `.custom` uses the
-    /// stored `branchPrefix`, `.none` produces an empty string. Repos
-    /// migrated from before the mode field have nil mode, in which case we
-    /// honour the legacy fallback chain (custom value → global → built-in).
+    /// stored `branchPrefix`, `.none` produces an empty string. Legacy rows
+    /// with nil mode follow the same migrate-on-display rule as
+    /// `RepositorySettingsSheet`: `.custom` if a stored prefix exists,
+    /// otherwise `.username`.
     private func effectiveBranchPrefix(for repo: Repository) async -> String {
-        if let raw = repo.branchPrefixMode, let mode = BranchPrefixMode(rawValue: raw) {
-            switch mode {
-            case .username:
-                let slug = await WorktreeOps.usernameSlug(at: repo.path)
-                return slug.isEmpty ? "" : slug + "/"
-            case .custom:
-                return repo.branchPrefix?.nonBlank ?? ""
-            case .none:
-                return ""
-            }
+        let mode: BranchPrefixMode
+        if let raw = repo.branchPrefixMode, let resolved = BranchPrefixMode(rawValue: raw) {
+            mode = resolved
+        } else {
+            mode = repo.branchPrefix?.nonBlank == nil ? .username : .custom
         }
-        return repo.branchPrefix?.nonBlank
-            ?? settings.globalBranchPrefix.nonBlank
-            ?? "jetline/"
+        switch mode {
+        case .username:
+            let slug = await WorktreeOps.usernameSlug(at: repo.path)
+            return slug.isEmpty ? "" : slug + "/"
+        case .custom:
+            return repo.branchPrefix?.nonBlank ?? ""
+        case .none:
+            return ""
+        }
     }
 
     func selectWorkspace(_ id: String) {

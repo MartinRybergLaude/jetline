@@ -161,12 +161,8 @@ struct ImportBranchPane: View {
 
     private func defaultName(for ref: String) -> String {
         let stripped = repository.localName(forRemoteRef: ref)
-        let candidates = [
-            repository.branchPrefix?.nonBlank,
-            state.settings.globalBranchPrefix.nonBlank
-        ].compactMap { $0 }
-        for candidate in candidates where stripped.hasPrefix(candidate) {
-            return String(stripped.dropFirst(candidate.count))
+        if let prefix = repository.branchPrefix?.nonBlank, stripped.hasPrefix(prefix) {
+            return String(stripped.dropFirst(prefix.count))
         }
         return stripped
     }

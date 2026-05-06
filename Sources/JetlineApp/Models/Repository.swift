@@ -26,10 +26,10 @@ struct Repository: Codable, Identifiable, Hashable, FetchableRecord, Persistable
     var lastOpenedAt: Date?
 
     var remoteOrigin: String = "origin"
-    /// `nil` means "inherit `AppSettings.globalBranchPrefix`".
+    /// Custom prefix used when `branchPrefixMode` is `.custom`.
     var branchPrefix: String?
-    /// Discriminator for the per-repo branch-prefix UI. `nil` is legacy:
-    /// fall back to the inherited globalBranchPrefix / custom string.
+    /// Discriminator for the per-repo branch-prefix UI. `nil` is legacy and
+    /// resolves to `.custom` if `branchPrefix` is set, else `.username`.
     /// Recognised values: `username`, `custom`, `none`.
     var branchPrefixMode: String?
     var setupScript: String?

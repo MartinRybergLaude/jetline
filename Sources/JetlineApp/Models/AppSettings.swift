@@ -13,10 +13,6 @@ struct AppSettings: Codable, FetchableRecord, PersistableRecord {
     var terminalFontFamily: String = "SF Mono"
     var terminalFontSize: Double = 13
     var theme: Theme = .system
-    /// Prefix prepended to generated branch names for new workspaces. Each
-    /// repo can override via `Repository.branchPrefix`. Trailing slash is
-    /// preserved as-is so users can use either `name/` or `name-`.
-    var globalBranchPrefix: String = "jetline/"
     /// Comma-separated raw values of agents the user has hidden from the
     /// new-tab menu. Stored as a string so adding new agents doesn't require
     /// a schema migration.
