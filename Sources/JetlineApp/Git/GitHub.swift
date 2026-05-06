@@ -641,7 +641,7 @@ private struct PRNode: Decodable {
 
     var checkRuns: [CheckRun] {
         let contexts = commits?.nodes.first?.commit.statusCheckRollup?.contexts.nodes ?? []
-        return contexts.map { ctx in
+        let raw: [CheckRun] = contexts.map { ctx in
             switch ctx.__typename {
             case "CheckRun":
                 let status = ctx.status ?? .unknown
@@ -677,6 +677,28 @@ private struct PRNode: Decodable {
                 )
             }
         }
+
+        // `statusCheckRollup.contexts` returns every run across every check
+        // suite, so a rerun shows up as two CheckRun entries with the same
+        // (workflow, name). Dedupe to the latest run per id; ISO 8601
+        // timestamps sort chronologically as strings.
+        var deduped: [CheckRun] = []
+        var indexById: [String: Int] = [:]
+        for run in raw {
+            if let idx = indexById[run.id] {
+                if Self.recencyKey(run) > Self.recencyKey(deduped[idx]) {
+                    deduped[idx] = run
+                }
+            } else {
+                indexById[run.id] = deduped.count
+                deduped.append(run)
+            }
+        }
+        return deduped
+    }
+
+    private static func recencyKey(_ run: CheckRun) -> String {
+        run.startedAt ?? run.completedAt ?? ""
     }
 }
 
