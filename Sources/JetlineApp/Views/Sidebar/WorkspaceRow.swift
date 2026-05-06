@@ -80,11 +80,16 @@ struct PRStatusIcon: View {
         .frame(width: size, height: size)
     }
 
-    private enum Kind { case open, draft, closed, noPR }
+    private enum Kind { case open, draft, closed, noPR, pending }
 
     private var stateKind: Kind? {
         switch snapshot {
-        case nil, .loading, .error: return nil
+        // `nil` (no entry yet) and `.loading` (poll in flight) both render
+        // the noPR silhouette at tertiary intensity — keeps the row from
+        // going iconless and makes the transition to a real state a color
+        // shift instead of a pop-in.
+        case nil, .loading: return .pending
+        case .error: return nil
         case .absent: return .noPR
         case let .loaded(pr, _):
             if pr.isDraft { return .draft }
@@ -100,10 +105,11 @@ struct PRStatusIcon: View {
 
     private func stateColor(_ kind: Kind) -> Color {
         switch kind {
-        case .open:   return .green
-        case .draft:  return .secondary
-        case .closed: return .red
-        case .noPR:   return .secondary
+        case .open:    return .green
+        case .draft:   return .secondary
+        case .closed:  return .red
+        case .noPR:    return .secondary
+        case .pending: return .secondary.opacity(0.5)
         }
     }
 
@@ -132,7 +138,8 @@ struct PRStatusIcon: View {
             .open: "PRStateOpen",
             .draft: "PRStateDraft",
             .closed: "PRStateClosed",
-            .noPR: "PRStateNone"
+            .noPR: "PRStateNone",
+            .pending: "PRStateNone"
         ]
         var map: [Kind: NSImage] = [:]
         for (kind, name) in names {
