@@ -8,7 +8,10 @@ struct PRPanel: View {
         Group {
             if let id = state.selectedWorkspaceId,
                let ws = state.workspaceById(id) {
-                content(for: ws)
+                PRPanelContent(
+                    workspace: ws,
+                    workspaceState: state.workspaceState(for: ws.id)
+                )
                     // Open / switch panel → wake the tracker for an immediate
                     // refresh. Ongoing polling is handled centrally so the
                     // panel doesn't run its own loop.
@@ -21,10 +24,14 @@ struct PRPanel: View {
             }
         }
     }
+}
 
-    @ViewBuilder
-    private func content(for workspace: Workspace) -> some View {
-        switch state.prByWorkspace[workspace.id] ?? .loading {
+private struct PRPanelContent: View {
+    let workspace: Workspace
+    @ObservedObject var workspaceState: WorkspaceState
+
+    var body: some View {
+        switch workspaceState.pr {
         case .loading:
             InspectorPlaceholder(
                 systemImage: "arrow.triangle.2.circlepath",
@@ -48,7 +55,7 @@ struct PRPanel: View {
                 ChecksSection(checks: checks)
                 HStack {
                     Spacer()
-                    RefreshButton(workspaceId: workspace.id)
+                    RefreshButton(workspaceState: workspaceState)
                 }
             }
             .padding(.horizontal, 12)
@@ -123,15 +130,12 @@ private struct PRHeaderCard: View {
 
 private struct RefreshButton: View {
     @EnvironmentObject private var state: AppState
-    let workspaceId: String
-
-    private var isRefreshing: Bool {
-        state.refreshingPRsByWorkspace.contains(workspaceId)
-    }
+    @ObservedObject var workspaceState: WorkspaceState
 
     var body: some View {
+        let isRefreshing = workspaceState.isRefreshingPR
         Button {
-            state.requestPRRefresh(workspaceId: workspaceId)
+            state.requestPRRefresh(workspaceId: workspaceState.id)
         } label: {
             HStack(spacing: 4) {
                 if isRefreshing {

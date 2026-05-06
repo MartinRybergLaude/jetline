@@ -13,16 +13,29 @@ struct GitActionMenu: View {
     @EnvironmentObject private var state: AppState
     let workspace: Workspace
 
+    var body: some View {
+        GitActionMenuContent(
+            workspace: workspace,
+            workspaceState: state.workspaceState(for: workspace.id)
+        )
+    }
+}
+
+private struct GitActionMenuContent: View {
+    @EnvironmentObject private var state: AppState
+    let workspace: Workspace
+    @ObservedObject var workspaceState: WorkspaceState
+
     @State private var pendingMerge: Bool = false
 
     var body: some View {
         let actionState = GitActionState.derive(
-            diff: state.diffByWorkspace[workspace.id],
-            pr: state.prByWorkspace[workspace.id],
-            hasUncommitted: state.hasUncommittedByWorkspace[workspace.id] ?? false,
-            branchPosition: state.branchPositionByWorkspace[workspace.id]
+            diff: workspaceState.diff,
+            pr: workspaceState.pr,
+            hasUncommitted: workspaceState.hasUncommitted,
+            branchPosition: workspaceState.branchPosition
         )
-        let running = state.runningGitActionByWorkspace[workspace.id]
+        let running = workspaceState.runningGitAction
 
         Group {
             if let running {
@@ -172,7 +185,7 @@ struct GitActionMenu: View {
     }
 
     private var mergeConfirmTitle: String {
-        if case let .loaded(pr, _) = state.prByWorkspace[workspace.id] {
+        if case let .loaded(pr, _) = workspaceState.pr {
             return "Merge PR #\(pr.number)?"
         }
         return "Merge pull request?"

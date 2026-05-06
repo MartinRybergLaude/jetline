@@ -5,10 +5,14 @@ struct TerminalArea: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.colorScheme) private var colorScheme
     let workspace: Workspace
+    /// Per-workspace state (sessions, diff stats, run/setup controllers).
+    /// Observed directly so a poll landing on a *different* workspace
+    /// doesn't invalidate the terminal area.
+    @ObservedObject var workspaceState: WorkspaceState
 
     /// Live drag-reorder preview state. While set, the named tab is offset to
     /// follow the cursor and neighbours slide aside; the underlying array is
-    /// not mutated until the drag ends, so `@Published sessionsByWorkspace`
+    /// not mutated until the drag ends, so the `@Published sessions` array
     /// only kicks once instead of on every tab-boundary crossing.
     @State private var dragState: TabDragState?
     /// Slot the dragged tab will land in given the current cursor position.
@@ -56,7 +60,7 @@ struct TerminalArea: View {
                 WorkspaceTitleBar(
                     name: workspace.name,
                     branch: workspace.branchName,
-                    stats: state.diffByWorkspace[workspace.id]
+                    stats: workspaceState.diff
                 )
                 .environment(\.colorScheme, colorScheme)
                 .id(colorScheme)
@@ -72,7 +76,7 @@ struct TerminalArea: View {
     private var runToolbarItems: some View {
         GitActionMenu(workspace: workspace)
         OpenInAppButton(workspace: workspace)
-        RunToolbarSlot(workspace: workspace)
+        RunToolbarSlot(workspace: workspace, workspaceState: workspaceState)
         Button {
             state.inspectorVisible.toggle()
         } label: {
@@ -84,8 +88,8 @@ struct TerminalArea: View {
 
     @ViewBuilder
     private var sessionTabStrip: some View {
-        let sessions = state.sessionsByWorkspace[workspace.id] ?? []
-        let activeId = state.activeSessionByWorkspace[workspace.id]
+        let sessions = workspaceState.sessions
+        let activeId = workspaceState.activeSessionId
         let sessionIds = sessions.map(\.id)
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
@@ -227,7 +231,8 @@ struct TerminalArea: View {
 
     @ViewBuilder
     private var terminalSurface: some View {
-        if let session = state.activeSession(for: workspace.id) {
+        if let id = workspaceState.activeSessionId,
+           let session = workspaceState.sessions.first(where: { $0.id == id }) {
             SessionSurface(session: session)
                 .id(session.id)
         } else {
@@ -359,20 +364,20 @@ private struct ChangesPill: View {
 }
 
 /// Toolbar slot for the run/setup button. Two-stage routing so the spinner
-/// flips to "Run" the moment setup exits: the outer view depends only on
-/// `setupByWorkspace` membership (a published map), the inner view holds an
-/// `@ObservedObject` SetupController and re-renders on its phase changes.
-/// Without this split, the toolbar wouldn't know when setup finished — the
-/// AppState dict still has the controller in it, so no published change.
+/// flips to "Run" the moment setup exits: the outer view observes
+/// `WorkspaceState.setupController` membership, the inner view holds the
+/// SetupController as an `@ObservedObject` and re-renders on its phase
+/// changes.
 private struct RunToolbarSlot: View {
     @EnvironmentObject private var state: AppState
     let workspace: Workspace
+    @ObservedObject var workspaceState: WorkspaceState
 
     var body: some View {
-        if let setup = state.setupController(for: workspace.id) {
-            SetupAwareRunSlot(workspace: workspace, controller: setup)
+        if let setup = workspaceState.setupController {
+            SetupAwareRunSlot(workspace: workspace, workspaceState: workspaceState, controller: setup)
         } else if state.hasRunScript(workspace) {
-            ReadyOrRunningRunSlot(workspace: workspace)
+            ReadyOrRunningRunSlot(workspace: workspace, workspaceState: workspaceState)
         }
     }
 }
@@ -380,6 +385,7 @@ private struct RunToolbarSlot: View {
 private struct SetupAwareRunSlot: View {
     @EnvironmentObject private var state: AppState
     let workspace: Workspace
+    @ObservedObject var workspaceState: WorkspaceState
     @ObservedObject var controller: SetupController
 
     var body: some View {
@@ -395,7 +401,7 @@ private struct SetupAwareRunSlot: View {
             .disabled(true)
             .help("Setup is running. Run will be available once setup completes.")
         } else if state.hasRunScript(workspace) {
-            ReadyOrRunningRunSlot(workspace: workspace)
+            ReadyOrRunningRunSlot(workspace: workspace, workspaceState: workspaceState)
         }
     }
 }
@@ -403,9 +409,10 @@ private struct SetupAwareRunSlot: View {
 private struct ReadyOrRunningRunSlot: View {
     @EnvironmentObject private var state: AppState
     let workspace: Workspace
+    @ObservedObject var workspaceState: WorkspaceState
 
     var body: some View {
-        if let runner = state.runController(for: workspace.id) {
+        if let runner = workspaceState.runController {
             RunStatusButton(runner: runner) { state.toggleRun(for: workspace) }
         } else {
             Button {

@@ -27,7 +27,7 @@ struct JetlineApp: App {
 
                 Button("Close Tab") {
                     if let wsId = state.selectedWorkspaceId,
-                       let active = state.activeSessionByWorkspace[wsId] {
+                       let active = state.workspaceState(for: wsId).activeSessionId {
                         state.closeSession(active, in: wsId)
                     }
                 }

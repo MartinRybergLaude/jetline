@@ -82,7 +82,7 @@ private struct MainArea: View {
 
     var body: some View {
         if let id = state.selectedWorkspaceId, let ws = state.workspaceById(id) {
-            TerminalArea(workspace: ws)
+            TerminalArea(workspace: ws, workspaceState: state.workspaceState(for: id))
         } else {
             WelcomeView()
         }

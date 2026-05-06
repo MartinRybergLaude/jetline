@@ -7,19 +7,28 @@ struct ChangesPanel: View {
     var body: some View {
         if let id = state.selectedWorkspaceId,
            let ws = state.workspaceById(id) {
-            content(for: ws)
+            ChangesPanelContent(
+                workspace: ws,
+                workspaceState: state.workspaceState(for: ws.id),
+                mode: mode
+            )
         } else {
             EmptyView()
         }
     }
+}
 
-    @ViewBuilder
-    private func content(for workspace: Workspace) -> some View {
-        let snap = snapshot(for: workspace.id)
+private struct ChangesPanelContent: View {
+    let workspace: Workspace
+    @ObservedObject var workspaceState: WorkspaceState
+    let mode: DiffMode
+
+    var body: some View {
+        let snap = snapshot
         if snap.isEmpty {
             InspectorPlaceholder(
                 systemImage: "checkmark.circle",
-                title: emptyTitle(for: workspace)
+                title: emptyTitle
             )
         } else {
             LazyVStack(alignment: .leading, spacing: 8) {
@@ -32,15 +41,15 @@ struct ChangesPanel: View {
         }
     }
 
-    private func snapshot(for workspaceId: String) -> DiffSnapshot {
+    private var snapshot: DiffSnapshot {
         switch mode {
-        case .pr:       return state.prDiffByWorkspace[workspaceId] ?? .empty
-        case .local:    return state.localDiffByWorkspace[workspaceId] ?? .empty
-        case .combined: return state.diffByWorkspace[workspaceId] ?? .empty
+        case .pr:       return workspaceState.prDiff ?? .empty
+        case .local:    return workspaceState.localDiff ?? .empty
+        case .combined: return workspaceState.diff ?? .empty
         }
     }
 
-    private func emptyTitle(for workspace: Workspace) -> String {
+    private var emptyTitle: String {
         switch mode {
         case .pr, .combined: return "No changes vs \(workspace.baseBranch)"
         case .local:         return "No uncommitted changes"

@@ -5,13 +5,29 @@ struct WorkspaceRow: View {
     @EnvironmentObject private var state: AppState
     let workspace: Workspace
 
-    private var isSelected: Bool {
-        state.selectedWorkspaceId == workspace.id
+    var body: some View {
+        // Inner view observes the per-workspace state directly so a poll
+        // landing on a *different* workspace doesn't invalidate this row.
+        WorkspaceRowContent(
+            workspace: workspace,
+            workspaceState: state.workspaceState(for: workspace.id),
+            isSelected: state.selectedWorkspaceId == workspace.id,
+            onArchive: { keepWorktree in
+                Task { await state.archiveWorkspace(workspace, removeWorktree: !keepWorktree) }
+            }
+        )
     }
+}
+
+private struct WorkspaceRowContent: View {
+    let workspace: Workspace
+    @ObservedObject var workspaceState: WorkspaceState
+    let isSelected: Bool
+    let onArchive: (_ keepWorktree: Bool) -> Void
 
     var body: some View {
         HStack(spacing: 10) {
-            PRStatusIcon(snapshot: state.prByWorkspace[workspace.id], size: 13)
+            PRStatusIcon(snapshot: workspaceState.pr, size: 13)
             Text(workspace.name)
                 .font(.body)
                 .foregroundStyle(isSelected ? Color.accentColor.opacity(0.9) : Color.primary)
@@ -35,12 +51,8 @@ struct WorkspaceRow: View {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: workspace.worktreePath)])
             }
             Divider()
-            Button("Archive (keep worktree)") {
-                Task { await state.archiveWorkspace(workspace, removeWorktree: false) }
-            }
-            Button("Delete worktree…", role: .destructive) {
-                Task { await state.archiveWorkspace(workspace, removeWorktree: true) }
-            }
+            Button("Archive (keep worktree)") { onArchive(true) }
+            Button("Delete worktree…", role: .destructive) { onArchive(false) }
         }
     }
 }

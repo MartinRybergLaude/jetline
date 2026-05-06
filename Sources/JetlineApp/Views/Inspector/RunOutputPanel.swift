@@ -10,23 +10,31 @@ struct RunOutputPanel: View {
     var body: some View {
         if let id = state.selectedWorkspaceId,
            let ws = state.workspaceById(id) {
-            content(for: ws)
+            RunOutputPanelContent(
+                workspace: ws,
+                workspaceState: state.workspaceState(for: ws.id)
+            )
         } else {
             EmptyView()
         }
     }
+}
 
-    /// Run output wins while the script is running; once it exits we drop
-    /// back to the placeholder so the user sees the same clean slate as on
-    /// a fresh workspace instead of staring at a stale exit trace. Setup
-    /// output stays visible until the user triggers their first run (which
-    /// discards the setup controller).
-    @ViewBuilder
-    private func content(for workspace: Workspace) -> some View {
-        if let runController = state.runController(for: workspace.id),
+/// Run output wins while the script is running; once it exits we drop
+/// back to the placeholder so the user sees the same clean slate as on
+/// a fresh workspace instead of staring at a stale exit trace. Setup
+/// output stays visible until the user triggers their first run (which
+/// discards the setup controller).
+private struct RunOutputPanelContent: View {
+    @EnvironmentObject private var state: AppState
+    let workspace: Workspace
+    @ObservedObject var workspaceState: WorkspaceState
+
+    var body: some View {
+        if let runController = workspaceState.runController,
            runController.isRunning {
             RunOutputContent(controller: runController)
-        } else if let setupController = state.setupController(for: workspace.id) {
+        } else if let setupController = workspaceState.setupController {
             SetupOutputContent(controller: setupController)
         } else if !state.hasRunScript(workspace) {
             InspectorPlaceholder(

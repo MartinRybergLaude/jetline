@@ -1,7 +1,8 @@
 import Foundation
 
-/// Background tracker that keeps `AppState.prByWorkspace` populated for every
-/// workspace in every repository. Two loops per repo run in parallel,
+/// Background tracker that keeps each workspace's `WorkspaceState.pr`
+/// populated for every workspace in every repository. Two loops per repo
+/// run in parallel,
 /// decoupled because they have very different cost profiles:
 ///
 ///   - **Local loop** (`pollLocal`): `git fetch`, fast-forward the local
@@ -310,8 +311,8 @@ final class PRTracker {
         state: AppState
     ) {
         for ws in workspaces {
-            switch state.prByWorkspace[ws.id] {
-            case nil, .loading, .error:
+            switch state.workspaceState(for: ws.id).pr {
+            case .loading, .error:
                 state.applyPR(.error(message), for: ws.id)
             case .absent, .loaded:
                 continue
@@ -361,12 +362,12 @@ final class PRTracker {
         }
         guard let state else { return 60 }
         let wsIds = (state.workspacesByRepo[repoId] ?? []).map(\.id)
-        let anyActive = wsIds.contains { id in
-            if case let .loaded(_, checks) = state.prByWorkspace[id] {
+        let anyActive = wsIds.contains(where: { id in
+            if case let .loaded(_, checks) = state.workspaceState(for: id).pr {
                 return checks.contains(where: \.isActive)
             }
             return false
-        }
+        })
         return anyActive ? 15 : 60
     }
 

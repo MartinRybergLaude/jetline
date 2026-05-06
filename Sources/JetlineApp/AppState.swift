@@ -3,57 +3,49 @@ import SwiftUI
 import AppKit
 
 /// Root observable state. Owns repositories, workspaces, sessions, selection.
+///
+/// Per-workspace mutable state (diff snapshots, PR snapshots, sessions,
+/// run/setup controllers, etc.) lives in `WorkspaceState` instances looked
+/// up via `workspaceState(for:)`, *not* in `@Published` dicts on this
+/// object. That split keeps a single workspace's poll/diff update from
+/// invalidating every view in the app via the shared `@Published` surface.
 @MainActor
 final class AppState: ObservableObject {
     @Published var repositories: [Repository] = []
     @Published var workspacesByRepo: [String: [Workspace]] = [:]
     @Published var selectedWorkspaceId: String?
-    @Published var sessionsByWorkspace: [String: [PTYSession]] = [:]
-    @Published var activeSessionByWorkspace: [String: String] = [:]
     @Published var settings: AppSettings = AppSettings()
-    @Published var diffByWorkspace: [String: DiffSnapshot] = [:]
-    @Published var prDiffByWorkspace: [String: DiffSnapshot] = [:]
-    @Published var localDiffByWorkspace: [String: DiffSnapshot] = [:]
-    /// Tracked separately from the diff snapshots because porcelain status
-    /// also flags untracked files, which `git diff` ignores.
-    @Published var hasUncommittedByWorkspace: [String: Bool] = [:]
-    @Published var prByWorkspace: [String: PRSnapshot] = [:]
-    /// Local ahead/behind state per workspace, refreshed by `PRTracker` on
-    /// each poll. Drives availability of `Pull updates` and `Rebase`.
-    @Published var branchPositionByWorkspace: [String: BranchPosition] = [:]
     /// Per-repo GitHub metadata (owner/name + allowed merge methods),
     /// resolved on the first PR poll and reused for the app's lifetime.
     /// Drives the merge confirmation dialog's button set.
     @Published var repoMetadataByRepo: [String: RepoIdentifier] = [:]
-    /// Pure-git action currently in flight for a workspace (rebase, pull,
-    /// merge). The toolbar reads this to swap the git action button for a
-    /// spinner so the user knows something is happening between click and
-    /// completion. Cleared when the operation finishes — successful pure-git
-    /// runs return here; falls-back-to-agent runs clear too because the new
-    /// session takes over the visual indication.
-    @Published var runningGitActionByWorkspace: [String: GitAction] = [:]
     @Published var prTrackerStatus: PRTracker.Status = .ok
-    /// Workspace IDs awaiting the result of a user-initiated PR refresh.
-    /// Populated by `requestPRRefresh`, cleared when the next `pollGitHub`
-    /// finishes (success or failure). Drives the inspector's spinner.
-    @Published var refreshingPRsByWorkspace: Set<String> = []
     @Published var inspectorVisible: Bool = true
     /// Active inspector tab. Lifted out of `InspectorView` so workspace
     /// creation can flip it to `.run` and surface live setup-script output.
     @Published var inspectorTab: InspectorTab = .changes
-    /// Run-script controllers keyed by workspace id. `nil` means "never run".
-    /// Kept around after exit so the user can review the last log.
-    @Published var runByWorkspace: [String: RunController] = [:]
-    /// Setup-script controllers keyed by workspace id. Created when a fresh
-    /// workspace spins up; lingers after exit so the user can scroll back
-    /// through the log until they trigger a real run.
-    @Published var setupByWorkspace: [String: SetupController] = [:]
+
+    /// Per-workspace mutable state. Not `@Published` — views look up the
+    /// `WorkspaceState` for their workspace and observe it via
+    /// `@ObservedObject`, so a single workspace's mutations only invalidate
+    /// the views that actually read them.
+    private var workspaceStates: [String: WorkspaceState] = [:]
 
     private var watchers: [String: WorktreeWatcher] = [:]
     private(set) lazy var prTracker: PRTracker = PRTracker(state: self)
     private var hasLoaded = false
 
     init() {}
+
+    /// Get-or-create the `WorkspaceState` for `id`. Lazy so callers don't
+    /// need to seed entries before mutating; orphan states from
+    /// transiently-missing workspaces get cleared in `detachWorkspace`.
+    func workspaceState(for id: String) -> WorkspaceState {
+        if let existing = workspaceStates[id] { return existing }
+        let new = WorkspaceState(id: id)
+        workspaceStates[id] = new
+        return new
+    }
 
     // MARK: - Load
 
@@ -74,7 +66,9 @@ final class AppState: ObservableObject {
             // stale-but-known state immediately. The tracker overwrites these
             // entries as fresh data lands.
             if let cached = try? PRSnapshots.loadAll() {
-                prByWorkspace = cached
+                for (wsId, snap) in cached {
+                    workspaceState(for: wsId).pr = snap
+                }
             }
         } catch {
             print("AppState load error: \(error)")
@@ -276,7 +270,7 @@ final class AppState: ObservableObject {
     private func startSetupIfNeeded(workspace: Workspace, repository: Repository) {
         guard let script = repository.trimmedSetupScript else { return }
         let controller = SetupController(workspaceId: workspace.id)
-        setupByWorkspace[workspace.id] = controller
+        workspaceState(for: workspace.id).setupController = controller
         controller.start(
             script: script,
             cwd: workspace.worktreePath,
@@ -287,13 +281,14 @@ final class AppState: ObservableObject {
     }
 
     func setupController(for workspaceId: String) -> SetupController? {
-        setupByWorkspace[workspaceId]
+        workspaceState(for: workspaceId).setupController
     }
 
     func archiveWorkspace(_ workspace: Workspace, removeWorktree: Bool) async {
         // Stop the run script first; otherwise it keeps writing to a deleted dir.
-        runByWorkspace[workspace.id]?.discard()
-        runByWorkspace.removeValue(forKey: workspace.id)
+        let ws = workspaceState(for: workspace.id)
+        ws.runController?.discard()
+        ws.runController = nil
         detachWorkspace(workspace.id)
 
         let repo = repositories.first(where: { $0.id == workspace.repositoryId })
@@ -356,7 +351,7 @@ final class AppState: ObservableObject {
 
     /// Spawn a fresh tab the first time a workspace is selected this app run.
     private func ensureSessionExists(for workspace: Workspace) {
-        guard sessionsByWorkspace[workspace.id]?.isEmpty ?? true else { return }
+        guard workspaceState(for: workspace.id).sessions.isEmpty else { return }
         startNewSession(for: workspace, agent: workspace.agent)
     }
 
@@ -366,13 +361,14 @@ final class AppState: ObservableObject {
             agent: agent,
             cwd: workspace.worktreePath
         )
-        sessionsByWorkspace[workspace.id, default: []].append(session)
-        activeSessionByWorkspace[workspace.id] = session.id
+        let ws = workspaceState(for: workspace.id)
+        ws.sessions.append(session)
+        ws.activeSessionId = session.id
         Task { await session.startIfNeeded() }
     }
 
     func selectSession(_ sessionId: String, in workspaceId: String) {
-        activeSessionByWorkspace[workspaceId] = sessionId
+        workspaceState(for: workspaceId).activeSessionId = sessionId
     }
 
     // MARK: - Git actions
@@ -391,7 +387,7 @@ final class AppState: ObservableObject {
 
         let pr: PullRequest?
         let checks: [CheckRun]
-        if case let .loaded(pull, runs) = prByWorkspace[workspace.id] {
+        if case let .loaded(pull, runs) = workspaceState(for: workspace.id).pr {
             pr = pull
             checks = runs
         } else {
@@ -406,8 +402,9 @@ final class AppState: ObservableObject {
             cwd: workspace.worktreePath,
             initialPrompt: prompt
         )
-        sessionsByWorkspace[workspace.id, default: []].append(session)
-        activeSessionByWorkspace[workspace.id] = session.id
+        let ws = workspaceState(for: workspace.id)
+        ws.sessions.append(session)
+        ws.activeSessionId = session.id
         Task { await session.startIfNeeded() }
     }
 
@@ -428,9 +425,10 @@ final class AppState: ObservableObject {
     /// the sidebar reflects the merged state without waiting for the next
     /// scheduled poll.
     func performMerge(for workspace: Workspace, method: MergeMethod) async {
-        guard case let .loaded(pr, _) = prByWorkspace[workspace.id] else { return }
-        runningGitActionByWorkspace[workspace.id] = .mergePR
-        defer { runningGitActionByWorkspace.removeValue(forKey: workspace.id) }
+        let ws = workspaceState(for: workspace.id)
+        guard case let .loaded(pr, _) = ws.pr else { return }
+        ws.runningGitAction = .mergePR
+        defer { ws.runningGitAction = nil }
         do {
             try await GitHubRunner.mergePR(pr.number, method: method, cwd: workspace.worktreePath)
         } catch {
@@ -456,8 +454,9 @@ final class AppState: ObservableObject {
             startGitActionSession(for: workspace, action: .rebaseOnMain)
             return
         }
-        runningGitActionByWorkspace[workspace.id] = .rebaseOnMain
-        defer { runningGitActionByWorkspace.removeValue(forKey: workspace.id) }
+        let ws = workspaceState(for: workspace.id)
+        ws.runningGitAction = .rebaseOnMain
+        defer { ws.runningGitAction = nil }
 
         let cwd = workspace.worktreePath
         let baseRef = "\(repo.remoteOrigin)/\(repo.localName(forRemoteRef: workspace.baseBranch))"
@@ -490,8 +489,9 @@ final class AppState: ObservableObject {
             startGitActionSession(for: workspace, action: .pullUpdates)
             return
         }
-        runningGitActionByWorkspace[workspace.id] = .pullUpdates
-        defer { runningGitActionByWorkspace.removeValue(forKey: workspace.id) }
+        let ws = workspaceState(for: workspace.id)
+        ws.runningGitAction = .pullUpdates
+        defer { ws.runningGitAction = nil }
 
         let cwd = workspace.worktreePath
 
@@ -526,59 +526,58 @@ final class AppState: ObservableObject {
     }
 
     func activeSession(for workspaceId: String) -> PTYSession? {
-        guard let id = activeSessionByWorkspace[workspaceId] else { return nil }
-        return sessionsByWorkspace[workspaceId]?.first { $0.id == id }
+        let ws = workspaceState(for: workspaceId)
+        guard let id = ws.activeSessionId else { return nil }
+        return ws.sessions.first { $0.id == id }
     }
 
     /// True iff at least one workspace currently has open tabs. Drives the
     /// quit-confirmation dialog so the user doesn't lose an in-flight agent
     /// run by reflex-quitting.
     var hasOpenTabs: Bool {
-        sessionsByWorkspace.values.contains { !$0.isEmpty }
+        workspaceStates.values.contains { !$0.sessions.isEmpty }
     }
 
     /// Close one tab. Picks a neighbour to activate; if it was the last tab,
     /// spawns a fresh one with the default agent so the workspace is never
     /// empty (the surface would otherwise show only a spinner).
     func closeSession(_ sessionId: String, in workspaceId: String) {
-        guard var sessions = sessionsByWorkspace[workspaceId],
-              let idx = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
-        let session = sessions.remove(at: idx)
+        let ws = workspaceState(for: workspaceId)
+        guard let idx = ws.sessions.firstIndex(where: { $0.id == sessionId }) else { return }
+        let session = ws.sessions.remove(at: idx)
         session.terminate()
         // Detach from the incubator (or whichever container hosts it) so
         // dropping the PTYSession actually releases the AppTerminalView —
         // otherwise the parked subview keeps a strong ref and the
         // libghostty allocations outlive the close.
         session.emulator.nsView.removeFromSuperview()
-        sessionsByWorkspace[workspaceId] = sessions
 
-        if activeSessionByWorkspace[workspaceId] == sessionId {
-            let neighbour = idx < sessions.count ? sessions[idx] : sessions.last
-            activeSessionByWorkspace[workspaceId] = neighbour?.id
+        if ws.activeSessionId == sessionId {
+            let neighbour = idx < ws.sessions.count ? ws.sessions[idx] : ws.sessions.last
+            ws.activeSessionId = neighbour?.id
         }
 
-        if sessions.isEmpty, let ws = workspaceById(workspaceId) {
-            startNewSession(for: ws, agent: settings.defaultAgent)
+        if ws.sessions.isEmpty, let workspace = workspaceById(workspaceId) {
+            startNewSession(for: workspace, agent: settings.defaultAgent)
         }
     }
 
     /// Move one session to a target final index. Used by the tab strip's
     /// drag reorder; the callsite computes the destination once on drag-end
-    /// so we don't thrash `@Published` mid-drag.
+    /// so we don't thrash observers mid-drag.
     func moveSession(_ sourceId: String, toIndex newIndex: Int, in workspaceId: String) {
-        guard var list = sessionsByWorkspace[workspaceId],
-              let from = list.firstIndex(where: { $0.id == sourceId }),
-              newIndex >= 0, newIndex < list.count, from != newIndex else { return }
-        let item = list.remove(at: from)
-        list.insert(item, at: newIndex)
-        sessionsByWorkspace[workspaceId] = list
+        let ws = workspaceState(for: workspaceId)
+        guard let from = ws.sessions.firstIndex(where: { $0.id == sourceId }),
+              newIndex >= 0, newIndex < ws.sessions.count, from != newIndex else { return }
+        let item = ws.sessions.remove(at: from)
+        ws.sessions.insert(item, at: newIndex)
     }
 
     /// Activate the Nth tab (1-indexed) of the active workspace. Used by ⌘1…⌘9.
     func selectSessionByIndex(_ oneBased: Int) {
-        guard let wsId = selectedWorkspaceId,
-              let sessions = sessionsByWorkspace[wsId],
-              oneBased >= 1, oneBased <= sessions.count else { return }
+        guard let wsId = selectedWorkspaceId else { return }
+        let sessions = workspaceState(for: wsId).sessions
+        guard oneBased >= 1, oneBased <= sessions.count else { return }
         selectSession(sessions[oneBased - 1].id, in: wsId)
     }
 
@@ -588,7 +587,8 @@ final class AppState: ObservableObject {
     /// `runExclusive` flag — starting an exclusive run stops every other
     /// active runner in the same repository first.
     func toggleRun(for workspace: Workspace) {
-        if let runner = runByWorkspace[workspace.id], runner.isRunning {
+        let ws = workspaceState(for: workspace.id)
+        if let runner = ws.runController, runner.isRunning {
             runner.stop()
             return
         }
@@ -597,20 +597,23 @@ final class AppState: ObservableObject {
 
         if repo.runExclusive {
             let peerIds = Set(workspacesByRepo[repo.id]?.map(\.id) ?? [])
-            for (otherId, runner) in runByWorkspace
-            where otherId != workspace.id && peerIds.contains(otherId) && runner.isRunning {
-                runner.stop()
+            for (otherId, peer) in workspaceStates
+            where otherId != workspace.id && peerIds.contains(otherId) {
+                if let runner = peer.runController, runner.isRunning {
+                    runner.stop()
+                }
             }
         }
 
         // Drop the setup transcript so that when the run eventually exits
         // the panel falls back to the placeholder, not to "Setup complete".
-        if let setup = setupByWorkspace.removeValue(forKey: workspace.id) {
+        if let setup = ws.setupController {
             setup.discard()
+            ws.setupController = nil
         }
 
-        let runner = runByWorkspace[workspace.id] ?? RunController(workspaceId: workspace.id)
-        runByWorkspace[workspace.id] = runner
+        let runner = ws.runController ?? RunController(workspaceId: workspace.id)
+        ws.runController = runner
         runner.start(
             script: script,
             cwd: workspace.worktreePath,
@@ -619,15 +622,15 @@ final class AppState: ObservableObject {
     }
 
     func runController(for workspaceId: String) -> RunController? {
-        runByWorkspace[workspaceId]
+        workspaceState(for: workspaceId).runController
     }
 
     func isRunActive(_ workspaceId: String) -> Bool {
-        runByWorkspace[workspaceId]?.isRunning ?? false
+        workspaceState(for: workspaceId).runController?.isRunning ?? false
     }
 
     func hasRunHistory(_ workspaceId: String) -> Bool {
-        runByWorkspace[workspaceId] != nil
+        workspaceState(for: workspaceId).runController != nil
     }
 
     func hasRunScript(_ workspace: Workspace) -> Bool {
@@ -636,13 +639,13 @@ final class AppState: ObservableObject {
 
     /// Cycle to the next or previous tab of the active workspace. Wraps.
     func cycleSession(forward: Bool) {
-        guard let wsId = selectedWorkspaceId,
-              let sessions = sessionsByWorkspace[wsId],
-              !sessions.isEmpty,
-              let activeId = activeSessionByWorkspace[wsId],
-              let idx = sessions.firstIndex(where: { $0.id == activeId }) else { return }
-        let next = (idx + (forward ? 1 : -1) + sessions.count) % sessions.count
-        selectSession(sessions[next].id, in: wsId)
+        guard let wsId = selectedWorkspaceId else { return }
+        let ws = workspaceState(for: wsId)
+        guard !ws.sessions.isEmpty,
+              let activeId = ws.activeSessionId,
+              let idx = ws.sessions.firstIndex(where: { $0.id == activeId }) else { return }
+        let next = (idx + (forward ? 1 : -1) + ws.sessions.count) % ws.sessions.count
+        selectSession(ws.sessions[next].id, in: wsId)
     }
 
     // MARK: - Diff & watcher
@@ -684,28 +687,30 @@ final class AppState: ObservableObject {
             worktreePath: workspace.worktreePath
         )
 
-        if let snap = await combined, diffByWorkspace[workspace.id] != snap {
-            diffByWorkspace[workspace.id] = snap
+        let ws = workspaceState(for: workspace.id)
+        if let snap = await combined, ws.diff != snap {
+            ws.diff = snap
         }
-        if let snap = await prSnap, prDiffByWorkspace[workspace.id] != snap {
-            prDiffByWorkspace[workspace.id] = snap
+        if let snap = await prSnap, ws.prDiff != snap {
+            ws.prDiff = snap
         }
-        if let snap = await localSnap, localDiffByWorkspace[workspace.id] != snap {
-            localDiffByWorkspace[workspace.id] = snap
+        if let snap = await localSnap, ws.localDiff != snap {
+            ws.localDiff = snap
         }
         let dirty = await uncommitted
-        if hasUncommittedByWorkspace[workspace.id] != dirty {
-            hasUncommittedByWorkspace[workspace.id] = dirty
+        if ws.hasUncommitted != dirty {
+            ws.hasUncommitted = dirty
         }
     }
 
     /// Single write path for PR snapshots. `PRTracker` calls this with fresh
-    /// data; the in-memory map drives the UI and the same value is mirrored
+    /// data; the in-memory state drives the UI and the same value is mirrored
     /// to disk so the next launch can paint immediately. No-op writes are
-    /// suppressed so we don't kick every observer on every poll.
+    /// suppressed so we don't kick observers on every poll.
     func applyPR(_ snapshot: PRSnapshot, for workspaceId: String) {
-        if prByWorkspace[workspaceId] != snapshot {
-            prByWorkspace[workspaceId] = snapshot
+        let ws = workspaceState(for: workspaceId)
+        if ws.pr != snapshot {
+            ws.pr = snapshot
         }
         try? PRSnapshots.save(snapshot, for: workspaceId)
     }
@@ -715,7 +720,10 @@ final class AppState: ObservableObject {
     /// `endPRRefresh` from `pollGitHub`'s defer; the timeout is a backstop
     /// in case the poll never reaches the defer (e.g. tracker was torn down).
     func requestPRRefresh(workspaceId: String) {
-        refreshingPRsByWorkspace.insert(workspaceId)
+        let ws = workspaceState(for: workspaceId)
+        if !ws.isRefreshingPR {
+            ws.isRefreshingPR = true
+        }
         prTracker.kick(workspaceId: workspaceId)
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(15))
@@ -724,11 +732,11 @@ final class AppState: ObservableObject {
     }
 
     func endPRRefresh(workspaceId: String) {
-        // Mutating an `@Published` Set fires Combine even when the element
-        // is absent — guard so the per-poll defer doesn't notify the whole
-        // UI for every workspace whose marker was already cleared.
-        if refreshingPRsByWorkspace.contains(workspaceId) {
-            refreshingPRsByWorkspace.remove(workspaceId)
+        // Guard so the per-poll defer doesn't notify observers for every
+        // workspace whose marker was already cleared.
+        let ws = workspaceState(for: workspaceId)
+        if ws.isRefreshingPR {
+            ws.isRefreshingPR = false
         }
     }
 
@@ -742,10 +750,11 @@ final class AppState: ObservableObject {
     }
 
     /// Single write path for branch positions. No-op writes are suppressed
-    /// so an unchanged ahead/behind state doesn't kick every observer.
+    /// so an unchanged ahead/behind state doesn't kick observers.
     func applyBranchPosition(_ position: BranchPosition, for workspaceId: String) {
-        if branchPositionByWorkspace[workspaceId] != position {
-            branchPositionByWorkspace[workspaceId] = position
+        let ws = workspaceState(for: workspaceId)
+        if ws.branchPosition != position {
+            ws.branchPosition = position
         }
     }
 
@@ -787,20 +796,14 @@ final class AppState: ObservableObject {
     private func detachWorkspace(_ id: String) {
         watchers[id]?.stop()
         watchers.removeValue(forKey: id)
-        for s in sessionsByWorkspace[id] ?? [] {
-            s.terminate()
-            s.emulator.nsView.removeFromSuperview()
+        if let ws = workspaceStates[id] {
+            for s in ws.sessions {
+                s.terminate()
+                s.emulator.nsView.removeFromSuperview()
+            }
+            ws.setupController?.discard()
         }
-        sessionsByWorkspace.removeValue(forKey: id)
-        activeSessionByWorkspace.removeValue(forKey: id)
-        diffByWorkspace.removeValue(forKey: id)
-        prDiffByWorkspace.removeValue(forKey: id)
-        localDiffByWorkspace.removeValue(forKey: id)
-        hasUncommittedByWorkspace.removeValue(forKey: id)
-        prByWorkspace.removeValue(forKey: id)
-        branchPositionByWorkspace.removeValue(forKey: id)
-        setupByWorkspace[id]?.discard()
-        setupByWorkspace.removeValue(forKey: id)
+        workspaceStates.removeValue(forKey: id)
     }
 
     // MARK: - Helpers
