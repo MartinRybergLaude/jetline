@@ -35,46 +35,48 @@ enum BranchPositionOps {
 
     /// Compare `HEAD` against the candidate refs and produce a
     /// `BranchPosition`. Missing refs (e.g. unpushed branch) collapse to
-    /// zero counts rather than throwing.
+    /// zero counts rather than throwing. The two halves (remote tracking
+    /// + base distance) are independent and run in parallel; the local
+    /// base fallback runs only when the remote base ref doesn't resolve.
     static func compute(
         worktreePath: String,
         branchName: String,
         baseBranch: String,
         remote: String
     ) async -> BranchPosition {
-        var pos = BranchPosition()
-
         let remoteBranch = "\(remote)/\(branchName)"
-        if await refExists(remoteBranch, cwd: worktreePath),
-           let (ahead, behind) = await leftRightCount(
-               cwd: worktreePath,
-               left: "HEAD",
-               right: remoteBranch
-           ) {
-            pos.remoteTrackingExists = true
-            pos.aheadOfRemote = ahead
-            pos.behindRemote = behind
-        }
-
         // Prefer the remote-tracking form of the base ref since `git fetch`
         // updates it. Fall back to the local form for repos with no remote
         // base (rare, but DiffComputer also accepts whatever resolves).
         let baseLocalName = stripRemotePrefix(baseBranch, remote: remote)
         let remoteBase = "\(remote)/\(baseLocalName)"
-        let baseRef: String?
-        if await refExists(remoteBase, cwd: worktreePath) {
-            baseRef = remoteBase
-        } else if await refExists(baseBranch, cwd: worktreePath) {
-            baseRef = baseBranch
-        } else {
-            baseRef = nil
+
+        async let remoteCounts = leftRightCount(
+            cwd: worktreePath,
+            left: "HEAD",
+            right: remoteBranch
+        )
+        async let remoteBaseCounts = leftRightCount(
+            cwd: worktreePath,
+            left: "HEAD",
+            right: remoteBase
+        )
+
+        var pos = BranchPosition()
+        if let (ahead, behind) = await remoteCounts {
+            pos.remoteTrackingExists = true
+            pos.aheadOfRemote = ahead
+            pos.behindRemote = behind
         }
-        if let baseRef,
-           let (_, behind) = await leftRightCount(
-               cwd: worktreePath,
-               left: "HEAD",
-               right: baseRef
-           ) {
+        if let (_, behind) = await remoteBaseCounts {
+            pos.behindBase = behind
+        } else if let (_, behind) = await leftRightCount(
+            cwd: worktreePath,
+            left: "HEAD",
+            right: baseBranch
+        ) {
+            // Local-base fallback. Only fires when the remote base ref
+            // didn't resolve, so it's a rare extra subprocess.
             pos.behindBase = behind
         }
         return pos
@@ -97,10 +99,6 @@ enum BranchPositionOps {
               let sha = result?.stdout.trimmingCharacters(in: .whitespacesAndNewlines),
               !sha.isEmpty else { return nil }
         return sha
-    }
-
-    private static func refExists(_ ref: String, cwd: String) async -> Bool {
-        await resolveRef(ref, cwd: cwd) != nil
     }
 
     private static func leftRightCount(

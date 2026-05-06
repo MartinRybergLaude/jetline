@@ -214,20 +214,46 @@ final class PRTracker {
         if baseMoved {
             // Merge-base shifted under every workspace's diff — recompute
             // so the inspector reflects reality. No-op when no diff is
-            // open; refreshDiff is deduped on equality.
+            // open; refreshDiff is deduped on equality. Left sequential
+            // because the baseMoved branch is rare and each refreshDiff
+            // already fans out internally.
             for ws in workspaces {
                 await state.refreshDiff(for: ws)
             }
         }
 
-        for ws in workspaces {
-            let pos = await BranchPositionOps.compute(
-                worktreePath: ws.worktreePath,
-                branchName: ws.branchName,
-                baseBranch: ws.baseBranch,
-                remote: repo.remoteOrigin
-            )
-            state.applyBranchPosition(pos, for: ws.id)
+        // Compute every workspace's branch position concurrently. The
+        // computes themselves are read-only; we apply the results back on
+        // main once they all land. Without this, N workspaces × 4
+        // sequential subprocesses each meant ~10× more wall time per
+        // poll than the slowest single workspace.
+        let remote = repo.remoteOrigin
+        let positions: [(String, BranchPosition)] = await withTaskGroup(
+            of: (String, BranchPosition).self
+        ) { group in
+            for ws in workspaces {
+                let id = ws.id
+                let worktreePath = ws.worktreePath
+                let branchName = ws.branchName
+                let baseBranch = ws.baseBranch
+                group.addTask {
+                    let pos = await BranchPositionOps.compute(
+                        worktreePath: worktreePath,
+                        branchName: branchName,
+                        baseBranch: baseBranch,
+                        remote: remote
+                    )
+                    return (id, pos)
+                }
+            }
+            var collected: [(String, BranchPosition)] = []
+            for await result in group {
+                collected.append(result)
+            }
+            return collected
+        }
+        for (id, pos) in positions {
+            state.applyBranchPosition(pos, for: id)
         }
     }
 
