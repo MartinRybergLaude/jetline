@@ -127,14 +127,43 @@ enum AgentLauncher {
                 process.executableURL = URL(fileURLWithPath: shell)
                 process.arguments = ["-l", "-c", "command -v \(name)"]
 
-                let pipe = Pipe()
-                process.standardOutput = pipe
-                process.standardError = Pipe()
+                let outPipe = Pipe()
+                let errPipe = Pipe()
+                process.standardOutput = outPipe
+                process.standardError = errPipe
                 process.standardInput = FileHandle.nullDevice
+
+                // Drain the output pipe concurrently. We can't call
+                // `readDataToEndOfFile` after `waitUntilExit`: shells run
+                // for `-lc "command -v foo"` frequently spawn detaching
+                // children during profile load (fsmonitor daemons, gpg /
+                // ssh agents, etc.) that inherit fd 1/2 and keep the pipe
+                // write ends open after the parent shell exits. The read
+                // would then block forever, the continuation would never
+                // resume, and `startIfNeeded` would hang — leaving the
+                // tab on a blinking cursor with no agent attached.
+                let outHandle = outPipe.fileHandleForReading
+                let errHandle = errPipe.fileHandleForReading
+                var data = Data()
+                let group = DispatchGroup()
+                let readQ = DispatchQueue.global(qos: .userInitiated)
+                group.enter()
+                readQ.async {
+                    data = outHandle.readDataToEndOfFile()
+                    group.leave()
+                }
+                group.enter()
+                readQ.async {
+                    _ = errHandle.readDataToEndOfFile()
+                    group.leave()
+                }
 
                 do {
                     try process.run()
                 } catch {
+                    try? outHandle.close()
+                    try? errHandle.close()
+                    group.wait()
                     continuation.resume(returning: nil)
                     return
                 }
@@ -149,11 +178,19 @@ enum AgentLauncher {
                 process.waitUntilExit()
                 killer.cancel()
 
+                // Same bounded-drain dance as `Subprocess.runSync`. Without
+                // the force-close, a long-lived descendant holding the pipe
+                // open turns this into a permanent thread leak.
+                if group.wait(timeout: .now() + .milliseconds(250)) == .timedOut {
+                    try? outHandle.close()
+                    try? errHandle.close()
+                    group.wait()
+                }
+
                 guard process.terminationStatus == 0 else {
                     continuation.resume(returning: nil)
                     return
                 }
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 let trimmed = (String(data: data, encoding: .utf8) ?? "")
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 continuation.resume(returning: trimmed.isEmpty ? nil : trimmed)

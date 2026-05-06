@@ -98,7 +98,23 @@ enum Subprocess {
         } else {
             process.waitUntilExit()
         }
-        group.wait()
+
+        // Bounded drain. The process is dead, so anything still in the pipe
+        // is whatever the kernel buffered before the write end closed —
+        // which usually drains in microseconds. If readers are still
+        // pending after a grace period, a forked-and-detached descendant
+        // (git's `fsmonitor--daemon`, SSH `ControlMaster`, a credential
+        // helper) inherited fd 1/2 and is keeping the write ends open.
+        // We don't want that descendant's output, but `readDataToEndOfFile`
+        // will block until *every* writer closes — pinning a Task thread
+        // forever, which compounds across calls until new agent tabs and
+        // git ops both wedge. Force-close the read ends so the readers
+        // see EBADF and unwind.
+        if group.wait(timeout: .now() + .milliseconds(250)) == .timedOut {
+            try? outHandle.close()
+            try? errHandle.close()
+            group.wait()
+        }
 
         let stdout = String(data: outData, encoding: .utf8) ?? ""
         let stderr = String(data: errData, encoding: .utf8) ?? ""
