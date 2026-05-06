@@ -42,6 +42,12 @@ final class PRTracker {
         var github: Task<Void, Never>?
         var localSleep: Task<Void, Never>?
         var githubSleep: Task<Void, Never>?
+        /// Set by `kick` when the corresponding sleep is `nil` (i.e. the
+        /// loop is mid-poll and there's nothing to cancel). Consumed in
+        /// `runLoop` between poll and sleep so a kick that lands during a
+        /// poll re-triggers immediately instead of being silently dropped.
+        var localKickPending: Bool = false
+        var githubKickPending: Bool = false
         /// GitHub-only — local fetch failures don't bill against the
         /// GitHub rate limit and shouldn't slow the whole tracker down.
         var githubFailures: Int = 0
@@ -90,10 +96,21 @@ final class PRTracker {
         autoArchived.removeAll()
     }
 
-    /// Wake both loops so the next poll of each fires immediately.
+    /// Wake both loops so the next poll of each fires immediately. If a
+    /// loop is currently mid-poll its sleep is `nil`, so the cancel has
+    /// nothing to land on — the pending flag carries the kick across into
+    /// `runLoop`'s post-poll check.
     func kick(repoId: String) {
-        loops[repoId]?.localSleep?.cancel()
-        loops[repoId]?.githubSleep?.cancel()
+        if let sleep = loops[repoId]?.localSleep {
+            sleep.cancel()
+        } else {
+            loops[repoId]?.localKickPending = true
+        }
+        if let sleep = loops[repoId]?.githubSleep {
+            sleep.cancel()
+        } else {
+            loops[repoId]?.githubKickPending = true
+        }
     }
 
     func kick(workspaceId: String) {
@@ -115,6 +132,7 @@ final class PRTracker {
                 repoId: repoId,
                 interval: { _ in 20 },
                 sleepKey: \.localSleep,
+                kickPendingKey: \.localKickPending,
                 poll: { await $0.pollLocal(repoId: repoId) }
             )
         }
@@ -123,6 +141,7 @@ final class PRTracker {
                 repoId: repoId,
                 interval: { $0.nextGitHubInterval(repoId: repoId) },
                 sleepKey: \.githubSleep,
+                kickPendingKey: \.githubKickPending,
                 poll: { await $0.pollGitHub(repoId: repoId) }
             )
         }
@@ -139,11 +158,19 @@ final class PRTracker {
         repoId: String,
         interval: @escaping (PRTracker) -> Double,
         sleepKey: WritableKeyPath<Loops, Task<Void, Never>?>,
+        kickPendingKey: WritableKeyPath<Loops, Bool>,
         poll: @escaping (PRTracker) async -> Void
     ) async {
         while !Task.isCancelled {
             await poll(self)
             if Task.isCancelled { return }
+            // Honor a kick that landed while the poll was running (sleep
+            // was `nil`, so the cancel had nowhere to go). Skip the
+            // upcoming sleep and re-poll immediately.
+            if loops[repoId]?[keyPath: kickPendingKey] == true {
+                loops[repoId]?[keyPath: kickPendingKey] = false
+                continue
+            }
             let sleep = Task<Void, Never> {
                 try? await Task.sleep(for: .seconds(interval(self)))
             }
