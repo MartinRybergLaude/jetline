@@ -147,6 +147,16 @@ enum WorktreeOps {
         return worktreePath
     }
 
+    /// Hoisted: configuring an `ISO8601DateFormatter` is non-trivial and
+    /// the parser format is identical for every line. `nonisolated(unsafe)`
+    /// because Foundation documents `ISO8601DateFormatter` as thread-safe
+    /// — its public API is purely immutable parsing once constructed.
+    nonisolated(unsafe) private static let committerDateParser: ISO8601DateFormatter = {
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withInternetDateTime, .withSpaceBetweenDateAndTime]
+        return parser
+    }()
+
     /// Remote-tracking branches (e.g. `origin/feature`) sorted by most-recent
     /// commit first. The HEAD pseudo-ref is excluded. Empty array on failure.
     static func listRemoteBranches(
@@ -159,8 +169,6 @@ enum WorktreeOps {
             cwd: repoPath
         ) else { return [] }
 
-        let parser = ISO8601DateFormatter()
-        parser.formatOptions = [.withInternetDateTime, .withSpaceBetweenDateAndTime]
         return raw
             .split(separator: "\n")
             .compactMap { line -> (String, Date)? in
@@ -168,7 +176,7 @@ enum WorktreeOps {
                 guard parts.count == 2 else { return nil }
                 let ref = String(parts[0])
                 guard !ref.hasSuffix("/HEAD"),
-                      let date = parser.date(from: String(parts[1])) else { return nil }
+                      let date = committerDateParser.date(from: String(parts[1])) else { return nil }
                 return (ref, date)
             }
     }

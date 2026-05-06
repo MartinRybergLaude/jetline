@@ -737,8 +737,15 @@ private struct PRSummaryNode: Decodable {
         struct Rollup: Decodable { let state: String }
     }
 
+    /// Hoisted: `ISO8601DateFormatter()` is non-trivial to construct
+    /// (locale + calendar + tz wiring), and `listOpenPRs` decodes up to
+    /// 100 rows at once. `nonisolated(unsafe)` because Foundation
+    /// documents `ISO8601DateFormatter` as thread-safe — its public API
+    /// is purely immutable parsing once constructed.
+    nonisolated(unsafe) private static let updatedAtParser = ISO8601DateFormatter()
+
     func toSummary() -> PRSummary? {
-        guard let date = ISO8601DateFormatter().date(from: updatedAt) else { return nil }
+        guard let date = Self.updatedAtParser.date(from: updatedAt) else { return nil }
         let rollupState = commits?.nodes.first?.commit.statusCheckRollup?.state.uppercased()
         let bucket: CheckBucket? = {
             switch rollupState {
