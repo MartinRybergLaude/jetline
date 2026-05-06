@@ -161,8 +161,11 @@ final class AppState: ObservableObject {
             )
             try Workspaces.insert(ws)
             workspacesByRepo[repo.id, default: []].insert(ws, at: 0)
-            // Push the new branch into the tracker so the sidebar gets a
-            // PR snapshot for it on the next sweep.
+            // Seed the PR snapshot to `.absent` — a freshly minted local
+            // branch can't have a PR yet, and without this seed the row is
+            // iconless and the inspector reads "Loading PR…" until the
+            // next GitHub poll lands (up to ~60s away).
+            applyPR(.absent, for: ws.id)
             prTracker.kick(repoId: repo.id)
             selectWorkspace(ws.id)
             startSetupIfNeeded(workspace: ws, repository: repo)
