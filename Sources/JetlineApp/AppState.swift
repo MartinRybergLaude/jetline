@@ -774,11 +774,14 @@ final class AppState: ObservableObject {
             await MainActor.run {
                 guard self.watchers[id] == nil,
                       self.workspaceById(id) != nil else { return }
-                var paths = [worktreePath]
+                var additional: [String] = []
                 if let gitDir, gitDir != worktreePath {
-                    paths.append(gitDir)
+                    additional.append(gitDir)
                 }
-                let watcher = WorktreeWatcher(paths: paths) { [weak self] in
+                let watcher = WorktreeWatcher(
+                    worktreePath: worktreePath,
+                    additionalPaths: additional
+                ) { [weak self] in
                     guard let self else { return }
                     guard let ws = self.workspaceById(id) else { return }
                     Task { await self.refreshDiff(for: ws) }
