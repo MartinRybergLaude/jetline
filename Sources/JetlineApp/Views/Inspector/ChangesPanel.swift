@@ -22,7 +22,7 @@ struct ChangesPanel: View {
                 title: emptyTitle(for: workspace)
             )
         } else {
-            VStack(alignment: .leading, spacing: 8) {
+            LazyVStack(alignment: .leading, spacing: 8) {
                 summaryHeader(snap: snap)
                 ForEach(snap.files) { file in
                     FileDiffSection(file: file)

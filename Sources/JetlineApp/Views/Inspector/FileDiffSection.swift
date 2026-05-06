@@ -18,9 +18,8 @@ struct FileDiffSection: View {
                     // Hunk header (`@@ -a,b +c,d @@`) is unique within a
                     // file's hunks for non-pathological diffs; using it as
                     // the id keeps SwiftUI's diff stable when surrounding
-                    // file content shifts. Falls back to position when
-                    // headers happen to collide.
-                    ForEach(Array(file.hunks.enumerated()), id: \.element.header) { _, hunk in
+                    // file content shifts.
+                    ForEach(file.hunks, id: \.header) { hunk in
                         HunkView(hunk: hunk)
                     }
                 }
@@ -87,8 +86,10 @@ struct HunkView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.secondary.opacity(0.08))
 
-            ForEach(Array(hunk.lines.enumerated()), id: \.offset) { _, line in
-                lineView(line)
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(hunk.lines.indices, id: \.self) { idx in
+                    lineView(hunk.lines[idx])
+                }
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 4))
