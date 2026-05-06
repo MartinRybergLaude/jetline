@@ -6,7 +6,7 @@ enum InspectorTab: Hashable { case changes, pr, run }
 
 struct InspectorView: View {
     @EnvironmentObject private var state: AppState
-    @State private var diffMode: DiffMode = .pr
+    @State private var diffMode: DiffMode = .combined
 
     var body: some View {
         VStack(spacing: 0) {
@@ -90,7 +90,7 @@ private struct DiffModeToggle: View {
     private var isLocal: Binding<Bool> {
         Binding(
             get: { mode == .local },
-            set: { mode = $0 ? .local : .pr }
+            set: { mode = $0 ? .local : .combined }
         )
     }
 
@@ -101,8 +101,8 @@ private struct DiffModeToggle: View {
         }
         .toggleStyle(.switch)
         .controlSize(.small)
-        .help(mode == .pr
-              ? "Showing committed changes vs base branch"
-              : "Showing uncommitted (staged + unstaged) changes")
+        .help(mode == .local
+              ? "Showing uncommitted (staged + unstaged) changes"
+              : "Showing all changes vs base branch (committed + uncommitted)")
     }
 }
