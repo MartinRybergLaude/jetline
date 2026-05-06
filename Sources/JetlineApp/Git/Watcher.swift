@@ -57,8 +57,10 @@ final class WorktreeWatcher {
         let callback: FSEventStreamCallback = { _, info, numEvents, rawPaths, _, _ in
             guard let info else { return }
             let watcher = Unmanaged<WorktreeWatcher>.fromOpaque(info).takeUnretainedValue()
-            // FSEvents passes a CFArrayRef of CFString as `eventPaths` when
-            // the stream was created without `kFSEventStreamCreateFlagUseExtendedData`.
+            // With `kFSEventStreamCreateFlagUseCFTypes` set below, eventPaths
+            // is a CFArrayRef of CFStringRef. Without that flag the parameter
+            // is a quasi-array of `char *` pointers and casting to NSArray
+            // crashes inside `objc_msgSend(retain)` the moment we touch it.
             let cfArray = Unmanaged<CFArray>.fromOpaque(rawPaths).takeUnretainedValue()
             let paths = cfArray as? [String] ?? []
             // Dispatched on `.main` (set below), so we're guaranteed to be on
@@ -75,7 +77,10 @@ final class WorktreeWatcher {
             watchPaths,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
             0.5,
-            FSEventStreamCreateFlags(kFSEventStreamCreateFlagFileEvents)
+            FSEventStreamCreateFlags(
+                kFSEventStreamCreateFlagFileEvents
+                | kFSEventStreamCreateFlagUseCFTypes
+            )
         )
         guard let s else { return }
         FSEventStreamSetDispatchQueue(s, .main)
