@@ -233,6 +233,15 @@ final class PRTracker {
             return
         }
 
+        // Clear any refresh-in-flight markers regardless of outcome — the
+        // poll has reached terminal state, so the spinner should stop
+        // whether or not the snapshot actually changed.
+        defer {
+            for ws in workspaces {
+                state.endPRRefresh(workspaceId: ws.id)
+            }
+        }
+
         let identifier: RepoIdentifier
         switch await resolvedIdentifier(for: repo) {
         case .resolved(let id):

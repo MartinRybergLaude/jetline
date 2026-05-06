@@ -48,13 +48,7 @@ struct PRPanel: View {
                 ChecksSection(checks: checks)
                 HStack {
                     Spacer()
-                    Button {
-                        state.prTracker.kick(workspaceId: workspace.id)
-                    } label: {
-                        Label("Refresh", systemImage: "arrow.clockwise")
-                            .font(.caption)
-                    }
-                    .buttonStyle(.borderless)
+                    RefreshButton(workspaceId: workspace.id)
                 }
             }
             .padding(.horizontal, 12)
@@ -124,6 +118,36 @@ private struct PRHeaderCard: View {
             .padding(.vertical, 2)
             .background(color)
             .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+}
+
+private struct RefreshButton: View {
+    @EnvironmentObject private var state: AppState
+    let workspaceId: String
+
+    private var isRefreshing: Bool {
+        state.refreshingPRsByWorkspace.contains(workspaceId)
+    }
+
+    var body: some View {
+        Button {
+            state.requestPRRefresh(workspaceId: workspaceId)
+        } label: {
+            HStack(spacing: 4) {
+                if isRefreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.7)
+                        .frame(width: 12, height: 12)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                }
+                Text("Refresh")
+            }
+            .font(.caption)
+        }
+        .buttonStyle(.borderless)
+        .disabled(isRefreshing)
     }
 }
 

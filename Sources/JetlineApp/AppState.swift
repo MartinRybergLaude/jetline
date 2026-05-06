@@ -33,6 +33,10 @@ final class AppState: ObservableObject {
     /// session takes over the visual indication.
     @Published var runningGitActionByWorkspace: [String: GitAction] = [:]
     @Published var prTrackerStatus: PRTracker.Status = .ok
+    /// Workspace IDs awaiting the result of a user-initiated PR refresh.
+    /// Populated by `requestPRRefresh`, cleared when the next `pollGitHub`
+    /// finishes (success or failure). Drives the inspector's spinner.
+    @Published var refreshingPRsByWorkspace: Set<String> = []
     @Published var inspectorVisible: Bool = true
     /// Active inspector tab. Lifted out of `InspectorView` so workspace
     /// creation can flip it to `.run` and surface live setup-script output.
@@ -693,6 +697,23 @@ final class AppState: ObservableObject {
             prByWorkspace[workspaceId] = snapshot
         }
         try? PRSnapshots.save(snapshot, for: workspaceId)
+    }
+
+    /// User-initiated refresh: mark the workspace as awaiting a poll result
+    /// (drives the spinner) and wake the tracker. The marker is cleared by
+    /// `endPRRefresh` from `pollGitHub`'s defer; the timeout is a backstop
+    /// in case the poll never reaches the defer (e.g. tracker was torn down).
+    func requestPRRefresh(workspaceId: String) {
+        refreshingPRsByWorkspace.insert(workspaceId)
+        prTracker.kick(workspaceId: workspaceId)
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(15))
+            self?.endPRRefresh(workspaceId: workspaceId)
+        }
+    }
+
+    func endPRRefresh(workspaceId: String) {
+        refreshingPRsByWorkspace.remove(workspaceId)
     }
 
     /// Single write path for the repo metadata cache. PRTracker calls this
