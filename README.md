@@ -3,11 +3,6 @@
 A SwiftUI macOS app that wraps `claude` / `codex` CLIs in an embedded terminal,
 with workspace = git worktree management on top.
 
-This is a pared-down, native rewrite of [Jetforge](https://github.com/dohooo/jetforge).
-The custom chat UI / streaming pipeline / sidecar is gone — the agent runs in
-its own terminal and the changes panel is computed from `git diff` instead of
-parsing agent events.
-
 ## Status
 
 - Repo + worktree management ✅
@@ -94,4 +89,4 @@ with the `JETLINE_DATA_DIR` env var.
 
 ## License
 
-MIT (placeholder; replace before publishing).
+EUPL v1.2
