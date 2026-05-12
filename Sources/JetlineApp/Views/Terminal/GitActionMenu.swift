@@ -199,7 +199,7 @@ private struct GitActionMenuContent: View {
         case .commit:        return "Commit uncommitted changes with the git agent"
         case .createPR:      return "Push and open a pull request"
         case .pullUpdates:   return "Pull commits from origin/\(workspace.branchName) (rebase)"
-        case .rebaseOnMain:  return "Rebase this branch onto \(workspace.baseBranch)"
+        case .rebaseOnMain:  return "Rebase this branch onto \(workspace.baseBranch) and force-push (with lease)"
         case .fixCI:         return "Investigate and fix failing CI checks"
         case .fixComments:   return "Fix open PR comments"
         case .mergePR:       return "Merge the pull request"

@@ -16,7 +16,6 @@ final class WorkspaceState: ObservableObject {
     let id: String
 
     @Published var diff: DiffSnapshot?
-    @Published var prDiff: DiffSnapshot?
     @Published var localDiff: DiffSnapshot?
     /// Tracked separately from the diff snapshots because porcelain status
     /// also flags untracked files, which `git diff` ignores.

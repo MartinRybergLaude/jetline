@@ -206,8 +206,16 @@ private struct RunTerminalHost: NSViewRepresentable {
         let term = emulator.nsView
         if term.superview !== nsView {
             // The container can already hold a *different* emulator from a
-            // prior workspace: park that one back in the incubator so its
-            // surface stays alive instead of orphaning it.
+            // prior workspace: deactivate it first so its renderer stops
+            // doing Metal work offscreen, then park it back in the incubator
+            // so the surface stays alive. Without the deactivate, switching
+            // workspaces while both have running RunControllers leaves the
+            // old workspace's surface in `setSurfaceVisible(true)` state
+            // and it keeps rendering frames no one sees.
+            if let previous = context.coordinator.emulator as? TerminalEmulatorView,
+               previous !== emulator {
+                previous.setActive(false)
+            }
             for sub in nsView.subviews where sub !== term {
                 TerminalIncubator.park(sub)
             }

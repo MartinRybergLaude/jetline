@@ -142,6 +142,7 @@ final class PRTracker {
         entry.local = Task<Void, Never> { [weak self] in
             await self?.runLoop(
                 repoId: repoId,
+                minInterval: 5,
                 interval: { _ in 20 },
                 binding: .local,
                 poll: { await $0.pollLocal(repoId: repoId) }
@@ -150,6 +151,7 @@ final class PRTracker {
         entry.github = Task<Void, Never> { [weak self] in
             await self?.runLoop(
                 repoId: repoId,
+                minInterval: 15,
                 interval: { $0.nextGitHubInterval(repoId: repoId) },
                 binding: .github,
                 poll: { await $0.pollGitHub(repoId: repoId) }
@@ -164,18 +166,37 @@ final class PRTracker {
     /// can cancel it. The cancellation handler propagates parent
     /// cancellation into the inner sleep — without it, stopping the
     /// loop would block until the current sleep finished naturally.
+    ///
+    /// `minInterval` is the absolute floor between successive polls,
+    /// enforced even when a kick lands. Without it, a sustained burst
+    /// of kicks (FSEvents-driven, e.g. an active dev server writing into
+    /// a worktree) chains `kickPending` from poll to poll and the loop
+    /// tight-spins at ~1 poll/sec — fine for `git fetch`, fatal for the
+    /// GitHub query budget.
     private func runLoop(
         repoId: String,
+        minInterval: Double,
         interval: @escaping (PRTracker) -> Double,
         binding: LoopBinding,
         poll: @escaping (PRTracker) async -> Void
     ) async {
+        var lastPollStart: Date = .distantPast
         while !Task.isCancelled {
+            // Floor: never start a poll faster than `minInterval` after the
+            // previous one started, regardless of pending kicks. The floor
+            // sleep is uninterruptible (cancel-only) so a user-initiated
+            // kick waits up to `minInterval` for the next poll.
+            let elapsed = Date().timeIntervalSince(lastPollStart)
+            if elapsed < minInterval {
+                try? await Task.sleep(for: .seconds(minInterval - elapsed))
+                if Task.isCancelled { return }
+            }
+            lastPollStart = Date()
             await poll(self)
             if Task.isCancelled { return }
             // Honor a kick that landed while the poll was running (sleep
             // was `nil`, so the cancel had nowhere to go). Skip the
-            // upcoming sleep and re-poll immediately.
+            // upcoming sleep — the floor at top of loop still applies.
             if loops[repoId]?[keyPath: binding.kickPending] == true {
                 loops[repoId]?[keyPath: binding.kickPending] = false
                 continue
@@ -206,12 +227,22 @@ final class PRTracker {
         // workspaces yet so the local default branch stays current and
         // any worktree the user creates next inherits a fresh tip.
         await BranchPositionOps.fetch(repoPath: repo.path, remote: repo.remoteOrigin)
-        let baseMoved = await BaseBranchSync.fastForward(
+        state.activityLog.record(
+            .fetch,
+            "Fetched refs from \(repo.remoteOrigin)",
+            repoId: repoId
+        )
+        let newBaseSHA = await BaseBranchSync.fastForward(
             repoPath: repo.path,
             remote: repo.remoteOrigin,
             baseBranch: repo.defaultBranch
-        ) != nil
-        if baseMoved {
+        )
+        if let newBaseSHA {
+            state.activityLog.record(
+                .fastForward,
+                "Fast-forwarded \(repo.defaultBranch) → \(newBaseSHA.prefix(7))",
+                repoId: repoId
+            )
             // Merge-base shifted under every workspace's diff — recompute
             // so the inspector reflects reality. No-op when no diff is
             // open; refreshDiff is deduped on equality. Left sequential
@@ -303,6 +334,11 @@ final class PRTracker {
             )
             loops[repoId]?.githubFailures = 0
             updateStatus(.ok)
+            state.activityLog.record(
+                .prPoll,
+                "Polled GitHub (\(workspaces.count) branch\(workspaces.count == 1 ? "" : "es"))",
+                repoId: repoId
+            )
             for ws in workspaces {
                 let snap: PRSnapshot
                 if let (pr, checks) = result[ws.branchName] {
@@ -316,14 +352,21 @@ final class PRTracker {
         } catch GitHubRunner.Error.ghMissing {
             updateStatus(.ghMissing)
             loops[repoId]?.githubFailures += 1
+            state.activityLog.record(.error, "GitHub poll: gh CLI not found", repoId: repoId)
             recordError("gh CLI not found. Install via `brew install gh`.", for: workspaces, state: state)
         } catch GitHubRunner.Error.authRequired {
             updateStatus(.authRequired)
             loops[repoId]?.githubFailures += 1
+            state.activityLog.record(.error, "GitHub poll: gh not authenticated", repoId: repoId)
             recordError("gh not authenticated. Run `gh auth login` in a terminal.", for: workspaces, state: state)
         } catch {
             loops[repoId]?.githubFailures += 1
             print("PRTracker.pollGitHub failed for \(identifier.owner)/\(identifier.name): \(error)")
+            state.activityLog.record(
+                .error,
+                "GitHub poll failed: \(error.localizedDescription)",
+                repoId: repoId
+            )
             recordError(error.localizedDescription, for: workspaces, state: state)
         }
     }

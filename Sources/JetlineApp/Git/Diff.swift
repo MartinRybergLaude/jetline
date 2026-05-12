@@ -64,7 +64,6 @@ struct FileDiff: Identifiable, Equatable {
 
 enum DiffMode: Hashable {
     case combined
-    case pr
     case local
 
     var needsMergeBase: Bool { self != .local }
@@ -72,7 +71,6 @@ enum DiffMode: Hashable {
     func revspec(mergeBase: String?) -> String {
         switch self {
         case .combined: return mergeBase ?? "HEAD"
-        case .pr:       return "\(mergeBase ?? "HEAD")..HEAD"
         case .local:    return "HEAD"
         }
     }

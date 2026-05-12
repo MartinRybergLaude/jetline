@@ -33,6 +33,10 @@ final class AppState: ObservableObject {
 
     private var watchers: [String: WorktreeWatcher] = [:]
     private(set) lazy var prTracker: PRTracker = PRTracker(state: self)
+    /// In-memory debug log of background activity (poll, fetch, FF, user
+    /// git actions). Surfaced through the hidden Activity Log window;
+    /// nothing in the normal UI surface reads it.
+    let activityLog = ActivityLog()
     private var hasLoaded = false
 
     init() {}
@@ -95,6 +99,7 @@ final class AppState: ObservableObject {
             let repo = try Repositories.add(name: name, path: path, defaultBranch: defaultBranch)
             repositories.insert(repo, at: 0)
             workspacesByRepo[repo.id] = []
+            activityLog.record(.lifecycle, "Added repository \(repo.name)", repoId: repo.id)
             prTracker.sync()
             return repo
         } catch {
@@ -104,6 +109,7 @@ final class AppState: ObservableObject {
     }
 
     func removeRepository(_ id: String) {
+        let name = repositories.first(where: { $0.id == id })?.name ?? id
         if let workspaces = workspacesByRepo[id] {
             for ws in workspaces { detachWorkspace(ws.id) }
         }
@@ -114,6 +120,7 @@ final class AppState: ObservableObject {
         if selectedWorkspaceId.flatMap({ workspaceById($0) }) == nil {
             selectedWorkspaceId = nil
         }
+        activityLog.record(.lifecycle, "Removed repository \(name)")
         prTracker.sync()
     }
 
@@ -179,6 +186,12 @@ final class AppState: ObservableObject {
             // iconless and the inspector reads "Loading PR…" until the
             // next GitHub poll lands (up to ~60s away).
             applyPR(.absent, for: ws.id)
+            activityLog.record(
+                .lifecycle,
+                "Created workspace \(name) (\(branch))",
+                repoId: repo.id,
+                workspaceId: ws.id
+            )
             prTracker.kick(repoId: repo.id)
             selectWorkspace(ws.id)
             startSetupIfNeeded(workspace: ws, repository: repo)
@@ -273,6 +286,12 @@ final class AppState: ObservableObject {
             return
         }
         workspacesByRepo[repo.id, default: []].insert(ws, at: 0)
+        activityLog.record(
+            .lifecycle,
+            "Imported branch \(branchName) as workspace \(name)",
+            repoId: repo.id,
+            workspaceId: ws.id
+        )
         prTracker.kick(repoId: repo.id)
         selectWorkspace(ws.id)
         startSetupIfNeeded(workspace: ws, repository: repo)
@@ -326,6 +345,12 @@ final class AppState: ObservableObject {
         try? PRSnapshots.remove(workspaceId: workspace.id)
         workspacesByRepo[workspace.repositoryId]?.removeAll { $0.id == workspace.id }
         if selectedWorkspaceId == workspace.id { selectedWorkspaceId = nil }
+        activityLog.record(
+            .lifecycle,
+            "Archived workspace \(workspace.name)\(removeWorktree ? " (worktree removed)" : "")",
+            repoId: workspace.repositoryId,
+            workspaceId: workspace.id
+        )
     }
 
     /// Compute the prefix prepended to a fresh workspace's branch name.
@@ -446,12 +471,30 @@ final class AppState: ObservableObject {
         guard case let .loaded(pr, _) = ws.pr else { return }
         ws.runningGitAction = .mergePR
         defer { ws.runningGitAction = nil }
+        activityLog.record(
+            .gitAction,
+            "Merging PR #\(pr.number) (\(method.rawValue))",
+            repoId: workspace.repositoryId,
+            workspaceId: workspace.id
+        )
         do {
             try await GitHubRunner.mergePR(pr.number, method: method, cwd: workspace.worktreePath)
         } catch {
+            activityLog.record(
+                .error,
+                "Merge failed for PR #\(pr.number): \(error.localizedDescription)",
+                repoId: workspace.repositoryId,
+                workspaceId: workspace.id
+            )
             await presentError(error.localizedDescription)
             return
         }
+        activityLog.record(
+            .gitAction,
+            "Merged PR #\(pr.number)",
+            repoId: workspace.repositoryId,
+            workspaceId: workspace.id
+        )
         if var repo = repositories.first(where: { $0.id == workspace.repositoryId }),
            repo.lastMergeMethod != method.rawValue {
             repo.lastMergeMethod = method.rawValue
@@ -477,6 +520,12 @@ final class AppState: ObservableObject {
         let ws = workspaceState(for: workspace.id)
         ws.runningGitAction = .rebaseOnMain
         defer { ws.runningGitAction = nil }
+        activityLog.record(
+            .gitAction,
+            "Rebasing on \(workspace.baseBranch)",
+            repoId: repo.id,
+            workspaceId: workspace.id
+        )
 
         let cwd = workspace.worktreePath
         let baseRef = "\(repo.remoteOrigin)/\(repo.localName(forRemoteRef: workspace.baseBranch))"
@@ -503,10 +552,22 @@ final class AppState: ObservableObject {
 
         if fellBack {
             _ = try? await GitRunner.run(["rebase", "--abort"], cwd: cwd)
+            activityLog.record(
+                .gitAction,
+                "Rebase fell back to agent",
+                repoId: repo.id,
+                workspaceId: workspace.id
+            )
             startGitActionSession(for: workspace, action: .rebaseOnMain)
             return
         }
 
+        activityLog.record(
+            .gitAction,
+            "Rebase completed",
+            repoId: repo.id,
+            workspaceId: workspace.id
+        )
         prTracker.kick(workspaceId: workspace.id)
         await refreshDiff(for: workspace)
     }
@@ -523,6 +584,12 @@ final class AppState: ObservableObject {
         let ws = workspaceState(for: workspace.id)
         ws.runningGitAction = .pullUpdates
         defer { ws.runningGitAction = nil }
+        activityLog.record(
+            .gitAction,
+            "Pulling \(workspace.branchName)",
+            repoId: repo.id,
+            workspaceId: workspace.id
+        )
 
         let cwd = workspace.worktreePath
 
@@ -539,10 +606,22 @@ final class AppState: ObservableObject {
 
         if fellBack {
             _ = try? await GitRunner.run(["rebase", "--abort"], cwd: cwd)
+            activityLog.record(
+                .gitAction,
+                "Pull fell back to agent",
+                repoId: repo.id,
+                workspaceId: workspace.id
+            )
             startGitActionSession(for: workspace, action: .pullUpdates)
             return
         }
 
+        activityLog.record(
+            .gitAction,
+            "Pull completed",
+            repoId: repo.id,
+            workspaceId: workspace.id
+        )
         prTracker.kick(workspaceId: workspace.id)
         await refreshDiff(for: workspace)
     }
@@ -682,10 +761,9 @@ final class AppState: ObservableObject {
     // MARK: - Diff & watcher
 
     func refreshDiff(for workspace: Workspace) async {
-        // Resolve merge-base once and share with combined+pr. nil means the
-        // lookup itself failed (offline base / brand-new repo); each mode's
-        // compute then falls back to its own resolution and surfaces the
-        // error there.
+        // nil means the lookup itself failed (offline base / brand-new
+        // repo); the combined compute then falls back to its own
+        // resolution and surfaces the error there.
         let mergeBase = try? await DiffComputer.mergeBase(
             worktreePath: workspace.worktreePath,
             baseBranch: workspace.baseBranch
@@ -696,14 +774,6 @@ final class AppState: ObservableObject {
                 worktreePath: workspace.worktreePath,
                 baseBranch: workspace.baseBranch,
                 mode: .combined,
-                precomputedMergeBase: mergeBase
-            )
-        }()
-        async let prSnap: DiffSnapshot? = {
-            try? await DiffComputer.compute(
-                worktreePath: workspace.worktreePath,
-                baseBranch: workspace.baseBranch,
-                mode: .pr,
                 precomputedMergeBase: mergeBase
             )
         }()
@@ -721,9 +791,6 @@ final class AppState: ObservableObject {
         let ws = workspaceState(for: workspace.id)
         if let snap = await combined, ws.diff != snap {
             ws.diff = snap
-        }
-        if let snap = await prSnap, ws.prDiff != snap {
-            ws.prDiff = snap
         }
         if let snap = await localSnap, ws.localDiff != snap {
             ws.localDiff = snap
@@ -755,6 +822,12 @@ final class AppState: ObservableObject {
         if !ws.isRefreshingPR {
             ws.isRefreshingPR = true
         }
+        activityLog.record(
+            .gitAction,
+            "User requested PR refresh",
+            repoId: workspaceById(workspaceId)?.repositoryId,
+            workspaceId: workspaceId
+        )
         prTracker.kick(workspaceId: workspaceId)
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(15))

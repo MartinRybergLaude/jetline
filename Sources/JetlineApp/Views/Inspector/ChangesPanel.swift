@@ -43,7 +43,6 @@ private struct ChangesPanelContent: View {
 
     private var snapshot: DiffSnapshot {
         switch mode {
-        case .pr:       return workspaceState.prDiff ?? .empty
         case .local:    return workspaceState.localDiff ?? .empty
         case .combined: return workspaceState.diff ?? .empty
         }
@@ -51,8 +50,8 @@ private struct ChangesPanelContent: View {
 
     private var emptyTitle: String {
         switch mode {
-        case .pr, .combined: return "No changes vs \(workspace.baseBranch)"
-        case .local:         return "No uncommitted changes"
+        case .combined: return "No changes vs \(workspace.baseBranch)"
+        case .local:    return "No uncommitted changes"
         }
     }
 

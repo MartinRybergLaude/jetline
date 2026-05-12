@@ -62,7 +62,14 @@ struct JetlineApp: App {
                 }
                 .keyboardShortcut("i", modifiers: [.command, .option])
             }
+            DebugCommands()
         }
+
+        Window("Activity Log", id: "activity-log") {
+            ActivityLogView()
+                .environmentObject(state)
+        }
+        .defaultSize(width: 720, height: 500)
 
         Settings {
             SettingsView()
@@ -80,6 +87,22 @@ struct JetlineApp: App {
         case .system: return nil
         case .light: return .light
         case .dark: return .dark
+        }
+    }
+}
+
+/// Hidden Debug menu. Holds the entry point for the Activity Log window —
+/// kept out of the user-facing flow, reachable via the menu bar or the
+/// ⌘⌥⇧A shortcut.
+private struct DebugCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandMenu("Debug") {
+            Button("Activity Log") {
+                openWindow(id: "activity-log")
+            }
+            .keyboardShortcut("a", modifiers: [.command, .option, .shift])
         }
     }
 }
