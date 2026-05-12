@@ -13,9 +13,17 @@ enum Subprocess {
     }
 
     /// Returns the current process environment with `overrides` layered on
-    /// top. Used everywhere we spawn — keeps inherited PATH/HOME/etc.
+    /// top. PATH is replaced with the login-shell PATH (`LoginShellPath`)
+    /// unless the caller supplies their own — without this, Launchpad-
+    /// launched apps inherit the minimal launchd PATH and can't see homebrew
+    /// binaries. Snapshot is best-effort; `Subprocess.run` awaits resolution
+    /// for correctness, but sync callers (e.g. `GhosttyEmulator.spawn`) get
+    /// whichever value has been resolved so far.
     static func inheritedEnvironment(overrides: [String: String]) -> [String: String] {
         var merged = ProcessInfo.processInfo.environment
+        if overrides["PATH"] == nil {
+            merged["PATH"] = LoginShellPath.snapshot()
+        }
         for (k, v) in overrides { merged[k] = v }
         return merged
     }
@@ -40,6 +48,13 @@ enum Subprocess {
         closeStdin: Bool = false,
         timeout: TimeInterval? = nil
     ) async -> Result {
+        // Await login-shell PATH resolution before composing env. The snapshot
+        // read inside `inheritedEnvironment` is then guaranteed to see the
+        // resolved value (the resolver writes the snapshot before the task
+        // completes), so non-interactive spawns like `gh`/`git` find homebrew
+        // binaries even under a Launchpad launch.
+        _ = await LoginShellPath.get()
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = args

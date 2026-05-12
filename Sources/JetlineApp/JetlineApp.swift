@@ -6,6 +6,14 @@ struct JetlineApp: App {
     @NSApplicationDelegateAdaptor(JetlineAppDelegate.self) private var appDelegate
     @StateObject private var state = AppState()
 
+    init() {
+        // Resolve the user's login-shell PATH eagerly. Launchpad-launched
+        // apps inherit launchd's minimal PATH, so without this every gh/git
+        // spawn would miss homebrew until something paid the per-call
+        // `command -v` cost. See `LoginShellPath`.
+        LoginShellPath.prewarm()
+    }
+
     var body: some Scene {
         WindowGroup {
             AppShell()
