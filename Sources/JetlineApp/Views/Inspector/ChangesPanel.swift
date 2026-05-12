@@ -20,7 +20,7 @@ struct ChangesPanel: View {
 
 private struct ChangesPanelContent: View {
     let workspace: Workspace
-    @ObservedObject var workspaceState: WorkspaceState
+    let workspaceState: WorkspaceState
     let mode: DiffMode
 
     var body: some View {

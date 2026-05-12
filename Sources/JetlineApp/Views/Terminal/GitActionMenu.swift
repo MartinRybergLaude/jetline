@@ -24,7 +24,7 @@ struct GitActionMenu: View {
 private struct GitActionMenuContent: View {
     @EnvironmentObject private var state: AppState
     let workspace: Workspace
-    @ObservedObject var workspaceState: WorkspaceState
+    let workspaceState: WorkspaceState
 
     @State private var pendingMerge: Bool = false
 

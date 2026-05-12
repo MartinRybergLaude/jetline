@@ -28,7 +28,7 @@ struct RunOutputPanel: View {
 private struct RunOutputPanelContent: View {
     @EnvironmentObject private var state: AppState
     let workspace: Workspace
-    @ObservedObject var workspaceState: WorkspaceState
+    let workspaceState: WorkspaceState
 
     var body: some View {
         if let runController = workspaceState.runController,

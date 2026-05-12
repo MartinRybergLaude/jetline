@@ -28,7 +28,7 @@ struct PRPanel: View {
 
 private struct PRPanelContent: View {
     let workspace: Workspace
-    @ObservedObject var workspaceState: WorkspaceState
+    let workspaceState: WorkspaceState
 
     var body: some View {
         switch workspaceState.pr {
@@ -130,7 +130,7 @@ private struct PRHeaderCard: View {
 
 private struct RefreshButton: View {
     @EnvironmentObject private var state: AppState
-    @ObservedObject var workspaceState: WorkspaceState
+    let workspaceState: WorkspaceState
 
     var body: some View {
         let isRefreshing = workspaceState.isRefreshingPR

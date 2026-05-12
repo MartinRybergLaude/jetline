@@ -6,9 +6,11 @@ import AppKit
 ///
 /// Per-workspace mutable state (diff snapshots, PR snapshots, sessions,
 /// run/setup controllers, etc.) lives in `WorkspaceState` instances looked
-/// up via `workspaceState(for:)`, *not* in `@Published` dicts on this
-/// object. That split keeps a single workspace's poll/diff update from
-/// invalidating every view in the app via the shared `@Published` surface.
+/// up via `workspaceState(for:)`, *not* in dicts on this object. That split
+/// keeps a single workspace's poll/diff update from invalidating every
+/// view in the app via the shared `@Published` surface. `WorkspaceState`
+/// itself uses `@Observable` so SwiftUI tracks reads per-keypath — a view
+/// that reads only `.pr` doesn't repaint when `.diff` changes.
 @MainActor
 final class AppState: ObservableObject {
     @Published var repositories: [Repository] = []
@@ -26,9 +28,9 @@ final class AppState: ObservableObject {
     @Published var inspectorTab: InspectorTab = .changes
 
     /// Per-workspace mutable state. Not `@Published` — views look up the
-    /// `WorkspaceState` for their workspace and observe it via
-    /// `@ObservedObject`, so a single workspace's mutations only invalidate
-    /// the views that actually read them.
+    /// `WorkspaceState` for their workspace and `WorkspaceState` is
+    /// `@Observable`, so a single workspace's mutations only invalidate
+    /// views that actually read the changed keypath.
     private var workspaceStates: [String: WorkspaceState] = [:]
 
     private var watchers: [String: WorktreeWatcher] = [:]
@@ -804,13 +806,17 @@ final class AppState: ObservableObject {
     /// Single write path for PR snapshots. `PRTracker` calls this with fresh
     /// data; the in-memory state drives the UI and the same value is mirrored
     /// to disk so the next launch can paint immediately. No-op writes are
-    /// suppressed so we don't kick observers on every poll.
+    /// suppressed so we don't kick observers — and the same guard skips the
+    /// disk write, so steady-state polls that return identical data don't
+    /// re-encode JSON or hit SQLite. The persist itself hops off the main
+    /// actor so the writer queue's fsync can't stall the UI on every tick.
     func applyPR(_ snapshot: PRSnapshot, for workspaceId: String) {
         let ws = workspaceState(for: workspaceId)
-        if ws.pr != snapshot {
-            ws.pr = snapshot
+        guard ws.pr != snapshot else { return }
+        ws.pr = snapshot
+        Task.detached(priority: .utility) {
+            try? PRSnapshots.save(snapshot, for: workspaceId)
         }
-        try? PRSnapshots.save(snapshot, for: workspaceId)
     }
 
     /// User-initiated refresh: mark the workspace as awaiting a poll result

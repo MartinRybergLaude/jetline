@@ -21,7 +21,7 @@ struct WorkspaceRow: View {
 
 private struct WorkspaceRowContent: View {
     let workspace: Workspace
-    @ObservedObject var workspaceState: WorkspaceState
+    let workspaceState: WorkspaceState
     let isSelected: Bool
     let onArchive: (_ keepWorktree: Bool) -> Void
 

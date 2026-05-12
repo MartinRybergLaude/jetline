@@ -6,13 +6,15 @@ struct TerminalArea: View {
     @Environment(\.colorScheme) private var colorScheme
     let workspace: Workspace
     /// Per-workspace state (sessions, diff stats, run/setup controllers).
-    /// Observed directly so a poll landing on a *different* workspace
-    /// doesn't invalidate the terminal area.
-    @ObservedObject var workspaceState: WorkspaceState
+    /// `@Observable` so reads tracked per-keypath — a poll landing on a
+    /// *different* workspace doesn't invalidate the terminal area, and
+    /// within this view a `pr` update doesn't invalidate the parts that
+    /// only read `sessions`.
+    let workspaceState: WorkspaceState
 
     /// Live drag-reorder preview state. While set, the named tab is offset to
     /// follow the cursor and neighbours slide aside; the underlying array is
-    /// not mutated until the drag ends, so the `@Published sessions` array
+    /// not mutated until the drag ends, so the observable `sessions` array
     /// only kicks once instead of on every tab-boundary crossing.
     @State private var dragState: TabDragState?
     /// Slot the dragged tab will land in given the current cursor position.
@@ -371,7 +373,7 @@ private struct ChangesPill: View {
 private struct RunToolbarSlot: View {
     @EnvironmentObject private var state: AppState
     let workspace: Workspace
-    @ObservedObject var workspaceState: WorkspaceState
+    let workspaceState: WorkspaceState
 
     var body: some View {
         if let setup = workspaceState.setupController {
@@ -385,7 +387,7 @@ private struct RunToolbarSlot: View {
 private struct SetupAwareRunSlot: View {
     @EnvironmentObject private var state: AppState
     let workspace: Workspace
-    @ObservedObject var workspaceState: WorkspaceState
+    let workspaceState: WorkspaceState
     @ObservedObject var controller: SetupController
 
     var body: some View {
@@ -409,7 +411,7 @@ private struct SetupAwareRunSlot: View {
 private struct ReadyOrRunningRunSlot: View {
     @EnvironmentObject private var state: AppState
     let workspace: Workspace
-    @ObservedObject var workspaceState: WorkspaceState
+    let workspaceState: WorkspaceState
 
     var body: some View {
         if let runner = workspaceState.runController {
