@@ -5,23 +5,47 @@ import GRDB
 enum Repositories {
     static func all() throws -> [Repository] {
         try Database.shared.writer.read { db in
-            try Repository.order(Repository.Columns.lastOpenedAt.desc, Repository.Columns.createdAt.desc).fetchAll(db)
+            try Repository
+                .order(
+                    Repository.Columns.sortIndex.asc,
+                    Repository.Columns.lastOpenedAt.desc,
+                    Repository.Columns.createdAt.desc
+                )
+                .fetchAll(db)
         }
     }
 
     static func add(name: String, path: String, defaultBranch: String) throws -> Repository {
-        let repo = Repository(
-            id: UUID().uuidString,
-            name: name,
-            path: path,
-            defaultBranch: defaultBranch,
-            createdAt: Date(),
-            lastOpenedAt: Date()
-        )
         try Database.shared.writer.write { db in
+            // Sit above the current min so a fresh add lands at the top of
+            // the sidebar, matching the in-memory `insert(at: 0)` AppState
+            // does. Subsequent reorders rewrite indices to 0…n-1, so the
+            // negative drift here doesn't accumulate.
+            let minIdx = try Int.fetchOne(db, sql: "SELECT MIN(sortIndex) FROM repositories") ?? 0
+            var repo = Repository(
+                id: UUID().uuidString,
+                name: name,
+                path: path,
+                defaultBranch: defaultBranch,
+                createdAt: Date(),
+                lastOpenedAt: Date()
+            )
+            repo.sortIndex = minIdx - 1
             try repo.insert(db)
+            return repo
         }
-        return repo
+    }
+
+    /// Persist a manual sidebar ordering. Writes 0…n-1 across the supplied
+    /// id sequence in a single transaction.
+    static func reorder(orderedIds: [String]) throws {
+        try Database.shared.writer.write { db in
+            for (idx, id) in orderedIds.enumerated() {
+                try Repository
+                    .filter(key: id)
+                    .updateAll(db, Repository.Columns.sortIndex.set(to: idx))
+            }
+        }
     }
 
     static func update(_ repo: Repository) throws {

@@ -142,5 +142,24 @@ enum Schema {
                 t.drop(column: "globalBranchPrefix")
             }
         }
+
+        migrator.registerMigration("v12_repo_sort_index") { db in
+            try db.alter(table: "repositories") { t in
+                t.add(column: "sortIndex", .integer).notNull().defaults(to: 0)
+            }
+            // Backfill in the order rows were displayed pre-migration so the
+            // first launch after upgrading shows the same arrangement the
+            // user is used to. Subsequent reorders rewrite the column.
+            let ids = try String.fetchAll(db, sql: """
+                SELECT id FROM repositories
+                ORDER BY lastOpenedAt DESC, createdAt DESC
+                """)
+            for (idx, id) in ids.enumerated() {
+                try db.execute(
+                    sql: "UPDATE repositories SET sortIndex = ? WHERE id = ?",
+                    arguments: [idx, id]
+                )
+            }
+        }
     }
 }

@@ -128,6 +128,21 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Handler for `ForEach.onMove`. SwiftUI hands us the source offsets
+    /// and a destination offset using its standard "insert before this
+    /// index" convention — `Array.move(fromOffsets:toOffset:)` consumes
+    /// the same convention, so the in-memory reorder is a one-liner.
+    /// Persists the resulting order so the arrangement survives a
+    /// relaunch.
+    func moveRepositorySections(from offsets: IndexSet, to destination: Int) {
+        repositories.move(fromOffsets: offsets, toOffset: destination)
+        do {
+            try Repositories.reorder(orderedIds: repositories.map(\.id))
+        } catch {
+            Task { await presentError(error.localizedDescription) }
+        }
+    }
+
     // MARK: - Workspaces
 
     func createWorkspace(in repo: Repository, name: String) async {
@@ -448,9 +463,12 @@ final class AppState: ObservableObject {
     /// Fast path for `Rebase`. Tries `git fetch` + `git rebase --autostash`
     /// directly so the common no-conflict case completes without spending
     /// agent tokens; `--autostash` lets a dirty working tree go through
-    /// untouched. Anything that goes wrong — conflicts, missing refs,
-    /// fetch failure — aborts the partial rebase and hands off to the
-    /// agent flow that already knows how to recover.
+    /// untouched. On success, force-pushes with `--force-with-lease` so the
+    /// remote branch (and thus the open PR) tracks the rewritten history,
+    /// matching what the agent prompt does. Anything that goes wrong —
+    /// conflicts, missing refs, fetch failure, lease rejection — aborts the
+    /// partial rebase and hands off to the agent flow that already knows
+    /// how to recover.
     func performRebase(for workspace: Workspace) async {
         guard let repo = repositories.first(where: { $0.id == workspace.repositoryId }) else {
             startGitActionSession(for: workspace, action: .rebaseOnMain)
@@ -462,12 +480,23 @@ final class AppState: ObservableObject {
 
         let cwd = workspace.worktreePath
         let baseRef = "\(repo.remoteOrigin)/\(repo.localName(forRemoteRef: workspace.baseBranch))"
+        let hasRemote = ws.branchPosition.remoteTrackingExists
 
         let fellBack: Bool
         do {
             await BranchPositionOps.fetch(repoPath: cwd, remote: repo.remoteOrigin)
-            let result = try await GitRunner.run(["rebase", "--autostash", baseRef], cwd: cwd)
-            fellBack = !result.success
+            let rebase = try await GitRunner.run(["rebase", "--autostash", baseRef], cwd: cwd)
+            if !rebase.success {
+                fellBack = true
+            } else if hasRemote {
+                let push = try await GitRunner.run(
+                    ["push", "--force-with-lease", repo.remoteOrigin, workspace.branchName],
+                    cwd: cwd
+                )
+                fellBack = !push.success
+            } else {
+                fellBack = false
+            }
         } catch {
             fellBack = true
         }

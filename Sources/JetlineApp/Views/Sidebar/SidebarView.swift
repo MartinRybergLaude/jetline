@@ -14,6 +14,9 @@ struct SidebarView: View {
                     onOpenSettings: { showingRepoSettings = repo }
                 )
             }
+            .onMove { offsets, destination in
+                state.moveRepositorySections(from: offsets, to: destination)
+            }
 
             if state.repositories.isEmpty {
                 emptyHint

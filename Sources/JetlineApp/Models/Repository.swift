@@ -24,6 +24,10 @@ struct Repository: Codable, Identifiable, Hashable, FetchableRecord, Persistable
     var defaultBranch: String
     var createdAt: Date
     var lastOpenedAt: Date?
+    /// Manual sidebar ordering. Lower = nearer the top. New repos are
+    /// inserted above the current min so they land at the top; reorders
+    /// rewrite the column with consecutive 0…n-1 values.
+    var sortIndex: Int = 0
 
     var remoteOrigin: String = "origin"
     /// Custom prefix used when `branchPrefixMode` is `.custom`.
@@ -83,6 +87,7 @@ struct Repository: Codable, Identifiable, Hashable, FetchableRecord, Persistable
         static let defaultBranch = Column(CodingKeys.defaultBranch)
         static let createdAt = Column(CodingKeys.createdAt)
         static let lastOpenedAt = Column(CodingKeys.lastOpenedAt)
+        static let sortIndex = Column(CodingKeys.sortIndex)
         static let remoteOrigin = Column(CodingKeys.remoteOrigin)
         static let branchPrefix = Column(CodingKeys.branchPrefix)
         static let branchPrefixMode = Column(CodingKeys.branchPrefixMode)
