@@ -32,7 +32,7 @@ final class PTYSession: ObservableObject, Identifiable {
         self.agent = agent
         self.cwd = cwd
         self.initialPrompt = initialPrompt
-        self.emulator = TerminalEmulatorFactory.make()
+        self.emulator = TerminalEmulatorFactory.make(deferStartUntilSized: true)
         // Keep the AppTerminalView in a window from the moment it exists.
         // libghostty's InMemoryTerminalSession drops every byte until the
         // surface is built, and the surface only exists once the view has

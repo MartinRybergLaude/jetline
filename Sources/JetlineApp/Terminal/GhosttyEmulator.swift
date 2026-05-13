@@ -11,7 +11,6 @@ final class GhosttyEmulator: TerminalEmulatorView {
     let view: AppTerminalView
     private let session: InMemoryTerminalSession
     private let controller: TerminalController
-    private var pty: PTYProcess?
     private var isActive: Bool = true
     private var exitHandler: ((Int32) -> Void)?
     /// When false, the emulator does *not* call `session.finish` on child
@@ -21,6 +20,14 @@ final class GhosttyEmulator: TerminalEmulatorView {
     /// noise — and worse, with our fixed `runtimeMilliseconds: 0` it
     /// renders as a launch failure even on a clean zero exit.
     private let notifySurfaceOnExit: Bool
+    /// When true, `spawn()` stashes a deferred-start closure on `ptyHolder`
+    /// instead of forking immediately. The first libghostty resize callback
+    /// with a real viewport (cols ≥ 20, rows ≥ 5) triggers the actual fork
+    /// using those dimensions as the initial winsize. Required for agent
+    /// tabs: the term view starts life in `TerminalIncubator`'s 1×1 window,
+    /// so an eager fork would hand the agent an 80×24 default tty and lock
+    /// its TUI to that geometry before SwiftUI ever mounts the real tab.
+    private let deferStartUntilSized: Bool
 
     var nsView: NSView { view }
 
@@ -28,8 +35,13 @@ final class GhosttyEmulator: TerminalEmulatorView {
     /// default 13pt agent terminal so the inspector strip doesn't crowd.
     static let outputPanelFontSize: Float = 11
 
-    init(fontSize: Float = 13, notifySurfaceOnExit: Bool = true) {
+    init(
+        fontSize: Float = 13,
+        notifySurfaceOnExit: Bool = true,
+        deferStartUntilSized: Bool = false
+    ) {
         self.notifySurfaceOnExit = notifySurfaceOnExit
+        self.deferStartUntilSized = deferStartUntilSized
         let controller = TerminalController(
             configuration: Self.makeConfiguration(family: nil, size: fontSize),
             theme: Self.theme
@@ -46,7 +58,7 @@ final class GhosttyEmulator: TerminalEmulatorView {
                 pendingPTY.process?.write(data)
             },
             resize: { viewport in
-                pendingPTY.process?.resize(
+                pendingPTY.handleResize(
                     cols: viewport.columns,
                     rows: viewport.rows,
                     widthPx: viewport.widthPixels,
@@ -66,9 +78,80 @@ final class GhosttyEmulator: TerminalEmulatorView {
 
     /// Captures the PTY reference so the InMemoryTerminalSession's
     /// `@Sendable` closures (constructed before `pty` exists) can route
-    /// writes/resizes to the eventual PTY.
+    /// writes/resizes to the eventual PTY. Also holds the deferred-start
+    /// closure for agent tabs that wait for a real viewport before forking.
     private final class PTYHolder: @unchecked Sendable {
-        var process: PTYProcess?
+        private let lock = NSLock()
+        private var _process: PTYProcess?
+        private var pendingStart: ((UInt16, UInt16) -> PTYProcess?)?
+        /// Last viewport reported by libghostty. Recorded for every callback
+        /// (including pre-spawn ones) so a deferred `setPendingStart` arriving
+        /// after the surface has already settled can fire immediately instead
+        /// of waiting for a follow-up resize that may never come.
+        private var lastViewport: Viewport?
+
+        struct Viewport {
+            let cols: UInt16
+            let rows: UInt16
+            let widthPx: UInt32
+            let heightPx: UInt32
+            var isReal: Bool { cols >= 20 && rows >= 5 }
+        }
+
+        var process: PTYProcess? {
+            get { lock.lock(); defer { lock.unlock() }; return _process }
+            set { lock.lock(); _process = newValue; lock.unlock() }
+        }
+
+        /// Park a deferred-start closure. If we've already observed a real
+        /// viewport, claim the closure and fork now — this closes the race
+        /// where libghostty's first sized-viewport callback lands while the
+        /// caller is still awaiting its async setup work.
+        func setPendingStart(_ start: @escaping (UInt16, UInt16) -> PTYProcess?) {
+            lock.lock()
+            if let v = lastViewport, v.isReal {
+                lock.unlock()
+                runStart(start, with: v)
+            } else {
+                pendingStart = start
+                lock.unlock()
+            }
+        }
+
+        func clearPendingStart() {
+            lock.lock(); pendingStart = nil; lock.unlock()
+        }
+
+        /// Called from libghostty's resize thread for every viewport change.
+        /// Routes to either the live PTY's `TIOCSWINSZ` or the deferred start
+        /// (whichever applies), and always records the viewport for a future
+        /// `setPendingStart` to consult.
+        func handleResize(cols: UInt16, rows: UInt16, widthPx: UInt32, heightPx: UInt32) {
+            let v = Viewport(cols: cols, rows: rows, widthPx: widthPx, heightPx: heightPx)
+            lock.lock()
+            lastViewport = v
+            if let process = _process {
+                lock.unlock()
+                process.resize(cols: cols, rows: rows, widthPx: widthPx, heightPx: heightPx)
+                return
+            }
+            if v.isReal, let start = pendingStart {
+                pendingStart = nil
+                lock.unlock()
+                runStart(start, with: v)
+                return
+            }
+            lock.unlock()
+        }
+
+        private func runStart(_ start: (UInt16, UInt16) -> PTYProcess?, with v: Viewport) {
+            let pty = start(v.cols, v.rows)
+            lock.lock(); _process = pty; lock.unlock()
+            // forkpty's winsize ignored xpixel/ypixel — apply the real pixel
+            // dims via TIOCSWINSZ so libghostty's sixel/image features and
+            // any pixel-sensitive child code see correct values.
+            pty?.resize(cols: v.cols, rows: v.rows, widthPx: v.widthPx, heightPx: v.heightPx)
+        }
     }
     private let ptyHolder: PTYHolder
 
@@ -79,55 +162,75 @@ final class GhosttyEmulator: TerminalEmulatorView {
         env: [String: String],
         outputTap: (@Sendable (Data) -> Void)? = nil
     ) {
-        var environment = Subprocess.inheritedEnvironment(overrides: env)
-        environment["TERM"] = environment["TERM"] ?? "xterm-256color"
-        environment["COLORTERM"] = "truecolor"
+        var mutableEnvironment = Subprocess.inheritedEnvironment(overrides: env)
+        mutableEnvironment["TERM"] = mutableEnvironment["TERM"] ?? "xterm-256color"
+        mutableEnvironment["COLORTERM"] = "truecolor"
+        let environment = mutableEnvironment
 
         let session = self.session
-        let pty = PTYProcess(
-            executable: executable,
-            args: args,
-            cwd: cwd,
-            env: environment,
-            output: { data in
-                // Hop to main before handing bytes to libghostty.
-                // `InMemoryTerminalSession.receive` holds an NSLock across
-                // `ghostty_surface_write_buffer`, which can take long enough on
-                // a burst that a concurrent main-thread `dispatchResize` (fired
-                // from an AppKit layout pass) wedges the watchdog. Running
-                // receive on main serializes parse vs. resize on the same
-                // thread, eliminating the contention. Tradeoff: heavy bursts
-                // now share the main runloop. See PTYProcess.swift for the
-                // drain source.
-                DispatchQueue.main.async {
-                    session.receive(data)
-                }
-                outputTap?(data)
-            },
-            exit: { [weak self] exitCode in
-                Task { @MainActor in
-                    if self?.notifySurfaceOnExit ?? true {
-                        session.finish(exitCode: UInt32(clamping: exitCode), runtimeMilliseconds: 0)
-                    }
-                    self?.exitHandler?(exitCode)
-                    // Drop PTYProcess only after exit is reported. If we
-                    // freed it inside `terminate()`, the dispatch source's
-                    // cancel handler (weak-self) would never fire and
-                    // exit would silently never be delivered.
-                    self?.pty = nil
-                    self?.ptyHolder.process = nil
-                }
-            }
-        )
+        let holder = self.ptyHolder
+        let notifyOnExit = self.notifySurfaceOnExit
 
-        do {
-            try pty.start()
-            self.pty = pty
-            ptyHolder.process = pty
-        } catch {
-            // Surface the failure as terminal output so the user sees something.
-            let message = "jetline: failed to spawn \(executable): \(error)\r\n"
-            session.receive(message)
+        // Build the PTYProcess factory once, used either eagerly or by the
+        // first real-viewport resize callback. Captures `holder` (sendable)
+        // and hops to MainActor for emulator-state mutations.
+        let build: @Sendable (UInt16, UInt16) -> PTYProcess? = { [weak self] cols, rows in
+            let pty = PTYProcess(
+                executable: executable,
+                args: args,
+                cwd: cwd,
+                env: environment,
+                initialCols: cols,
+                initialRows: rows,
+                output: { data in
+                    // Hop to main before handing bytes to libghostty.
+                    // `InMemoryTerminalSession.receive` holds an NSLock across
+                    // `ghostty_surface_write_buffer`, which can take long enough on
+                    // a burst that a concurrent main-thread `dispatchResize` (fired
+                    // from an AppKit layout pass) wedges the watchdog. Running
+                    // receive on main serializes parse vs. resize on the same
+                    // thread, eliminating the contention. Tradeoff: heavy bursts
+                    // now share the main runloop. See PTYProcess.swift for the
+                    // drain source.
+                    DispatchQueue.main.async {
+                        session.receive(data)
+                    }
+                    outputTap?(data)
+                },
+                exit: { exitCode in
+                    Task { @MainActor [weak self] in
+                        if notifyOnExit {
+                            session.finish(
+                                exitCode: UInt32(clamping: exitCode),
+                                runtimeMilliseconds: 0
+                            )
+                        }
+                        self?.exitHandler?(exitCode)
+                        // Drop PTYProcess only after exit is reported. If we
+                        // freed it inside `terminate()`, the dispatch source's
+                        // cancel handler (weak-self) would never fire and
+                        // exit would silently never be delivered.
+                        holder.process = nil
+                    }
+                }
+            )
+
+            do {
+                try pty.start()
+                return pty
+            } catch {
+                let message = "jetline: failed to spawn \(executable): \(error)\r\n"
+                session.receive(message)
+                return nil
+            }
+        }
+
+        if deferStartUntilSized {
+            // Park the build closure; the first real-viewport resize from
+            // libghostty will atomically claim and run it (see PTYHolder).
+            holder.setPendingStart(build)
+        } else {
+            holder.process = build(80, 24)
         }
     }
 
@@ -136,12 +239,12 @@ final class GhosttyEmulator: TerminalEmulatorView {
     }
 
     func sendInterrupt() {
-        pty?.interrupt()
+        ptyHolder.process?.interrupt()
     }
 
     func write(_ string: String) {
         guard let data = string.data(using: .utf8) else { return }
-        pty?.write(data)
+        ptyHolder.process?.write(data)
     }
 
     /// Route through libghostty's `paste_from_clipboard` action so the
@@ -241,8 +344,12 @@ final class GhosttyEmulator: TerminalEmulatorView {
     )
 
     func terminate() {
-        // The `pty = nil` cleanup is deferred to the exit closure — see spawn.
-        pty?.terminate()
+        // Drop a deferred-start that never fired so closing a tab before its
+        // viewport ever resolved doesn't leak a half-configured spawn.
+        ptyHolder.clearPendingStart()
+        // The `process = nil` cleanup is deferred to the exit closure —
+        // see spawn.
+        ptyHolder.process?.terminate()
     }
 
     /// Drive Metal rendering only when the tab is active; an inactive tab's

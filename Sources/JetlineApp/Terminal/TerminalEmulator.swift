@@ -63,7 +63,11 @@ extension TerminalEmulatorView {
 
 @MainActor
 enum TerminalEmulatorFactory {
-    static func make() -> TerminalEmulatorView {
-        GhosttyEmulator()
+    /// `deferStartUntilSized` should be true for agent tabs (which are
+    /// parked in the 1×1 incubator before SwiftUI mounts their real
+    /// container) so the child process forks with the actual tab cols/rows
+    /// instead of an 80×24 default that locks the agent's TUI layout.
+    static func make(deferStartUntilSized: Bool = false) -> TerminalEmulatorView {
+        GhosttyEmulator(deferStartUntilSized: deferStartUntilSized)
     }
 }
