@@ -129,7 +129,7 @@ enum AgentLauncher {
             executable: shell,
             args: ["-l", "-c", "command -v \(name)"],
             closeStdin: true,
-            timeout: 4
+            timeout: 8
         )
         guard result.success else { return nil }
         let trimmed = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)

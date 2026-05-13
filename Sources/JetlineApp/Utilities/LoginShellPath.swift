@@ -1,6 +1,6 @@
 import Foundation
 
-/// Resolves the user's login-shell PATH once at app launch and caches it.
+/// Resolves the user's PATH once at app launch and caches it.
 ///
 /// macOS apps launched from Launchpad/Finder inherit launchd's minimal PATH
 /// (`/usr/bin:/bin:/usr/sbin:/sbin`), which excludes Homebrew, asdf, mise,
@@ -9,10 +9,19 @@ import Foundation
 /// diverges between dev (`make run`) and production launches — git/gh/agent
 /// spawns "just work" in dev and fail with "command not found" in prod.
 ///
-/// We run `$SHELL -lc 'printf %s "$PATH"'` once at startup. The login shell
-/// sources the user's profile, so the resulting PATH matches what they'd
-/// see in their terminal. `Subprocess.run` overlays this PATH onto every
-/// spawn, making behaviour consistent regardless of how the app was launched.
+/// We run `$SHELL -lc <script>` once at startup. `-l` sources profile-style
+/// files (.zshenv/.zprofile/.bash_profile) where homebrew/asdf normally
+/// prepend PATH. The script then explicitly sources the rc file
+/// (.zshrc/.bashrc) with stdout+stderr redirected to /dev/null, since rc
+/// files are interactive-only and `-lc` doesn't read them. We can't just
+/// grep PATH lines out because users routinely depend on rc-file side
+/// effects to populate PATH — nvm.sh sourcing for the Node bin, helper
+/// var definitions like `$BUN_INSTALL` that PATH lines reference, version
+/// manager init blocks, etc. Sourcing the whole rc file catches all of
+/// that. The redirect keeps prompt/banner output (p10k instant prompt,
+/// compinit warnings) from polluting our PATH read. `Subprocess.run`
+/// overlays the resulting PATH onto every spawn so behaviour is
+/// consistent regardless of how the app was launched.
 enum LoginShellPath {
     /// Awaits resolution and returns the resulting PATH. Callers in async
     /// contexts (e.g. `Subprocess.run`) should use this for correctness —
@@ -52,9 +61,11 @@ enum LoginShellPath {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: shell)
-        // `-l` so profile/.zprofile runs (this is where homebrew/asdf prepend
-        // PATH); `-c` rather than `-i` so we don't hang on prompts reading stdin.
-        process.arguments = ["-l", "-c", "printf %s \"$PATH\""]
+        // `-l` runs profile files (.zprofile/.zshenv/.bash_profile); `-c`
+        // rather than `-i` so we don't hang on prompts reading stdin. Rc
+        // files (.zshrc/.bashrc) aren't sourced under `-lc` — see
+        // `pathProbeScript` for how we pull their PATH side-effects in.
+        process.arguments = ["-l", "-c", pathProbeScript(for: shell)]
         let outPipe = Pipe()
         process.standardOutput = outPipe
         process.standardError = FileHandle.nullDevice
@@ -92,11 +103,50 @@ enum LoginShellPath {
             // Hard cap so a slow profile (network calls, version-manager
             // bootstraps) can't stall every subprocess in the app. Matches
             // AgentLauncher.shellCommand's budget.
-            DispatchQueue.global().asyncAfter(deadline: .now() + 4) { [weak process] in
+            DispatchQueue.global().asyncAfter(deadline: .now() + 8) { [weak process] in
                 guard let process, process.isRunning else { return }
                 process.terminate()
                 gate.resume(cont, with: fallback)
             }
+        }
+    }
+
+    /// Shell snippet that prints `$PATH`. For zsh/bash, first sources
+    /// the rc file (.zshrc/.bashrc) with stdout+stderr redirected so
+    /// banners and prompt-init output don't pollute our PATH read.
+    ///
+    /// We source the *whole* rc file rather than grepping for `PATH=`
+    /// lines because rc-file PATH wiring is usually indirect: nvm.sh
+    /// sourcing puts the Node bin in PATH, helper var definitions
+    /// (`BUN_INSTALL=…`) get referenced by later `PATH=$BUN_INSTALL/bin:…`
+    /// lines, version-manager init blocks expand PATH via shell
+    /// functions, etc. The cost is the user's interactive startup —
+    /// compinit, prompt theme loading, plugin sourcing — which is well
+    /// under the 8s hard cap on a warm cache.
+    ///
+    /// If the rc file `exit`s or fails before printf, the outer process
+    /// terminates with empty stdout and the caller falls back to the
+    /// inherited snapshot.
+    private static func pathProbeScript(for shellPath: String) -> String {
+        let shellName = (shellPath as NSString).lastPathComponent
+        let printPath = "printf %s \"$PATH\""
+        switch shellName {
+        case "zsh":
+            return """
+            if [ -r "${ZDOTDIR:-$HOME}/.zshrc" ]; then
+              source "${ZDOTDIR:-$HOME}/.zshrc" >/dev/null 2>&1
+            fi
+            \(printPath)
+            """
+        case "bash":
+            return """
+            if [ -r "$HOME/.bashrc" ]; then
+              source "$HOME/.bashrc" >/dev/null 2>&1
+            fi
+            \(printPath)
+            """
+        default:
+            return printPath
         }
     }
 }
