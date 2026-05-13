@@ -559,6 +559,32 @@ final class AppState: ObservableObject {
         )
     }
 
+    /// Reattach an archived workspace (auto-archived on merge). Worktree
+    /// and local branch are still on disk because `archiveWorkspace` runs
+    /// with `removeWorktree: false` for the merge path. If the worktree
+    /// directory has been manually deleted, drop the stale row and return
+    /// `false` so the caller can fall back to a fresh import.
+    @discardableResult
+    func restoreArchivedWorkspace(_ workspace: Workspace) async -> Bool {
+        guard FileManager.default.fileExists(atPath: workspace.worktreePath) else {
+            try? Workspaces.delete(id: workspace.id)
+            return false
+        }
+        do {
+            try Workspaces.unarchive(id: workspace.id)
+        } catch {
+            await presentError(error.localizedDescription)
+            return false
+        }
+        var restored = workspace
+        restored.archivedAt = nil
+        restored.lastActiveAt = Date()
+        workspacesByRepo[workspace.repositoryId, default: []].insert(restored, at: 0)
+        prTracker.kick(repoId: workspace.repositoryId)
+        selectWorkspace(restored.id)
+        return true
+    }
+
     /// Compute the prefix prepended to a fresh workspace's branch name.
     ///
     /// The `branchPrefixMode` field is the source of truth when set:

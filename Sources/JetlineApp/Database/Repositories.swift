@@ -83,6 +83,16 @@ enum Workspaces {
         }
     }
 
+    static func archivedForRepository(_ repoId: String) throws -> [Workspace] {
+        try Database.shared.writer.read { db in
+            try Workspace
+                .filter(Workspace.Columns.repositoryId == repoId)
+                .filter(Workspace.Columns.archivedAt != nil)
+                .order(Workspace.Columns.lastActiveAt.desc)
+                .fetchAll(db)
+        }
+    }
+
     static func insert(_ ws: Workspace) throws {
         try Database.shared.writer.write { db in
             // Sit above the repo's current min so the fresh workspace lands
@@ -137,6 +147,29 @@ enum Workspaces {
             try Workspace
                 .filter(key: id)
                 .updateAll(db, Workspace.Columns.archivedAt.set(to: Date()))
+        }
+    }
+
+    /// Reverse of `archive(id:)` — clears `archivedAt` and bumps
+    /// `lastActiveAt` so the row sorts to the top of the active list when
+    /// reloaded.
+    static func unarchive(id: String) throws {
+        _ = try Database.shared.writer.write { db in
+            try Workspace
+                .filter(key: id)
+                .updateAll(
+                    db,
+                    Workspace.Columns.archivedAt.set(to: nil),
+                    Workspace.Columns.lastActiveAt.set(to: Date())
+                )
+        }
+    }
+
+    /// Hard delete. Used by the missing-worktree fallback in the restore
+    /// path to drop a stale archived row before a fresh import recreates it.
+    static func delete(id: String) throws {
+        _ = try Database.shared.writer.write { db in
+            try Workspace.deleteOne(db, key: id)
         }
     }
 
