@@ -736,10 +736,17 @@ private struct OpenInAppButton: View {
         Menu {
             ForEach(OpenInApp.allCases.filter(\.isInstalled), id: \.self) { app in
                 Button {
+                    // Resolve the worktree at click time — see the comment on
+                    // `NewSessionMenu` above. Dropdown items get bridged to
+                    // NSMenuItems whose action closures bind at first build,
+                    // so a captured `workspace.worktreePath` would open the
+                    // previous workspace's folder after a switch.
                     var s = state.settings
                     s.defaultOpenInApp = app
                     state.saveSettings(s)
-                    app.open(directory: workspace.worktreePath)
+                    guard let id = state.selectedWorkspaceId,
+                          let ws = state.workspaceById(id) else { return }
+                    app.open(directory: ws.worktreePath)
                 } label: {
                     if let icon = app.icon(size: 16) {
                         Label {

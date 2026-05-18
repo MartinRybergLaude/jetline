@@ -115,6 +115,16 @@ private struct GitActionMenuContent: View {
     }
 
     private func trigger(_ action: GitAction) {
+        // Resolve the workspace at click time rather than using the captured
+        // `self.workspace`. SwiftUI bridges `Menu { … }` content to NSMenuItems
+        // whose action targets are bound at first realization, so dropdown
+        // items keep firing the closure from the workspace that was selected
+        // when the menu was first built — routing e.g. a Review tab to the
+        // previous workspace after a switch. `primaryAction:` refreshes
+        // correctly, which is why only the dropdown items show the bug.
+        // Same pattern as `NewSessionMenu` in TerminalArea.swift.
+        guard let id = state.selectedWorkspaceId,
+              let ws = state.workspaceById(id) else { return }
         switch action {
         case .mergePR:
             pendingMerge = true
@@ -122,13 +132,13 @@ private struct GitActionMenuContent: View {
             // Fast path: try a clean `git rebase` first to avoid spinning up
             // an agent (and burning tokens) when there are no conflicts. The
             // agent flow takes over automatically on any failure.
-            Task { await state.performRebase(for: workspace) }
+            Task { await state.performRebase(for: ws) }
         case .pullUpdates:
             // Same fast-path treatment as rebase — the common no-conflict
             // case is just `git pull --rebase --autostash`.
-            Task { await state.performPull(for: workspace) }
+            Task { await state.performPull(for: ws) }
         default:
-            state.startGitActionSession(for: workspace, action: action)
+            state.startGitActionSession(for: ws, action: action)
         }
     }
 
