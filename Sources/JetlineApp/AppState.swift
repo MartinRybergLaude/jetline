@@ -26,6 +26,11 @@ final class AppState: ObservableObject {
     /// Active inspector tab. Lifted out of `InspectorView` so workspace
     /// creation can flip it to `.run` and surface live setup-script output.
     @Published var inspectorTab: InspectorTab = .changes
+    /// Repo whose settings sheet should be presented at the shell level.
+    /// Set by the File → Add Repository menu command (which has no view
+    /// of its own) so AppShell can host the sheet; sidebar / welcome do
+    /// the same locally without going through this.
+    @Published var repoPendingSettings: Repository?
 
     /// Per-workspace mutable state. Not `@Published` — views look up the
     /// `WorkspaceState` for their workspace and `WorkspaceState` is

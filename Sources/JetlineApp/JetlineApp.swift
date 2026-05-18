@@ -45,7 +45,15 @@ struct JetlineApp: App {
                 Divider()
 
                 Button("Add Repository…") {
-                    Task { await state.addRepository() }
+                    Task {
+                        if let repo = await state.addRepository() {
+                            // Match the sidebar / welcome flow: drop the
+                            // user straight into the new repo's settings
+                            // sheet. Routed through AppState because the
+                            // menu command has no view to host the sheet.
+                            state.repoPendingSettings = repo
+                        }
+                    }
                 }
                 .keyboardShortcut("o", modifiers: [.command])
             }

@@ -23,6 +23,9 @@ struct AppShell: View {
                 }
         }
         .background(WindowTabbingDisabler())
+        .sheet(item: $state.repoPendingSettings) { repo in
+            RepositorySettingsSheet(repository: repo)
+        }
         .task {
             await state.load()
             // Open the welcome flow on the first launch after install (or
