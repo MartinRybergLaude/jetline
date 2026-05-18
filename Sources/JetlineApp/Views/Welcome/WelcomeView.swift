@@ -3,6 +3,7 @@ import AppKit
 
 struct WelcomeView: View {
     @EnvironmentObject private var state: AppState
+    @State private var showingRepoSettings: Repository?
 
     var body: some View {
         VStack(spacing: 16) {
@@ -15,7 +16,15 @@ struct WelcomeView: View {
                  : "Pick a workspace, or create a new one.")
                 .foregroundStyle(.secondary)
             Button {
-                Task { await state.addRepository() }
+                Task {
+                    if let repo = await state.addRepository() {
+                        // Mirror the sidebar's add-repo button: drop the
+                        // user straight into the new repo's settings sheet
+                        // so they can wire setup/run scripts before the
+                        // first workspace is spawned.
+                        showingRepoSettings = repo
+                    }
+                }
             } label: {
                 Label("Add repository", systemImage: "plus")
             }
@@ -25,6 +34,9 @@ struct WelcomeView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
+        .sheet(item: $showingRepoSettings) { repo in
+            RepositorySettingsSheet(repository: repo)
+        }
     }
 }
 
