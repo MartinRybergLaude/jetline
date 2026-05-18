@@ -5,6 +5,7 @@ import AppKit
 /// inspector on the right (toggleable).
 struct AppShell: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.openWindow) private var openWindow
 
     init() {
         MenuFirstShortcutMonitor.install()
@@ -22,7 +23,16 @@ struct AppShell: View {
                 }
         }
         .background(WindowTabbingDisabler())
-        .task { await state.load() }
+        .task {
+            await state.load()
+            // Open the welcome flow on the first launch after install (or
+            // after the user clears the flag via the Debug menu). The
+            // OnboardingView itself flips the flag the first time it
+            // appears so a subsequent relaunch stays quiet.
+            if !state.settings.hasCompletedOnboarding {
+                openWindow(id: "onboarding")
+            }
+        }
     }
 
     /// Inspector hides when nothing is selected (mirrors the previous logic),

@@ -26,6 +26,11 @@ struct AppSettings: Codable, FetchableRecord, PersistableRecord {
     /// Agent that runs the "Review" action. `nil` → use `defaultAgent`.
     var reviewAgent: Workspace.AgentKind?
 
+    /// Flips to `true` once the first-launch onboarding window has been
+    /// shown so it doesn't auto-open on every relaunch. Debug menu has
+    /// an item to clear it for redisplay.
+    var hasCompletedOnboarding: Bool = false
+
     /// User overrides for the prompt sent to the agent for each action.
     /// Empty/nil falls back to `GitActionPrompts.defaults`.
     var commitPrompt: String?

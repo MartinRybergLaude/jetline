@@ -79,6 +79,16 @@ struct JetlineApp: App {
         }
         .defaultSize(width: 720, height: 500)
 
+        Window("Welcome to Jetline", id: "onboarding") {
+            OnboardingView()
+                .environmentObject(state)
+                .preferredColorScheme(colorScheme(for: state.settings.theme))
+        }
+        .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
+        .commandsRemoved()
+
         Settings {
             SettingsView()
                 .environmentObject(state)
@@ -111,6 +121,10 @@ private struct DebugCommands: Commands {
                 openWindow(id: "activity-log")
             }
             .keyboardShortcut("a", modifiers: [.command, .option, .shift])
+
+            Button("Show Welcome") {
+                openWindow(id: "onboarding")
+            }
         }
     }
 }

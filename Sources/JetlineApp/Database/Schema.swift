@@ -161,5 +161,12 @@ enum Schema {
                 )
             }
         }
+
+        migrator.registerMigration("v13_onboarding") { db in
+            try db.alter(table: "app_settings") { t in
+                t.add(column: "hasCompletedOnboarding", .boolean)
+                    .notNull().defaults(to: false)
+            }
+        }
     }
 }
