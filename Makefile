@@ -115,6 +115,26 @@ notarize: dmg
 release: notarize
 	@echo "Release ready: $(DIST_DIR)/$(DMG_NAME)"
 
+# Cut a new release: bump CFBundleShortVersionString, commit only the
+# Info.plist change, tag vX.Y.Z, push branch + tag. CI handles the actual
+# build/sign/notarize/publish. Default kind is patch.
+.PHONY: ship ship-patch ship-minor ship-major
+
+ship: ship-patch
+
+ship-patch: KIND=patch
+ship-minor: KIND=minor
+ship-major: KIND=major
+
+ship-patch ship-minor ship-major:
+	@./scripts/bump-version.sh $(KIND)
+	@NEW=$$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" BundleResources/Info.plist); \
+		git add BundleResources/Info.plist && \
+		git commit -m "Release $$NEW" && \
+		git tag "v$$NEW" && \
+		git push origin HEAD "v$$NEW" && \
+		echo "Pushed v$$NEW — CI: https://github.com/MartinRybergLaude/jetline/actions"
+
 # -------------------------------------------------------------------------
 
 clean:
