@@ -82,7 +82,7 @@ private struct ShimmerText: View {
 /// `AgentMark` does.
 private struct JetMark: View {
     private static let image: NSImage? = {
-        Bundle.module.url(forResource: "JetMark", withExtension: "png")
+        Bundle.jetlineResources.url(forResource: "JetMark", withExtension: "png")
             .flatMap(NSImage.init(contentsOf:))
     }()
 

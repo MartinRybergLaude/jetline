@@ -5,6 +5,7 @@ import AppKit
 struct JetlineApp: App {
     @NSApplicationDelegateAdaptor(JetlineAppDelegate.self) private var appDelegate
     @StateObject private var state = AppState()
+    @StateObject private var updater = UpdaterViewModel()
 
     init() {
         // Resolve the user's login-shell PATH eagerly. Launchpad-launched
@@ -24,6 +25,9 @@ struct JetlineApp: App {
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified(showsTitle: true))
         .commands {
+            CommandGroup(after: .appInfo) {
+                CheckForUpdatesMenuItem(vm: updater)
+            }
             CommandGroup(replacing: .newItem) {
                 Button("New Tab") {
                     if let ws = activeWorkspace() {

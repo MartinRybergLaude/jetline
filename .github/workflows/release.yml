@@ -1,0 +1,125 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # macos-15 currently ships Xcode 16. Bump to macos-latest / macos-26
+    # once GitHub provides a runner with Xcode 26 (required for the macOS 26
+    # SDK Jetline links against).
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    env:
+      DEVELOPER_ID: "Developer ID Application: MARTIN JOHANNES RYBERG LAUDE (${{ secrets.APPLE_TEAM_ID }})"
+      NOTARY_PROFILE: jetline-notary
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # generate-appcast / CFBundleVersion need full history
+
+      - name: Select Xcode 26
+        run: |
+          if [ -d /Applications/Xcode_26.app ]; then
+            sudo xcode-select -s /Applications/Xcode_26.app
+          else
+            echo "Xcode 26 not present on this runner — using default. This may fail to build against the macOS 26 SDK."
+            xcodebuild -version
+          fi
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Import Developer ID certificate
+        env:
+          P12_BASE64:        ${{ secrets.MAC_DEV_ID_CERT_P12_BASE64 }}
+          P12_PASSWORD:      ${{ secrets.MAC_DEV_ID_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          KC=build.keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KC"
+
+          echo "$P12_BASE64" | base64 -d > /tmp/cert.p12
+          security import /tmp/cert.p12 -k "$KC" -P "$P12_PASSWORD" \
+              -T /usr/bin/codesign -T /usr/bin/security
+          rm /tmp/cert.p12
+
+          security list-keychains -d user -s "$KC" login.keychain
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+              -s -k "$KEYCHAIN_PASSWORD" "$KC"
+
+      - name: Store notarytool credentials
+        env:
+          APPLE_ID:               ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID:          ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PWD: ${{ secrets.APPLE_APP_SPECIFIC_PWD }}
+        run: |
+          xcrun notarytool store-credentials "$NOTARY_PROFILE" \
+              --apple-id "$APPLE_ID" \
+              --team-id "$APPLE_TEAM_ID" \
+              --password "$APPLE_APP_SPECIFIC_PWD"
+
+      - name: Resolve SPM dependencies
+        run: make resolve
+
+      - name: Seed Sparkle EdDSA private key into keychain
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+          KEYCHAIN_PASSWORD:      ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          # generate_appcast looks up the key at:
+          #   service = "https://sparkle-project.org"
+          #   account = "ed25519"
+          # -T "" so no ACL prompts in headless CI.
+          security add-generic-password \
+              -s "https://sparkle-project.org" \
+              -a "ed25519" \
+              -w "$SPARKLE_ED_PRIVATE_KEY" \
+              -T "" build.keychain
+
+      - name: Derive version from tag, bump Info.plist
+        id: ver
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          BUILD=$(git rev-list --count HEAD)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD"     >> "$GITHUB_OUTPUT"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" BundleResources/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD"               BundleResources/Info.plist
+
+      - name: Build, sign, DMG, notarize, staple
+        run: make release
+
+      - name: Generate appcast
+        run: |
+          mkdir -p releases
+          cp "dist/Jetline-${{ steps.ver.outputs.version }}.dmg" releases/
+          ./scripts/generate-appcast.sh ./releases
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ steps.ver.outputs.version }}" \
+              "dist/Jetline-${{ steps.ver.outputs.version }}.dmg" \
+              --title "Jetline ${{ steps.ver.outputs.version }}" \
+              --generate-notes
+
+      - name: Publish appcast to gh-pages
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/publish-appcast.sh
+
+      - name: Cleanup keychain
+        if: always()
+        run: security delete-keychain build.keychain || true

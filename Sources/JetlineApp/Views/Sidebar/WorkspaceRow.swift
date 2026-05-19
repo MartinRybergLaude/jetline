@@ -155,7 +155,7 @@ struct PRStatusIcon: View {
         ]
         var map: [Kind: NSImage] = [:]
         for (kind, name) in names {
-            if let url = Bundle.module.url(forResource: name, withExtension: "png"),
+            if let url = Bundle.jetlineResources.url(forResource: name, withExtension: "png"),
                let img = NSImage(contentsOf: url) {
                 img.isTemplate = true
                 map[kind] = img

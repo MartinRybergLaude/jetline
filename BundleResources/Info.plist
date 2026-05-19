@@ -32,5 +32,15 @@
     <string>NSApplication</string>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
+    <key>SUFeedURL</key>
+    <string>https://martinryberglaude.github.io/jetline/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>A1XRWsMaJBvn9i46xvOYaRhdmk/X6PTCqMXhlYlbkxg=</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
+    <key>SUAutomaticallyUpdate</key>
+    <false/>
 </dict>
 </plist>

@@ -3,6 +3,10 @@
 # `swift build` produces a plain mach-o executable. macOS apps need a
 # `.app` bundle (Info.plist, dock icon, menu bar). This Makefile wraps
 # `swift build` and assembles a minimal bundle in `dist/`.
+#
+# Two flows:
+#   make app       — dev build, ad-hoc signed, fast iteration
+#   make release   — Developer ID signed + notarized + stapled + DMG
 
 CONFIG ?= debug
 BIN_NAME = jetline
@@ -18,7 +22,14 @@ APP_BUNDLE = $(DIST_DIR)/$(APP_NAME)
 # Bypass the user's global config for SPM by pointing it at a sentinel.
 SWIFT = GIT_CONFIG_GLOBAL=/dev/null swift
 
-.PHONY: all build app run release clean test resolve
+# Release configuration. Override via env in CI.
+DEVELOPER_ID   ?= Developer ID Application: MARTIN JOHANNES RYBERG LAUDE (X67GNG6U35)
+NOTARY_PROFILE ?= jetline-notary
+ENTITLEMENTS   := BundleResources/Jetline.entitlements
+VERSION         = $(shell /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" BundleResources/Info.plist)
+DMG_NAME        = Jetline-$(VERSION).dmg
+
+.PHONY: all build app run release-app sign dmg notarize release clean test resolve
 
 all: app
 
@@ -45,17 +56,37 @@ app: build
 		--platform macosx --target-device mac \
 		--minimum-deployment-target 26.0 \
 		--skip-app-store-deployment >/dev/null
-	@# Copy SPM-generated resource bundles. SwiftPM names them `<Package>_<Target>.bundle`
-	@# and the auto-generated `Bundle.module` accessor for executable targets resolves
-	@# them at `Bundle.main.bundleURL/<Pkg>_<Tgt>.bundle` — which on a `.app` means the
-	@# top of the bundle (sibling of `Contents/`), NOT `Contents/Resources/`. Place the
-	@# bundle there so `Image("…", bundle: .module)` actually finds the assets.
+	@# Copy SPM-generated resource bundles. SwiftPM's auto-generated
+	@# `Bundle.module` accessor expects them at `Bundle.main.bundleURL/<Pkg>_<Tgt>.bundle`
+	@# (the .app root, sibling of `Contents/`) — but that layout makes codesign
+	@# reject the app with "unsealed contents in the bundle root". We place
+	@# them under `Contents/Resources/` instead, and our code reads them via
+	@# `Bundle.jetlineResources` (see Utilities/AppResources.swift). `Bundle.module`
+	@# itself is never accessed.
 	@for b in $(BUILD_DIR)/*_*.bundle; do \
-		[ -d "$$b" ] && cp -R "$$b" "$(APP_BUNDLE)/"; \
+		[ -d "$$b" ] && cp -R "$$b" "$(APP_BUNDLE)/Contents/Resources/"; \
 	done
 	@printf "APPL????" > "$(APP_BUNDLE)/Contents/PkgInfo"
-	@# Ad-hoc sign so Gatekeeper doesn't kill it on first launch.
-	@codesign --force --deep --sign - "$(APP_BUNDLE)" 2>/dev/null || true
+	@# Embed Sparkle.framework. SPM links against the dylib but doesn't copy
+	@# the xcframework into the bundle for executable products — we have to.
+	@# Drop Downloader.xpc (only needed by sandboxed apps; we download directly).
+	@FW=$$(find .build/artifacts -type d -name "Sparkle.framework" -path "*macos*" | head -1); \
+	if [ -z "$$FW" ]; then echo "Sparkle.framework not found — run 'swift package resolve'"; exit 1; fi; \
+	mkdir -p "$(APP_BUNDLE)/Contents/Frameworks"; \
+	rm -rf "$(APP_BUNDLE)/Contents/Frameworks/Sparkle.framework"; \
+	cp -R "$$FW" "$(APP_BUNDLE)/Contents/Frameworks/Sparkle.framework"; \
+	rm -rf "$(APP_BUNDLE)/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Downloader.xpc"; \
+	xattr -cr "$(APP_BUNDLE)/Contents/Frameworks/Sparkle.framework"
+	@# Ensure the binary can find embedded frameworks via @executable_path.
+	@# Idempotent: skip if the rpath is already present.
+	@otool -l "$(APP_BUNDLE)/Contents/MacOS/$(BIN_NAME)" | grep -q "path @executable_path/../Frameworks" \
+		|| install_name_tool -add_rpath "@executable_path/../Frameworks" "$(APP_BUNDLE)/Contents/MacOS/$(BIN_NAME)"
+	@# Ad-hoc re-sign the whole bundle. `install_name_tool` invalidated the
+	@# toolchain's signature on the main binary; this re-seals everything.
+	@# `--deep` is safe here because dev builds don't care about Sparkle's
+	@# XPC service entitlements — for release, scripts/sign.sh signs each
+	@# nested piece without `--deep`.
+	@codesign --force --deep --sign - "$(APP_BUNDLE)"
 	@echo "Built $(APP_BUNDLE)"
 
 run: app
@@ -65,8 +96,26 @@ run: app
 	@sleep 0.2
 	open "$(APP_BUNDLE)"
 
-release:
+# --- Release pipeline ----------------------------------------------------
+
+release-app:
 	$(MAKE) app CONFIG=release
+
+sign: release-app
+	./scripts/sign.sh "$(APP_BUNDLE)" "$(DEVELOPER_ID)" "$(ENTITLEMENTS)"
+
+dmg: sign
+	./scripts/build-dmg.sh "$(APP_BUNDLE)" "$(DIST_DIR)/$(DMG_NAME)" "$(DEVELOPER_ID)"
+
+notarize: dmg
+	xcrun notarytool submit "$(DIST_DIR)/$(DMG_NAME)" --keychain-profile "$(NOTARY_PROFILE)" --wait
+	xcrun stapler staple "$(APP_BUNDLE)"
+	xcrun stapler staple "$(DIST_DIR)/$(DMG_NAME)"
+
+release: notarize
+	@echo "Release ready: $(DIST_DIR)/$(DMG_NAME)"
+
+# -------------------------------------------------------------------------
 
 clean:
 	rm -rf .build dist

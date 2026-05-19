@@ -11,14 +11,16 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
-        .package(url: "https://github.com/Lakr233/libghostty-spm.git", from: "1.0.1773686495")
+        .package(url: "https://github.com/Lakr233/libghostty-spm.git", from: "1.0.1773686495"),
+        .package(url: "https://github.com/sparkle-project/Sparkle.git", from: "2.6.4")
     ],
     targets: [
         .executableTarget(
             name: "JetlineApp",
             dependencies: [
                 .product(name: "GRDB", package: "GRDB.swift"),
-                .product(name: "GhosttyTerminal", package: "libghostty-spm")
+                .product(name: "GhosttyTerminal", package: "libghostty-spm"),
+                .product(name: "Sparkle", package: "Sparkle")
             ],
             path: "Sources/JetlineApp",
             resources: [.process("Resources")]

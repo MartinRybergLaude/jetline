@@ -679,7 +679,7 @@ struct AgentMark: View {
             .vibe: "MistralVibeMark"
         ]
         for (kind, name) in assetNames {
-            if let url = Bundle.module.url(forResource: name, withExtension: "png"),
+            if let url = Bundle.jetlineResources.url(forResource: name, withExtension: "png"),
                let img = NSImage(contentsOf: url) {
                 map[kind] = img
             }

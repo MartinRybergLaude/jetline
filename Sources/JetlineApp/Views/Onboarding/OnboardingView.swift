@@ -370,12 +370,12 @@ private struct BackgroundLayer: View {
     }
 }
 
-/// Mirrors `WelcomeView`'s logo loader — `Bundle.module` is the loose-files
-/// resource bundle, not an asset catalog, so `Image(_:bundle:)` won't
-/// resolve it.
+/// Mirrors `WelcomeView`'s logo loader — `Bundle.jetlineResources` is the
+/// loose-files resource bundle, not an asset catalog, so `Image(_:bundle:)`
+/// won't resolve it.
 private struct JetMark: View {
     private static let image: NSImage? = {
-        Bundle.module.url(forResource: "JetMark", withExtension: "png")
+        Bundle.jetlineResources.url(forResource: "JetMark", withExtension: "png")
             .flatMap(NSImage.init(contentsOf:))
     }()
 

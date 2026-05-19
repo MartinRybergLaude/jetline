@@ -74,7 +74,7 @@ struct InspectorView: View {
         let names = ["PRStateNone"]
         var map: [String: NSImage] = [:]
         for name in names {
-            if let url = Bundle.module.url(forResource: name, withExtension: "png"),
+            if let url = Bundle.jetlineResources.url(forResource: name, withExtension: "png"),
                let img = NSImage(contentsOf: url) {
                 img.isTemplate = true
                 map[name] = img
