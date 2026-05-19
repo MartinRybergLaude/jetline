@@ -10,10 +10,9 @@ permissions:
 
 jobs:
   release:
-    # macos-15 currently ships Xcode 16. Bump to macos-latest / macos-26
-    # once GitHub provides a runner with Xcode 26 (required for the macOS 26
-    # SDK Jetline links against).
-    runs-on: macos-15
+    # macos-26 ships Xcode 26.x by default (required by Package.swift's
+    # `// swift-tools-version:6.2` and Jetline's macOS 26 SDK link).
+    runs-on: macos-26
     timeout-minutes: 60
 
     env:
@@ -26,14 +25,8 @@ jobs:
         with:
           fetch-depth: 0  # generate-appcast / CFBundleVersion need full history
 
-      - name: Select Xcode 26
-        run: |
-          if [ -d /Applications/Xcode_26.app ]; then
-            sudo xcode-select -s /Applications/Xcode_26.app
-          else
-            echo "Xcode 26 not present on this runner — using default. This may fail to build against the macOS 26 SDK."
-            xcodebuild -version
-          fi
+      - name: Show Xcode version
+        run: xcodebuild -version
 
       - name: Install create-dmg
         run: brew install create-dmg
