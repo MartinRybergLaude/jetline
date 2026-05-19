@@ -65,24 +65,6 @@ jobs:
       - name: Resolve SPM dependencies
         run: make resolve
 
-      - name: Seed Sparkle EdDSA private key into keychain
-        env:
-          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
-          KEYCHAIN_PASSWORD:      ${{ secrets.KEYCHAIN_PASSWORD }}
-        run: |
-          # generate_appcast looks up the key at:
-          #   service = "https://sparkle-project.org"
-          #   account = "ed25519"
-          # `-A` removes ACL restrictions so generate_appcast can read the
-          # item without triggering a GUI keychain unlock prompt that
-          # would never get answered in headless CI.
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security add-generic-password \
-              -s "https://sparkle-project.org" \
-              -a "ed25519" \
-              -w "$SPARKLE_ED_PRIVATE_KEY" \
-              -A build.keychain
-
       - name: Derive version from tag, bump Info.plist
         id: ver
         run: |
@@ -97,6 +79,8 @@ jobs:
         run: make release
 
       - name: Generate appcast
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
         run: |
           mkdir -p releases
           cp "dist/Jetline-${{ steps.ver.outputs.version }}.dmg" releases/
