@@ -11,6 +11,11 @@ xcuserdata/
 dist/
 *.app
 
+# Release artefacts (generated locally by scripts/generate-appcast.sh;
+# the canonical copy lives on the gh-pages branch).
+appcast.xml
+releases/
+
 # macOS
 .DS_Store
 
