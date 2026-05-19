@@ -24,10 +24,11 @@ fi
 DOWNLOAD_PREFIX="https://github.com/MartinRybergLaude/jetline/releases/download/v$VERSION/"
 
 if [ -n "${SPARKLE_ED_PRIVATE_KEY:-}" ]; then
-    # Strip any whitespace the secret may have picked up when stored
-    # (trailing newlines from copy-paste are common). Local shell
-    # substitution strips trailing newlines; GitHub Secrets do not.
-    printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | tr -d ' \t\n\r' | "$GEN" \
+    # Strip whitespace the secret may have picked up when stored.
+    TRIMMED=$(printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | tr -d ' \t\n\r')
+    echo "Sparkle key length: $(printf '%s' "$TRIMMED" | wc -c | tr -d ' ') (expected 44)"
+    echo "Sparkle key sha256: $(printf '%s' "$TRIMMED" | shasum -a 256 | cut -d' ' -f1)"
+    printf '%s' "$TRIMMED" | "$GEN" \
         --ed-key-file - \
         --download-url-prefix "$DOWNLOAD_PREFIX" \
         "$RELEASES_DIR"
