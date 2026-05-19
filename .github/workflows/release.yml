@@ -73,12 +73,15 @@ jobs:
           # generate_appcast looks up the key at:
           #   service = "https://sparkle-project.org"
           #   account = "ed25519"
-          # -T "" so no ACL prompts in headless CI.
+          # `-A` removes ACL restrictions so generate_appcast can read the
+          # item without triggering a GUI keychain unlock prompt that
+          # would never get answered in headless CI.
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
           security add-generic-password \
               -s "https://sparkle-project.org" \
               -a "ed25519" \
               -w "$SPARKLE_ED_PRIVATE_KEY" \
-              -T "" build.keychain
+              -A build.keychain
 
       - name: Derive version from tag, bump Info.plist
         id: ver
