@@ -232,18 +232,18 @@ private struct ChecksSection: View {
 /// Filled yellow dot that fades in and out — visual match for the
 /// "in-progress" check state. Matches the sizing of the other SF Symbol
 /// check icons by reusing `circle.fill` instead of a raw Circle shape.
+///
+/// `symbolEffect` rather than an `.animation` modifier with
+/// `repeatForever`: the latter keeps an implicit animation transaction
+/// open continuously, which causes incidental layout changes (rows
+/// reordering when GitHub returns checks in a different order between
+/// polls) to interpolate smoothly — so running dots visibly drift up
+/// and down on each poll.
 private struct PulsingCheckIcon: View {
-    @State private var pulse = false
-
     var body: some View {
         Image(systemName: "circle.fill")
             .foregroundStyle(.yellow)
-            .opacity(pulse ? 0.35 : 1.0)
-            .animation(
-                .easeInOut(duration: 0.7).repeatForever(autoreverses: true),
-                value: pulse
-            )
-            .onAppear { pulse = true }
+            .symbolEffect(.pulse, options: .repeating)
     }
 }
 
