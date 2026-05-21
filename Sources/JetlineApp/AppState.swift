@@ -333,7 +333,7 @@ final class AppState: ObservableObject {
         detachWorkspace(workspace.id)
 
         let repo = repositories.first(where: { $0.id == workspace.repositoryId })
-        if removeWorktree, let repo {
+        if let repo {
             if let archive = repo.trimmedArchiveScript {
                 _ = await ScriptRunner.run(
                     archive,
@@ -341,12 +341,14 @@ final class AppState: ObservableObject {
                     env: ScriptRunner.defaultEnv(repoPath: repo.path)
                 )
             }
-            try? await WorktreeOps.remove(
-                repoPath: repo.path,
-                worktreePath: workspace.worktreePath,
-                branchName: workspace.branchName,
-                force: true
-            )
+            if removeWorktree {
+                try? await WorktreeOps.remove(
+                    repoPath: repo.path,
+                    worktreePath: workspace.worktreePath,
+                    branchName: workspace.branchName,
+                    force: true
+                )
+            }
         }
         try? Workspaces.archive(id: workspace.id)
         try? PRSnapshots.remove(workspaceId: workspace.id)
