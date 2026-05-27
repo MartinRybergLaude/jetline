@@ -92,7 +92,7 @@ struct JetlineApp: App {
                 Button("Toggle Inspector") {
                     state.inspectorVisible.toggle()
                 }
-                .keyboardShortcut("i", modifiers: [.command, .option])
+                .keyboardShortcut("i", modifiers: [.command, .shift])
             }
             DebugCommands()
         }
