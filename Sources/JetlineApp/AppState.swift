@@ -793,6 +793,22 @@ final class AppState: ObservableObject {
         selectSession(ws.sessions[next].id, in: wsId)
     }
 
+    /// Cycle to the next or previous workspace in sidebar visual order
+    /// (iterates `repositories` in order, then each repo's workspaces).
+    /// Wraps. If nothing is selected, picks the first/last so the chord
+    /// always does something.
+    func cycleWorkspace(forward: Bool) {
+        let flat = repositories.flatMap { workspacesByRepo[$0.id] ?? [] }
+        guard !flat.isEmpty else { return }
+        guard let currentId = selectedWorkspaceId,
+              let idx = flat.firstIndex(where: { $0.id == currentId }) else {
+            selectWorkspace((forward ? flat.first! : flat.last!).id)
+            return
+        }
+        let next = (idx + (forward ? 1 : -1) + flat.count) % flat.count
+        selectWorkspace(flat[next].id)
+    }
+
     // MARK: - Diff & watcher
 
     func refreshDiff(for workspace: Workspace) async {

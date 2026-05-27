@@ -75,6 +75,18 @@ struct JetlineApp: App {
                     Button("Show Tab \(n)") { state.selectSessionByIndex(n) }
                         .keyboardShortcut(KeyEquivalent(Character("\(n)")), modifiers: [.command])
                 }
+
+                Divider()
+
+                Button("Next Tab (Arrow)") { state.cycleSession(forward: true) }
+                    .keyboardShortcut(.rightArrow, modifiers: [.command, .shift])
+                Button("Previous Tab (Arrow)") { state.cycleSession(forward: false) }
+                    .keyboardShortcut(.leftArrow, modifiers: [.command, .shift])
+
+                Button("Next Workspace") { state.cycleWorkspace(forward: true) }
+                    .keyboardShortcut(.downArrow, modifiers: [.command, .shift])
+                Button("Previous Workspace") { state.cycleWorkspace(forward: false) }
+                    .keyboardShortcut(.upArrow, modifiers: [.command, .shift])
             }
             CommandGroup(after: .toolbar) {
                 Button("Toggle Inspector") {
