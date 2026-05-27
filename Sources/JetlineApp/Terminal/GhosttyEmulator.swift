@@ -90,7 +90,18 @@ final class GhosttyEmulator: TerminalEmulatorView {
             cwd: cwd,
             env: environment,
             output: { data in
-                session.receive(data)
+                // Hop to main before handing bytes to libghostty.
+                // `InMemoryTerminalSession.receive` holds an NSLock across
+                // `ghostty_surface_write_buffer`, which can take long enough on
+                // a burst that a concurrent main-thread `dispatchResize` (fired
+                // from an AppKit layout pass) wedges the watchdog. Running
+                // receive on main serializes parse vs. resize on the same
+                // thread, eliminating the contention. Tradeoff: heavy bursts
+                // now share the main runloop. See PTYProcess.swift for the
+                // drain source.
+                DispatchQueue.main.async {
+                    session.receive(data)
+                }
                 outputTap?(data)
             },
             exit: { [weak self] exitCode in
