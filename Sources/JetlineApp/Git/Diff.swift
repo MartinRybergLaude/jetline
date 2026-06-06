@@ -422,7 +422,7 @@ enum PatchParser {
         var currentHunk: FileDiff.Hunk?
 
         func flushHunk() {
-            if var h = currentHunk, var f = currentFile {
+            if let h = currentHunk, var f = currentFile {
                 f.hunks.append(h)
                 currentFile = f
                 currentHunk = nil
