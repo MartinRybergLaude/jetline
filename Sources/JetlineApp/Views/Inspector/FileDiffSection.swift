@@ -2,35 +2,84 @@ import SwiftUI
 
 struct FileDiffSection: View {
     let file: FileDiff
+    /// Position of the enclosing scroll view; written on collapse to
+    /// re-anchor in the same transaction as the layout change.
+    @Binding var scrollPosition: ScrollPosition
+    /// Live contentOffset.y of the enclosing scroll view (see InspectorView).
+    let scrollOffset: MutableBox<CGFloat>
     @State private var expanded: Bool = false
+    /// Frame of the expanded hunk content in scroll-view viewport
+    /// coordinates, updated every scroll frame. Deliberately a non-observed
+    /// reference box: it's only read at collapse-tap time, and writing it
+    /// from a geometry callback must not invalidate the view — observable
+    /// state here creates a layout feedback loop with the pinned header
+    /// that pegs the CPU.
+    @State private var contentFrame = MutableBox<CGRect>(.zero)
 
+    /// Row spacing of the enclosing LazyVStack. When the content row
+    /// collapses, one row gap disappears with it, so the re-anchor math
+    /// needs this value.
+    static let rowSpacing: CGFloat = 8
+
+    // A Section with a pinned header (the enclosing LazyVStack passes
+    // `.sectionHeaders`): the file row sticks to the top of the scroll view
+    // while its hunks scroll by, so a long file can be collapsed without
+    // scrolling back up. The header gets an opaque background so pinned
+    // content doesn't bleed through.
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            header
+        Section {
             if expanded {
-                if file.isBinary {
-                    Text("Binary file — not shown")
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 4)
-                } else {
-                    // Hunk header (`@@ -a,b +c,d @@`) is unique within a
-                    // file's hunks for non-pathological diffs; using it as
-                    // the id keeps SwiftUI's diff stable when surrounding
-                    // file content shifts.
-                    ForEach(file.hunks, id: \.header) { hunk in
-                        HunkView(hunk: hunk)
-                    }
+                content
+                    .onGeometryChange(for: CGRect.self) { geo in
+                        geo.frame(in: .scrollView)
+                    } action: { contentFrame.value = $0 }
+            }
+        } header: {
+            // NOTE: never attach geometry observation to this header — its
+            // frame is rewritten by the pin adjustment during lazy layout
+            // placement, so observing it re-enters layout in an infinite
+            // loop (96% CPU hang). Measure the section content instead.
+            header
+                .padding(.vertical, 4)
+                .background(Color(nsColor: .windowBackgroundColor))
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if file.isBinary {
+            Text("Binary file — not shown")
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                // Hunk header (`@@ -a,b +c,d @@`) is unique within a
+                // file's hunks for non-pathological diffs; using it as
+                // the id keeps SwiftUI's diff stable when surrounding
+                // file content shifts.
+                ForEach(file.hunks, id: \.header) { hunk in
+                    HunkView(hunk: hunk)
                 }
             }
         }
-        .padding(.vertical, 4)
     }
 
     private var header: some View {
         Button {
-            withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+            if expanded && contentFrame.value.minY < 0 {
+                // Part of this file's content is scrolled above the viewport,
+                // so collapsing would yank everything below it upward by the
+                // removed height. Shift the scroll offset by that same amount
+                // in the same transaction, keeping the next file exactly
+                // where it is on screen.
+                expanded = false
+                let removed = contentFrame.value.height + Self.rowSpacing
+                scrollPosition.scrollTo(y: max(0, scrollOffset.value - removed))
+            } else {
+                withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+            }
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: expanded ? "chevron.down" : "chevron.right")
@@ -71,6 +120,13 @@ struct FileDiffSection: View {
         case .unknown: return .secondary
         }
     }
+}
+
+/// Reference holder for layout-derived values that are read imperatively
+/// (e.g. at tap time) and must not trigger view updates when written.
+final class MutableBox<T> {
+    var value: T
+    init(_ value: T) { self.value = value }
 }
 
 struct HunkView: View {

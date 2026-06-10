@@ -3,6 +3,8 @@ import SwiftUI
 struct ChangesPanel: View {
     @EnvironmentObject private var state: AppState
     let mode: DiffMode
+    @Binding var scrollPosition: ScrollPosition
+    let scrollOffset: MutableBox<CGFloat>
 
     var body: some View {
         if let id = state.selectedWorkspaceId,
@@ -10,7 +12,9 @@ struct ChangesPanel: View {
             ChangesPanelContent(
                 workspace: ws,
                 workspaceState: state.workspaceState(for: ws.id),
-                mode: mode
+                mode: mode,
+                scrollPosition: $scrollPosition,
+                scrollOffset: scrollOffset
             )
         } else {
             EmptyView()
@@ -22,6 +26,8 @@ private struct ChangesPanelContent: View {
     let workspace: Workspace
     let workspaceState: WorkspaceState
     let mode: DiffMode
+    @Binding var scrollPosition: ScrollPosition
+    let scrollOffset: MutableBox<CGFloat>
 
     var body: some View {
         let snap = snapshot
@@ -31,10 +37,16 @@ private struct ChangesPanelContent: View {
                 title: emptyTitle
             )
         } else {
-            LazyVStack(alignment: .leading, spacing: 8) {
+            LazyVStack(alignment: .leading,
+                       spacing: FileDiffSection.rowSpacing,
+                       pinnedViews: .sectionHeaders) {
                 summaryHeader(snap: snap)
                 ForEach(snap.files) { file in
-                    FileDiffSection(file: file)
+                    FileDiffSection(
+                        file: file,
+                        scrollPosition: $scrollPosition,
+                        scrollOffset: scrollOffset
+                    )
                 }
             }
             .padding(.horizontal, 12)
