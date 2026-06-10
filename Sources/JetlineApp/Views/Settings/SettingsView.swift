@@ -154,6 +154,13 @@ private struct TerminalSettingsView: View {
                     .frame(width: 36, alignment: .trailing)
                     .font(.system(.caption, design: .monospaced))
             }
+            HStack {
+                Text("Horizontal padding")
+                Slider(value: bindingPaddingX, in: 0...40, step: 1)
+                Text("\(state.settings.terminalPaddingX)pt")
+                    .frame(width: 36, alignment: .trailing)
+                    .font(.system(.caption, design: .monospaced))
+            }
         }
         .formStyle(.grouped)
     }
@@ -175,6 +182,17 @@ private struct TerminalSettingsView: View {
             set: { newValue in
                 var s = state.settings
                 s.terminalFontSize = newValue
+                state.saveSettings(s)
+            }
+        )
+    }
+
+    private var bindingPaddingX: Binding<Double> {
+        Binding(
+            get: { Double(state.settings.terminalPaddingX) },
+            set: { newValue in
+                var s = state.settings
+                s.terminalPaddingX = Int(newValue.rounded())
                 state.saveSettings(s)
             }
         )

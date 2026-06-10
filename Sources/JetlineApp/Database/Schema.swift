@@ -168,5 +168,11 @@ enum Schema {
                     .notNull().defaults(to: false)
             }
         }
+
+        migrator.registerMigration("v14_terminal_padding") { db in
+            try db.alter(table: "app_settings") { t in
+                t.add(column: "terminalPaddingX", .integer).notNull().defaults(to: 2)
+            }
+        }
     }
 }

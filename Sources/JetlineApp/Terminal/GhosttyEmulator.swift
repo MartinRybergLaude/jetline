@@ -184,6 +184,16 @@ final class GhosttyEmulator: TerminalEmulatorView {
         }
     }
 
+    /// Terminal surface background, the single source of truth shared by the
+    /// libghostty `theme` below (as hex) and the host-side padding strips in
+    /// `TerminalDropContainer` (as `NSColor`). The padding inset only reads as
+    /// "inside the terminal" while the strip colour matches the surface, so
+    /// both consumers must derive from the same value.
+    static let lightBackgroundHex = "FFFFFF"
+    static let darkBackgroundHex = "1E1E1E"
+    static let lightBackground = NSColor(ghosttyHex: lightBackgroundHex)
+    static let darkBackground = NSColor(ghosttyHex: darkBackgroundHex)
+
     /// Aura-style palette: purple primary, mint/orange/pink/blue accents.
     /// Dark variant matches the source palette directly; the light variant
     /// preserves hue identity but darkens each accent for ≥4.5:1 contrast
@@ -195,7 +205,7 @@ final class GhosttyEmulator: TerminalEmulatorView {
     /// six accents distinctly across the 16-slot palette.
     private static let theme = TerminalTheme(
         light: TerminalConfiguration { builder in
-            builder.withBackground("FFFFFF")
+            builder.withBackground(lightBackgroundHex)
             builder.withForeground("15141B")
             builder.withCursorColor("4A1FB8")
             builder.withSelectionBackground("DCD0FF")
@@ -217,7 +227,7 @@ final class GhosttyEmulator: TerminalEmulatorView {
             builder.withPalette(15, color: "#000000")
         },
         dark: TerminalConfiguration { builder in
-            builder.withBackground("1E1E1E")
+            builder.withBackground(darkBackgroundHex)
             builder.withForeground("EDECEE")
             builder.withCursorColor("A277FF")
             builder.withSelectionBackground("29263C")
@@ -253,5 +263,20 @@ final class GhosttyEmulator: TerminalEmulatorView {
         guard isActive != active else { return }
         isActive = active
         view.setSurfaceVisible(active)
+    }
+}
+
+private extension NSColor {
+    /// Parses a 6-digit `RRGGBB` hex string (optional leading `#`), matching
+    /// how libghostty interprets theme colours.
+    convenience init(ghosttyHex hex: String) {
+        let digits = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+        let value = UInt32(digits, radix: 16) ?? 0
+        self.init(
+            srgbRed: CGFloat((value >> 16) & 0xFF) / 255,
+            green: CGFloat((value >> 8) & 0xFF) / 255,
+            blue: CGFloat(value & 0xFF) / 255,
+            alpha: 1
+        )
     }
 }

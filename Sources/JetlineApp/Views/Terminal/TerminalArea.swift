@@ -498,10 +498,15 @@ private struct RunStatusButton: View {
 /// (lastError, fellBackToShell) actually drives the UI.
 private struct SessionSurface: View {
     @ObservedObject var session: PTYSession
+    @EnvironmentObject private var state: AppState
 
     var body: some View {
         ZStack(alignment: .top) {
-            TerminalHostView(session: session, isActive: true)
+            TerminalHostView(
+                session: session,
+                isActive: true,
+                paddingX: state.settings.terminalPaddingX
+            )
 
             if session.fellBackToShell {
                 FallbackBanner(agent: session.agent)
@@ -780,6 +785,9 @@ private struct OpenInAppButton: View {
 struct TerminalHostView: NSViewRepresentable {
     let session: PTYSession
     let isActive: Bool
+    /// Inner horizontal padding, in points. Applied as a host-side surface
+    /// inset (see `TerminalDropContainer`).
+    var paddingX: Int = 0
 
     func makeNSView(context: Context) -> NSView {
         let container = TerminalDropContainer()
@@ -787,11 +795,20 @@ struct TerminalHostView: NSViewRepresentable {
         let term = session.emulator.nsView
         term.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(term)
+        let leading = term.leadingAnchor.constraint(
+            equalTo: container.leadingAnchor, constant: CGFloat(paddingX)
+        )
+        let trailing = term.trailingAnchor.constraint(
+            equalTo: container.trailingAnchor, constant: -CGFloat(paddingX)
+        )
+        container.leadingConstraint = leading
+        container.trailingConstraint = trailing
+        container.paddingX = CGFloat(paddingX)
         NSLayoutConstraint.activate([
             term.topAnchor.constraint(equalTo: container.topAnchor),
             term.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            term.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            term.trailingAnchor.constraint(equalTo: container.trailingAnchor)
+            leading,
+            trailing
         ])
         session.emulator.setActive(isActive)
         if isActive {
@@ -811,6 +828,8 @@ struct TerminalHostView: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {
         session.emulator.setActive(isActive)
+        // Live-apply inner padding when the setting changes.
+        (nsView as? TerminalDropContainer)?.paddingX = CGFloat(paddingX)
         // Focus is asserted on viewDidMoveToWindow when the tab swaps in. Don't
         // dispatch makeFirstResponder on every SwiftUI update — re-entering
         // layout during a NavigationSplitView divider drag is one of the paths
@@ -854,13 +873,45 @@ struct TerminalHostView: NSViewRepresentable {
 private final class TerminalDropContainer: NSView {
     weak var session: PTYSession?
 
+    /// Leading/trailing constraints of the hosted terminal view. Their
+    /// constants are the inner horizontal padding — kept here so a settings
+    /// change can update them live. libghostty's `window-padding-x` is inert
+    /// for embedded surfaces (padding is a host responsibility, exactly as
+    /// ghostty's own app insets its surface view), so we apply it here and
+    /// paint the exposed strips in the terminal background colour to read as
+    /// padding *inside* the terminal rather than window chrome around it.
+    var leadingConstraint: NSLayoutConstraint?
+    var trailingConstraint: NSLayoutConstraint?
+
+    var paddingX: CGFloat = 0 {
+        didSet {
+            guard paddingX != oldValue else { return }
+            leadingConstraint?.constant = paddingX
+            trailingConstraint?.constant = -paddingX
+        }
+    }
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         registerForDraggedTypes([.fileURL, .tiff, .png])
+        wantsLayer = true
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        let isDark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        layer?.backgroundColor =
+            (isDark ? GhosttyEmulator.darkBackground : GhosttyEmulator.lightBackground).cgColor
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         acceptableOperation(for: sender)

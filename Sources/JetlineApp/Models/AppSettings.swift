@@ -12,6 +12,11 @@ struct AppSettings: Codable, FetchableRecord, PersistableRecord {
     var mistralBinaryPath: String?
     var terminalFontFamily: String = "SF Mono"
     var terminalFontSize: Double = 13
+    /// Horizontal padding *inside* the terminal area, in points, applied as a
+    /// host-side surface inset in `TerminalDropContainer` (libghostty's
+    /// `window-padding-x` is inert for embedded surfaces). Default of 2
+    /// matches ghostty's own padding default.
+    var terminalPaddingX: Int = 2
     var theme: Theme = .system
     /// Comma-separated raw values of agents the user has hidden from the
     /// new-tab menu. Stored as a string so adding new agents doesn't require

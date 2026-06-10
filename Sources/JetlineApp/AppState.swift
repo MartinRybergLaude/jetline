@@ -939,8 +939,25 @@ final class AppState: ObservableObject {
         do {
             try SettingsStore.save(s)
             settings = s
+            applyTerminalFont(s)
         } catch {
             Task { await presentError(error.localizedDescription) }
+        }
+    }
+
+    /// Push terminal font settings to every live session so changes land
+    /// immediately instead of waiting for the next session start. (Inner
+    /// horizontal padding is applied separately at the view layer — see
+    /// `TerminalHostView` — because libghostty's `window-padding-x` is inert
+    /// for embedded surfaces; the host owns surface insets.)
+    private func applyTerminalFont(_ s: AppSettings) {
+        for ws in workspaceStates.values {
+            for session in ws.sessions {
+                session.emulator.updateFont(
+                    family: s.terminalFontFamily,
+                    size: s.terminalFontSize
+                )
+            }
         }
     }
 
