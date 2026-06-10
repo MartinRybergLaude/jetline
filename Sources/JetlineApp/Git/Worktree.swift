@@ -70,6 +70,35 @@ enum WorktreeOps {
         return trimmed?.nonBlank
     }
 
+    /// Remove a stale `index.lock` left behind when a git process was
+    /// SIGKILL'd mid-write (tab/workspace closed while `git commit` ran,
+    /// app crash during a toolbar rebase). Git never cleans these up, so
+    /// every later index write fails until someone deletes the file.
+    /// Conservative about live locks: only deletes when the lock predates
+    /// this process's launch (its creator can't still be running — every
+    /// git proc in a jetline-managed worktree is our child) or is older
+    /// than 5 minutes (covers externally-spawned strays).
+    static func removeStaleIndexLock(gitDir: String) {
+        let lockPath = gitDir + "/index.lock"
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: lockPath),
+              let mtime = attrs[.modificationDate] as? Date else { return }
+        let stale = mtime < processStartDate || Date().timeIntervalSince(mtime) > 300
+        guard stale else { return }
+        try? FileManager.default.removeItem(atPath: lockPath)
+    }
+
+    /// True process start time via sysctl — a lazily-initialized `Date()`
+    /// would capture the first *call* instead, which can postdate a live
+    /// lock taken by one of our own earlier git procs.
+    private static let processStartDate: Date = {
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()]
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0 else { return Date() }
+        let tv = info.kp_proc.p_starttime
+        return Date(timeIntervalSince1970: TimeInterval(tv.tv_sec) + TimeInterval(tv.tv_usec) / 1e6)
+    }()
+
     /// True if the path is the top of a git working tree.
     static func isGitRepo(at path: String) async -> Bool {
         let result = try? await GitRunner.run(

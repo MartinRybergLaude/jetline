@@ -888,6 +888,13 @@ final class AppState: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             let gitDir = await WorktreeOps.gitDir(at: worktreePath)
+            // A git proc SIGKILL'd mid-write (tab closed during commit, app
+            // crash during rebase) strands `index.lock` and blocks every
+            // later index write. Workspace attach is the natural recovery
+            // point — clear it if it's verifiably stale.
+            if let gitDir {
+                WorktreeOps.removeStaleIndexLock(gitDir: gitDir)
+            }
             await MainActor.run {
                 guard self.watchers[id] == nil,
                       self.workspaceById(id) != nil else { return }

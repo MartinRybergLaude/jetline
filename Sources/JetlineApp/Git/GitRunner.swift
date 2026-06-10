@@ -21,6 +21,15 @@ enum GitRunner {
         cwd: String? = nil,
         env: [String: String] = [:]
     ) async throws -> Result {
+        // Never take optional locks. Background reads (`status`, `diff`)
+        // otherwise grab `index.lock` to write back a refreshed stat cache,
+        // and since the diff watcher fires on every worktree/git-dir change,
+        // they race agent-run `git commit`/`git add` in the same worktree —
+        // git doesn't retry the index lock, so the loser dies with
+        // "Unable to create index.lock: File exists". Mandatory locks
+        // (commit, rebase, stash) are unaffected by this knob.
+        var env = env
+        if env["GIT_OPTIONAL_LOCKS"] == nil { env["GIT_OPTIONAL_LOCKS"] = "0" }
         let result = await Subprocess.run(
             executable: "/usr/bin/env",
             args: ["git"] + args,
