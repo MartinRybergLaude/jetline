@@ -33,8 +33,10 @@ private struct GeneralSettingsView: View {
                 Text("Light").tag(AppSettings.Theme.light)
                 Text("Dark").tag(AppSettings.Theme.dark)
             }
+            Toggle("Delete worktrees after merge", isOn: bindingDeleteWorktreeOnMerge)
         }
         .formStyle(.grouped)
+        .scrollIndicators(.visible)
     }
 
     private var bindingDefaultAgent: Binding<Workspace.AgentKind> {
@@ -54,6 +56,17 @@ private struct GeneralSettingsView: View {
             set: { newValue in
                 var s = state.settings
                 s.theme = newValue
+                state.saveSettings(s)
+            }
+        )
+    }
+
+    private var bindingDeleteWorktreeOnMerge: Binding<Bool> {
+        Binding(
+            get: { state.settings.deleteWorktreeOnMerge },
+            set: { newValue in
+                var s = state.settings
+                s.deleteWorktreeOnMerge = newValue
                 state.saveSettings(s)
             }
         )
@@ -94,6 +107,7 @@ private struct AgentsSettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .scrollIndicators(.visible)
     }
 
     private func bindingPath(_ keyPath: WritableKeyPath<AppSettings, String?>) -> Binding<String> {
@@ -161,8 +175,10 @@ private struct TerminalSettingsView: View {
                     .frame(width: 36, alignment: .trailing)
                     .font(.system(.caption, design: .monospaced))
             }
+            Toggle("Show tab strip scrollbar", isOn: bindingShowTabStripScrollIndicators)
         }
         .formStyle(.grouped)
+        .scrollIndicators(.visible)
     }
 
     private var bindingFont: Binding<String> {
@@ -193,6 +209,17 @@ private struct TerminalSettingsView: View {
             set: { newValue in
                 var s = state.settings
                 s.terminalPaddingX = Int(newValue.rounded())
+                state.saveSettings(s)
+            }
+        )
+    }
+
+    private var bindingShowTabStripScrollIndicators: Binding<Bool> {
+        Binding(
+            get: { state.settings.showTabStripScrollIndicators },
+            set: { newValue in
+                var s = state.settings
+                s.showTabStripScrollIndicators = newValue
                 state.saveSettings(s)
             }
         )

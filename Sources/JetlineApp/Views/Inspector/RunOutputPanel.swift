@@ -8,7 +8,7 @@ struct RunOutputPanel: View {
     @EnvironmentObject private var state: AppState
 
     var body: some View {
-        if let id = state.selectedWorkspaceId,
+        if let id = state.inspectorWorkspaceId,
            let ws = state.workspaceById(id) {
             RunOutputPanelContent(
                 workspace: ws,
@@ -20,11 +20,11 @@ struct RunOutputPanel: View {
     }
 }
 
-/// Run output wins while the script is running; once it exits we drop
-/// back to the placeholder so the user sees the same clean slate as on
-/// a fresh workspace instead of staring at a stale exit trace. Setup
-/// output stays visible until the user triggers their first run (which
-/// discards the setup controller).
+/// Run output wins while the script is running. Failed runs stay visible
+/// after exit so the error transcript remains inspectable/copyable; clean
+/// exits drop back to the placeholder so successful one-shot scripts don't
+/// leave stale output behind. Setup output stays visible until the user
+/// triggers their first run (which discards the setup controller).
 private struct RunOutputPanelContent: View {
     @EnvironmentObject private var state: AppState
     let workspace: Workspace
@@ -32,7 +32,7 @@ private struct RunOutputPanelContent: View {
 
     var body: some View {
         if let runController = workspaceState.runController,
-           runController.isRunning {
+           runController.shouldDisplayInRunPanel {
             RunOutputContent(controller: runController)
         } else if let setupController = workspaceState.setupController {
             SetupOutputContent(controller: setupController)
@@ -47,6 +47,12 @@ private struct RunOutputPanelContent: View {
                 title: "Click the run button in the toolbar to start."
             )
         }
+    }
+}
+
+private extension RunController {
+    var shouldDisplayInRunPanel: Bool {
+        isRunning || (exitStatus.map { $0 != 0 } ?? false)
     }
 }
 

@@ -174,5 +174,29 @@ enum Schema {
                 t.add(column: "terminalPaddingX", .integer).notNull().defaults(to: 2)
             }
         }
+
+        migrator.registerMigration("v15_branch_suffix_setting") { db in
+            try db.alter(table: "repositories") { t in
+                t.add(column: "addUniqueBranchSuffix", .boolean)
+                    .notNull()
+                    .defaults(to: true)
+            }
+        }
+
+        migrator.registerMigration("v16_tab_strip_scroll_indicators") { db in
+            try db.alter(table: "app_settings") { t in
+                t.add(column: "showTabStripScrollIndicators", .boolean)
+                    .notNull()
+                    .defaults(to: true)
+            }
+        }
+
+        migrator.registerMigration("v17_delete_worktree_on_merge") { db in
+            try db.alter(table: "app_settings") { t in
+                t.add(column: "deleteWorktreeOnMerge", .boolean)
+                    .notNull()
+                    .defaults(to: true)
+            }
+        }
     }
 }

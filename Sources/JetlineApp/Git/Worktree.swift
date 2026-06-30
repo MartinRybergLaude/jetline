@@ -118,6 +118,13 @@ enum WorktreeOps {
         branchName: String,
         baseBranch: String
     ) async throws -> String {
+        // Match importExisting's typed collision path so the UI can offer
+        // an explicit override instead of surfacing git's raw worktree error.
+        _ = try? await GitRunner.run(["worktree", "prune"], cwd: repoPath)
+        if let path = (try await worktreesUsing(branch: branchName, repoPath: repoPath)).first {
+            throw ImportError.branchInUse(branch: branchName, byPath: path)
+        }
+
         let worktreesRoot = Database.worktreesDirectory
             .appendingPathComponent(repoId, isDirectory: true)
         try FileManager.default.createDirectory(at: worktreesRoot, withIntermediateDirectories: true)

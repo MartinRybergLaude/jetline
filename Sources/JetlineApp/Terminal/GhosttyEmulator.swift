@@ -14,12 +14,11 @@ final class GhosttyEmulator: TerminalEmulatorView {
     private var pty: PTYProcess?
     private var isActive: Bool = true
     private var exitHandler: ((Int32) -> Void)?
+    private let receiveLogSessionId = TerminalReceiveLog.makeSessionId()
     /// When false, the emulator does *not* call `session.finish` on child
-    /// exit. Used by run/setup output panels: the inspector already shows
-    /// a "Setup complete" / "Exited (n)" status strip, so libghostty's
-    /// own "Press any key to close" / "failed to launch" overlay is just
-    /// noise — and worse, with our fixed `runtimeMilliseconds: 0` it
-    /// renders as a launch failure even on a clean zero exit.
+    /// exit. Jetline keeps terminal transcripts visible after exit and
+    /// surfaces lifecycle state in host UI where needed; libghostty's own
+    /// exit surface can obscure the final error output.
     private let notifySurfaceOnExit: Bool
 
     var nsView: NSView { view }
@@ -28,7 +27,7 @@ final class GhosttyEmulator: TerminalEmulatorView {
     /// default 13pt agent terminal so the inspector strip doesn't crowd.
     static let outputPanelFontSize: Float = 11
 
-    init(fontSize: Float = 13, notifySurfaceOnExit: Bool = true) {
+    init(fontSize: Float = 13, notifySurfaceOnExit: Bool = false) {
         self.notifySurfaceOnExit = notifySurfaceOnExit
         let controller = TerminalController(
             configuration: Self.makeConfiguration(family: nil, size: fontSize),
@@ -84,6 +83,8 @@ final class GhosttyEmulator: TerminalEmulatorView {
         environment["COLORTERM"] = "truecolor"
 
         let session = self.session
+        let receiveLogSessionId = self.receiveLogSessionId
+        TerminalReceiveLog.processStarted(sessionId: receiveLogSessionId, executable: executable, cwd: cwd)
         let pty = PTYProcess(
             executable: executable,
             args: args,
@@ -100,7 +101,16 @@ final class GhosttyEmulator: TerminalEmulatorView {
                 // now share the main runloop. See PTYProcess.swift for the
                 // drain source.
                 DispatchQueue.main.async {
-                    session.receive(data)
+                    guard let receiveData = TerminalOutputFilter.removingTitleUpdates(data) else {
+                        TerminalReceiveLog.droppedTitleUpdate(sessionId: receiveLogSessionId, data: data)
+                        return
+                    }
+                    if receiveData.count != data.count {
+                        TerminalReceiveLog.droppedTitleUpdate(sessionId: receiveLogSessionId, data: data)
+                    }
+                    let token = TerminalReceiveLog.begin(sessionId: receiveLogSessionId, data: receiveData)
+                    session.receive(receiveData)
+                    TerminalReceiveLog.end(token)
                 }
                 outputTap?(data)
             },
@@ -127,6 +137,7 @@ final class GhosttyEmulator: TerminalEmulatorView {
         } catch {
             // Surface the failure as terminal output so the user sees something.
             let message = "jetline: failed to spawn \(executable): \(error)\r\n"
+            TerminalReceiveLog.receiveFailed(sessionId: receiveLogSessionId, message: message)
             session.receive(message)
         }
     }

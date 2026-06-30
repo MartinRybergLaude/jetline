@@ -17,8 +17,8 @@ action bar that fast-paths the common things and hands the rest to an agent.
 - FSEvents watcher → live diff refresh + PR poll kick ✅
 - Git action bar: commit / create PR / pull / rebase / fix CI / fix comments / review / merge ✅
 - Fast-path rebase + pull (no agent token spend on the no-conflict case) ✅
-- Per-repo setup / run / archive scripts, exclusive run ✅
-- Settings: agents, binary paths, prompt overrides (global + per-repo), theme, terminal font ✅
+- Per-repo branch naming controls, setup / run / archive scripts, exclusive run ✅
+- Settings: agents, binary paths, prompt overrides (global + per-repo), theme, terminal font, tab strip scrollbar ✅
 - File editor, Conductor import ❌ explicitly out of scope
 
 ## Build
@@ -118,7 +118,20 @@ git action bar → GitActionPrompts.render → new PTYSession with initial promp
 
 Workspaces live in `~/.jetline/worktrees/<repoId>/<workspaceId>`. The
 SQLite db lives at `~/.jetline/jetline.sqlite`. PR snapshots are cached
-alongside it. Override the data dir with the `JETLINE_DATA_DIR` env var.
+alongside it. Terminal receive diagnostics are written to
+`~/.jetline/jetline-terminal-receive.log` and rotated at 5 MB. Override the
+data dir with the `JETLINE_DATA_DIR` env var.
+
+Clicking a repository header in the sidebar opens the repository's base
+checkout (`repo.path`) in the same terminal/inspector view as a workspace,
+with its own in-memory terminal tabs. These base-repo tabs are not persisted
+as workspace rows and are not included in PR polling.
+
+Merged PRs auto-archive their workspace and, by default, delete the local
+worktree/branch; this can be disabled in Settings. Reusing a branch name
+after an old PR merged is guarded by the PR merge timestamp, and branch
+creation/import offers an explicit override if that branch is still checked
+out in another worktree.
 
 Per-workspace mutable state (diff snapshots, PR snapshot, sessions, branch
 position, run/setup controllers) lives on `WorkspaceState` instances looked

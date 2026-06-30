@@ -1,5 +1,13 @@
 import Foundation
 
+enum MergeCleanupPolicy {
+    static func shouldArchive(workspace: Workspace, pr: PullRequest) -> Bool {
+        guard pr.state.uppercased() == "MERGED",
+              let mergedAt = pr.mergedAt else { return false }
+        return mergedAt >= workspace.createdAt
+    }
+}
+
 /// Background tracker that keeps each workspace's `WorkspaceState.pr`
 /// populated for every workspace in every repository. Two loops per repo
 /// run in parallel,
@@ -440,14 +448,16 @@ final class PRTracker {
         return anyActive ? 15 : 60
     }
 
-    /// Worktree is preserved (`removeWorktree: false`) so the user keeps
-    /// any uncommitted post-merge work; the row simply leaves the sidebar.
+    /// Auto-cleanup is tied to the specific PR lifetime, not just the branch
+    /// name. A same-named branch recreated after an older PR merged should
+    /// not be archived by that historical merged PR.
     private func autoArchiveIfMerged(workspace: Workspace, snapshot: PRSnapshot, state: AppState) {
         guard case let .loaded(pr, _) = snapshot,
-              pr.state.uppercased() == "MERGED",
+              MergeCleanupPolicy.shouldArchive(workspace: workspace, pr: pr),
               !autoArchived.contains(workspace.id) else { return }
         autoArchived.insert(workspace.id)
-        Task { await state.archiveWorkspace(workspace, removeWorktree: false) }
+        let removeWorktree = state.settings.deleteWorktreeOnMerge
+        Task { await state.archiveWorkspace(workspace, removeWorktree: removeWorktree) }
     }
 
     private func updateStatus(_ new: Status) {

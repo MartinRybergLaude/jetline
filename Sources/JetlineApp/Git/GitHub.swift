@@ -16,6 +16,8 @@ struct PullRequest: Codable, Sendable, Hashable {
     var headRefName: String
     var baseRefName: String
     var author: Author
+    var createdAt: Date?
+    var mergedAt: Date?
     /// `MERGEABLE` / `CONFLICTING` / `UNKNOWN`.
     var mergeable: String?
     /// `BEHIND` / `BLOCKED` / `CLEAN` / `DIRTY` / `HAS_HOOKS` / `UNKNOWN` /
@@ -45,6 +47,8 @@ struct PullRequest: Codable, Sendable, Hashable {
         headRefName: String,
         baseRefName: String,
         author: Author,
+        createdAt: Date? = nil,
+        mergedAt: Date? = nil,
         mergeable: String? = nil,
         mergeStateStatus: String? = nil,
         unresolvedThreadCount: Int = 0,
@@ -59,6 +63,8 @@ struct PullRequest: Codable, Sendable, Hashable {
         self.headRefName = headRefName
         self.baseRefName = baseRefName
         self.author = author
+        self.createdAt = createdAt
+        self.mergedAt = mergedAt
         self.mergeable = mergeable
         self.mergeStateStatus = mergeStateStatus
         self.unresolvedThreadCount = unresolvedThreadCount
@@ -68,6 +74,7 @@ struct PullRequest: Codable, Sendable, Hashable {
 
     enum CodingKeys: String, CodingKey {
         case number, title, url, state, isDraft, headRefName, baseRefName, author
+        case createdAt, mergedAt
         case mergeable, mergeStateStatus, unresolvedThreadCount, issueCommentCount
         case reviewDecision
     }
@@ -87,6 +94,8 @@ struct PullRequest: Codable, Sendable, Hashable {
         headRefName = try c.decode(String.self, forKey: .headRefName)
         baseRefName = try c.decode(String.self, forKey: .baseRefName)
         author = try c.decode(Author.self, forKey: .author)
+        createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt)
+        mergedAt = try c.decodeIfPresent(Date.self, forKey: .mergedAt)
         mergeable = try c.decodeIfPresent(String.self, forKey: .mergeable)
         mergeStateStatus = try c.decodeIfPresent(String.self, forKey: .mergeStateStatus)
         unresolvedThreadCount = try c.decodeIfPresent(Int.self, forKey: .unresolvedThreadCount) ?? 0
@@ -379,7 +388,7 @@ enum GitHubRunner {
           }
         }
         fragment PR on PullRequest {
-          number title url state isDraft headRefName baseRefName
+          number title url state isDraft headRefName baseRefName createdAt mergedAt
           mergeable mergeStateStatus reviewDecision
           reviewThreads(first: 50) {
             nodes { isResolved }
@@ -573,6 +582,8 @@ private struct PRNode: Decodable {
     let isDraft: Bool
     let headRefName: String
     let baseRefName: String
+    let createdAt: String?
+    let mergedAt: String?
     let mergeable: String?
     let mergeStateStatus: String?
     let reviewDecision: String?
@@ -596,6 +607,15 @@ private struct PRNode: Decodable {
     }
     struct ReviewThread: Decodable { let isResolved: Bool }
     struct CommentsConnection: Decodable { let totalCount: Int }
+
+    /// GitHub GraphQL timestamps are ISO-8601 strings (`...Z`). Keep them
+    /// as strings on the transport node so persisted PR snapshots can still
+    /// use `JSONEncoder.dateEncodingStrategy` on the app model.
+    nonisolated(unsafe) private static let timestampParser = ISO8601DateFormatter()
+
+    private static func parseTimestamp(_ raw: String?) -> Date? {
+        raw.flatMap { timestampParser.date(from: $0) }
+    }
 
     /// Either a CheckRun (Actions / GitHub App) or a StatusContext (legacy
     /// commit status). `__typename` discriminates; the other branch's fields
@@ -631,6 +651,8 @@ private struct PRNode: Decodable {
             headRefName: headRefName,
             baseRefName: baseRefName,
             author: PullRequest.Author(login: author?.login ?? "unknown"),
+            createdAt: Self.parseTimestamp(createdAt),
+            mergedAt: Self.parseTimestamp(mergedAt),
             mergeable: mergeable,
             mergeStateStatus: mergeStateStatus,
             unresolvedThreadCount: unresolved,

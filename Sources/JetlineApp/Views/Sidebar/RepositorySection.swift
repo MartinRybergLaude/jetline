@@ -13,6 +13,9 @@ struct RepositorySection: View {
 
     private var workspaces: [Workspace] { state.workspacesByRepo[repo.id] ?? [] }
     private var hasWorkspaces: Bool { !workspaces.isEmpty }
+    private var isBaseSelected: Bool {
+        state.selectedWorkspaceId == state.repositoryBaseWorkspaceId(for: repo)
+    }
 
     var body: some View {
         Section {
@@ -56,24 +59,49 @@ struct RepositorySection: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(!hasWorkspaces)
-                Group {
-                    if let favicon = iconLoader.icon(for: repo.path) {
-                        Image(nsImage: favicon)
-                            .resizable()
-                            .interpolation(.high)
-                            .aspectRatio(contentMode: .fit)
-                            .frame(width: 15, height: 15)
-                    } else {
-                        Image(systemName: "folder")
-                            .font(.system(size: 14, weight: .regular))
-                            .foregroundStyle(.primary)
+                Button {
+                    state.selectRepositoryHead(repo)
+                } label: {
+                    HStack(spacing: 8) {
+                        Group {
+                            if let favicon = iconLoader.icon(for: repo.path) {
+                                Image(nsImage: favicon)
+                                    .resizable()
+                                    .interpolation(.high)
+                                    .aspectRatio(contentMode: .fit)
+                                    .frame(width: 15, height: 15)
+                            } else {
+                                Image(systemName: "folder")
+                                    .font(.system(size: 14, weight: .regular))
+                                    .foregroundStyle(.primary)
+                            }
+                        }
+                        .frame(width: 22, alignment: .center)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(repo.name)
+                                .font(.body)
+                                .textCase(nil)
+                                .foregroundStyle(isBaseSelected ? Color.accentColor.opacity(0.9) : Color.primary)
+                            Text(repo.defaultBranch)
+                                .font(.caption2)
+                                .textCase(nil)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
                     }
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 3)
+                    .background {
+                        if isBaseSelected {
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(Color.primary.opacity(0.06))
+                        }
+                    }
+                    .contentShape(Rectangle())
                 }
-                .frame(width: 22, alignment: .center)
-                Text(repo.name)
-                    .font(.body)
-                    .textCase(nil)
-                    .foregroundStyle(.primary)
+                .buttonStyle(.plain)
+                .help("Open \(repo.defaultBranch) in \(repo.name)")
                 Spacer(minLength: 0)
                 Button(action: onNewWorkspace) {
                     Image(systemName: "plus")

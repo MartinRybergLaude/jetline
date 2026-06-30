@@ -54,6 +54,7 @@ struct InspectorView: View {
                     )
                     .padding(.vertical, 8)
                 }
+                .scrollIndicators(.visible)
                 .scrollPosition($changesScrollPosition)
                 .onScrollGeometryChange(for: CGFloat.self) { geo in
                     geo.contentOffset.y
@@ -63,6 +64,7 @@ struct InspectorView: View {
             }
         case .pr:
             ScrollView { PRPanel().padding(.vertical, 8) }
+                .scrollIndicators(.visible)
         case .run:
             RunOutputPanel()
         }

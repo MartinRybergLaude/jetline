@@ -6,7 +6,7 @@ struct PRPanel: View {
 
     var body: some View {
         Group {
-            if let id = state.selectedWorkspaceId,
+            if let id = state.inspectorWorkspaceId,
                let ws = state.workspaceById(id) {
                 PRPanelContent(
                     workspace: ws,

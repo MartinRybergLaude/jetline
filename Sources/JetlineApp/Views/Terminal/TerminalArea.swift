@@ -94,7 +94,7 @@ struct TerminalArea: View {
         let activeId = workspaceState.activeSessionId
         let sessionIds = sessions.map(\.id)
         ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
+            ScrollView(.horizontal) {
                 HStack(spacing: 0) {
                     ForEach(Array(sessions.enumerated()), id: \.element.id) { idx, session in
                         BorderedTab(
@@ -151,6 +151,7 @@ struct TerminalArea: View {
                 proxy.scrollTo(added, anchor: .trailing)
             }
         }
+        .scrollIndicators(state.settings.showTabStripScrollIndicators ? .visible : .hidden, axes: .horizontal)
         .overlay(alignment: .bottom) { Divider() }
     }
 

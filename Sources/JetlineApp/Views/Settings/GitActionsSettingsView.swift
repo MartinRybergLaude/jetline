@@ -38,6 +38,7 @@ struct GitActionsSettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .scrollIndicators(.visible)
     }
 
     private func bindingAgent(_ keyPath: WritableKeyPath<AppSettings, Workspace.AgentKind?>) -> Binding<Workspace.AgentKind?> {
@@ -121,6 +122,7 @@ struct PromptOverrideEditor: View {
                     TextEditor(text: $binding)
                         .font(.system(.callout, design: .default))
                         .scrollContentBackground(.hidden)
+                        .scrollIndicators(.visible)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 6)
                         .background(Color(nsColor: .textBackgroundColor))

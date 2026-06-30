@@ -68,6 +68,17 @@ struct JetlineApp: App {
                     .keyboardShortcut("\t", modifiers: [.control])
                 Button("Previous Tab") { state.cycleSession(forward: false) }
                     .keyboardShortcut("\t", modifiers: [.control, .shift])
+                Button("Next Terminal Tab") { state.cycleSession(forward: true) }
+                    .keyboardShortcut(.rightArrow, modifiers: [.command, .shift])
+                Button("Previous Terminal Tab") { state.cycleSession(forward: false) }
+                    .keyboardShortcut(.leftArrow, modifiers: [.command, .shift])
+
+                Divider()
+
+                Button("Next Workspace") { state.cycleWorkspaceSelection(forward: true) }
+                    .keyboardShortcut(.downArrow, modifiers: [.command, .shift])
+                Button("Previous Workspace") { state.cycleWorkspaceSelection(forward: false) }
+                    .keyboardShortcut(.upArrow, modifiers: [.command, .shift])
 
                 Divider()
 

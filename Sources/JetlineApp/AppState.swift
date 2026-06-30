@@ -13,9 +13,15 @@ import AppKit
 /// that reads only `.pr` doesn't repaint when `.diff` changes.
 @MainActor
 final class AppState: ObservableObject {
+    nonisolated private static let repositoryBaseWorkspacePrefix = "repo-base:"
+
     @Published var repositories: [Repository] = []
     @Published var workspacesByRepo: [String: [Workspace]] = [:]
+    /// Immediate selection used by the sidebar, terminal, toolbar, and commands.
     @Published var selectedWorkspaceId: String?
+    /// Lagging selection used by the inspector so heavy right-column panels
+    /// don't rebuild in the same pass as terminal/workspace navigation.
+    @Published var inspectorWorkspaceId: String?
     @Published var settings: AppSettings = AppSettings()
     /// Per-repo GitHub metadata (owner/name + allowed merge methods),
     /// resolved on the first PR poll and reused for the app's lifetime.
@@ -37,6 +43,9 @@ final class AppState: ObservableObject {
     /// `@Observable`, so a single workspace's mutations only invalidate
     /// views that actually read the changed keypath.
     private var workspaceStates: [String: WorkspaceState] = [:]
+    /// Cancels pending inspector rebinds while the user is moving quickly
+    /// through the workspace list.
+    private var inspectorSelectionTask: Task<Void, Never>?
 
     private var watchers: [String: WorktreeWatcher] = [:]
     private(set) lazy var prTracker: PRTracker = PRTracker(state: self)
@@ -116,7 +125,11 @@ final class AppState: ObservableObject {
     }
 
     func removeRepository(_ id: String) {
-        let name = repositories.first(where: { $0.id == id })?.name ?? id
+        let repo = repositories.first(where: { $0.id == id })
+        let name = repo?.name ?? id
+        if let repo {
+            detachWorkspace(repositoryBaseWorkspaceId(for: repo))
+        }
         if let workspaces = workspacesByRepo[id] {
             for ws in workspaces { detachWorkspace(ws.id) }
         }
@@ -125,7 +138,7 @@ final class AppState: ObservableObject {
         workspacesByRepo.removeValue(forKey: id)
         repoMetadataByRepo.removeValue(forKey: id)
         if selectedWorkspaceId.flatMap({ workspaceById($0) }) == nil {
-            selectedWorkspaceId = nil
+            clearSelectedWorkspace()
         }
         activityLog.record(.lifecycle, "Removed repository \(name)")
         prTracker.sync()
@@ -159,21 +172,54 @@ final class AppState: ObservableObject {
 
     // MARK: - Workspaces
 
+    func repositoryBaseWorkspaceId(for repo: Repository) -> String {
+        Self.repositoryBaseWorkspacePrefix + repo.id
+    }
+
+    func isRepositoryBaseWorkspace(_ workspace: Workspace) -> Bool {
+        workspace.id.hasPrefix(Self.repositoryBaseWorkspacePrefix)
+    }
+
+    func selectRepositoryHead(_ repo: Repository) {
+        selectWorkspace(repositoryBaseWorkspaceId(for: repo))
+    }
+
+    private func repositoryBaseWorkspace(for repo: Repository) -> Workspace {
+        let touchedAt = repo.lastOpenedAt ?? repo.createdAt
+        return Workspace(
+            id: repositoryBaseWorkspaceId(for: repo),
+            repositoryId: repo.id,
+            name: repo.name,
+            branchName: repo.defaultBranch,
+            baseBranch: repo.defaultBranch,
+            worktreePath: repo.path,
+            agent: settings.defaultAgent,
+            createdAt: repo.createdAt,
+            lastActiveAt: touchedAt
+        )
+    }
+
     func createWorkspace(in repo: Repository, name: String) async {
         let id = UUID().uuidString
         let slug = WorktreeOps.slug(name)
         let prefix = await effectiveBranchPrefix(for: repo)
-        let branch = "\(prefix)\(slug)-\(id.prefix(6))"
+        let branch = branchName(prefix: prefix, slug: slug, id: id, repo: repo)
         let agent = settings.defaultAgent
 
         do {
-            let path = try await WorktreeOps.create(
-                repoPath: repo.path,
-                worktreeId: id,
-                repoId: repo.id,
+            guard let path = try await createWorktreeResolvingBranchCollision(
+                in: repo,
                 branchName: branch,
-                baseBranch: repo.defaultBranch
-            )
+                operation: {
+                    try await WorktreeOps.create(
+                        repoPath: repo.path,
+                        worktreeId: id,
+                        repoId: repo.id,
+                        branchName: branch,
+                        baseBranch: repo.defaultBranch
+                    )
+                }
+            ) else { return }
             let now = Date()
             let ws = Workspace(
                 id: id,
@@ -252,13 +298,20 @@ final class AppState: ObservableObject {
         let agent = settings.defaultAgent
         let path: String
         do {
-            path = try await WorktreeOps.importExisting(
-                repoPath: repo.path,
-                worktreeId: id,
-                repoId: repo.id,
+            guard let createdPath = try await createWorktreeResolvingBranchCollision(
+                in: repo,
                 branchName: branchName,
-                remote: repo.remoteOrigin
-            )
+                operation: {
+                    try await WorktreeOps.importExisting(
+                        repoPath: repo.path,
+                        worktreeId: id,
+                        repoId: repo.id,
+                        branchName: branchName,
+                        remote: repo.remoteOrigin
+                    )
+                }
+            ) else { return }
+            path = createdPath
         } catch {
             await presentError(error.localizedDescription)
             return
@@ -304,6 +357,94 @@ final class AppState: ObservableObject {
         startSetupIfNeeded(workspace: ws, repository: repo)
     }
 
+    private func createWorktreeResolvingBranchCollision(
+        in repo: Repository,
+        branchName: String,
+        operation: () async throws -> String
+    ) async throws -> String? {
+        do {
+            return try await operation()
+        } catch WorktreeOps.ImportError.branchInUse(branch: let branch, byPath: let path) {
+            let dirty = await DiffComputer.hasUncommittedChanges(worktreePath: path)
+            guard confirmWorktreeOverride(
+                branchName: branch,
+                worktreePath: path,
+                hasUncommittedChanges: dirty
+            ) else {
+                return nil
+            }
+            archiveWorkspaceRecordsForOverriddenWorktree(
+                repoId: repo.id,
+                branchName: branch,
+                worktreePath: path
+            )
+            try await WorktreeOps.remove(
+                repoPath: repo.path,
+                worktreePath: path,
+                branchName: branch,
+                force: true
+            )
+            activityLog.record(
+                .lifecycle,
+                "Overrode existing worktree for \(branch)",
+                repoId: repo.id
+            )
+            return try await operation()
+        }
+    }
+
+    private func archiveWorkspaceRecordsForOverriddenWorktree(
+        repoId: String,
+        branchName: String,
+        worktreePath: String
+    ) {
+        let matches = (workspacesByRepo[repoId] ?? []).filter {
+            $0.worktreePath == worktreePath || $0.branchName == branchName
+        }
+        guard !matches.isEmpty else { return }
+
+        let ids = Set(matches.map(\.id))
+        for ws in matches {
+            detachWorkspace(ws.id)
+            try? Workspaces.archive(id: ws.id)
+            try? PRSnapshots.remove(workspaceId: ws.id)
+            activityLog.record(
+                .lifecycle,
+                "Archived workspace \(ws.name) because its worktree was overridden",
+                repoId: repoId,
+                workspaceId: ws.id
+            )
+        }
+        workspacesByRepo[repoId]?.removeAll { ids.contains($0.id) }
+        if let selectedWorkspaceId, ids.contains(selectedWorkspaceId) {
+            clearSelectedWorkspace()
+        }
+        prTracker.sync()
+    }
+
+    private func confirmWorktreeOverride(
+        branchName: String,
+        worktreePath: String,
+        hasUncommittedChanges: Bool
+    ) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Override existing worktree?"
+        let dirtyWarning = hasUncommittedChanges
+            ? "\n\nThis worktree has uncommitted changes. Overriding will permanently discard them."
+            : ""
+        alert.informativeText = """
+        Branch \(branchName) is already checked out at:
+
+        \(worktreePath)
+
+        Overriding will force-remove that local worktree and delete the local branch before creating this workspace.\(dirtyWarning)
+        """
+        alert.alertStyle = hasUncommittedChanges ? .critical : .warning
+        alert.addButton(withTitle: "Override and Delete Worktree")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     /// Spawn the repo's setup script for `workspace` and route its output
     /// into the inspector's run panel. No-ops for blank scripts. The
     /// inspector flips to `.run` so the user lands on live output instead of
@@ -326,10 +467,8 @@ final class AppState: ObservableObject {
     }
 
     func archiveWorkspace(_ workspace: Workspace, removeWorktree: Bool) async {
-        // Stop the run script first; otherwise it keeps writing to a deleted dir.
-        let ws = workspaceState(for: workspace.id)
-        ws.runController?.discard()
-        ws.runController = nil
+        // Stop tabs/run/setup controllers first; otherwise they can keep
+        // writing to a worktree that is about to disappear.
         detachWorkspace(workspace.id)
 
         let repo = repositories.first(where: { $0.id == workspace.repositoryId })
@@ -353,7 +492,7 @@ final class AppState: ObservableObject {
         try? Workspaces.archive(id: workspace.id)
         try? PRSnapshots.remove(workspaceId: workspace.id)
         workspacesByRepo[workspace.repositoryId]?.removeAll { $0.id == workspace.id }
-        if selectedWorkspaceId == workspace.id { selectedWorkspaceId = nil }
+        if selectedWorkspaceId == workspace.id { clearSelectedWorkspace() }
         activityLog.record(
             .lifecycle,
             "Archived workspace \(workspace.name)\(removeWorktree ? " (worktree removed)" : "")",
@@ -388,14 +527,53 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func branchName(prefix: String, slug: String, id: String, repo: Repository) -> String {
+        let base = "\(prefix)\(slug)"
+        return repo.addUniqueBranchSuffix ? "\(base)-\(id.prefix(6))" : base
+    }
+
     func selectWorkspace(_ id: String) {
         selectedWorkspaceId = id
-        try? Workspaces.touch(id: id)
-
+        scheduleInspectorWorkspace(id)
         guard let ws = workspaceById(id) else { return }
+        persistSelectionTouch(id)
+        guard worktreeExists(for: ws) else {
+            handleMissingWorktree(ws)
+            return
+        }
         ensureSessionExists(for: ws)
         startWatcher(for: ws)
         Task { await refreshDiff(for: ws) }
+    }
+
+    private func clearSelectedWorkspace() {
+        selectedWorkspaceId = nil
+        inspectorSelectionTask?.cancel()
+        inspectorWorkspaceId = nil
+    }
+
+    private func scheduleInspectorWorkspace(_ id: String) {
+        guard inspectorWorkspaceId != id else { return }
+        inspectorSelectionTask?.cancel()
+        inspectorSelectionTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(0.12))
+            guard !Task.isCancelled else { return }
+            guard let self,
+                  self.selectedWorkspaceId == id,
+                  self.workspaceById(id) != nil else { return }
+            self.inspectorWorkspaceId = id
+        }
+    }
+
+    private nonisolated func persistSelectionTouch(_ id: String) {
+        Task.detached(priority: .utility) {
+            if id.hasPrefix(Self.repositoryBaseWorkspacePrefix) {
+                let repoId = String(id.dropFirst(Self.repositoryBaseWorkspacePrefix.count))
+                try? Repositories.touch(id: repoId)
+            } else {
+                try? Workspaces.touch(id: id)
+            }
+        }
     }
 
     // MARK: - Sessions
@@ -715,7 +893,8 @@ final class AppState: ObservableObject {
               let script = repo.trimmedRunScript else { return }
 
         if repo.runExclusive {
-            let peerIds = Set(workspacesByRepo[repo.id]?.map(\.id) ?? [])
+            var peerIds = Set(workspacesByRepo[repo.id]?.map(\.id) ?? [])
+            peerIds.insert(repositoryBaseWorkspaceId(for: repo))
             for (otherId, peer) in workspaceStates
             where otherId != workspace.id && peerIds.contains(otherId) {
                 if let runner = peer.runController, runner.isRunning {
@@ -767,9 +946,32 @@ final class AppState: ObservableObject {
         selectSession(ws.sessions[next].id, in: wsId)
     }
 
+    /// Move through the sidebar's repo/workspace stack as a vertical axis:
+    /// base checkout, then that repo's workspaces, then the next repo. Wraps.
+    func cycleWorkspaceSelection(forward: Bool) {
+        let ids = sidebarWorkspaceOrder()
+        guard !ids.isEmpty else { return }
+        let current = selectedWorkspaceId.flatMap { ids.firstIndex(of: $0) }
+        let start = forward ? -1 : 0
+        let idx = current ?? start
+        let next = (idx + (forward ? 1 : -1) + ids.count) % ids.count
+        selectWorkspace(ids[next])
+    }
+
+    private func sidebarWorkspaceOrder() -> [String] {
+        repositories.flatMap { repo in
+            [repositoryBaseWorkspaceId(for: repo)] + (workspacesByRepo[repo.id] ?? []).map(\.id)
+        }
+    }
+
     // MARK: - Diff & watcher
 
     func refreshDiff(for workspace: Workspace) async {
+        guard worktreeExists(for: workspace) else {
+            handleMissingWorktree(workspace)
+            return
+        }
+
         // nil means the lookup itself failed (offline base / brand-new
         // repo); the combined compute then falls back to its own
         // resolution and surfaces the error there.
@@ -876,6 +1078,10 @@ final class AppState: ObservableObject {
     }
 
     private func startWatcher(for workspace: Workspace) {
+        guard worktreeExists(for: workspace) else {
+            handleMissingWorktree(workspace)
+            return
+        }
         guard watchers[workspace.id] == nil else { return }
         let id = workspace.id
         let worktreePath = workspace.worktreePath
@@ -924,13 +1130,46 @@ final class AppState: ObservableObject {
         watchers[id]?.stop()
         watchers.removeValue(forKey: id)
         if let ws = workspaceStates[id] {
-            for s in ws.sessions {
-                s.terminate()
-                s.emulator.nsView.removeFromSuperview()
-            }
-            ws.setupController?.discard()
+            tearDownWorkspaceRuntime(ws)
         }
         workspaceStates.removeValue(forKey: id)
+    }
+
+    private func tearDownWorkspaceRuntime(_ ws: WorkspaceState) {
+        for session in ws.sessions {
+            session.terminate()
+            session.emulator.nsView.removeFromSuperview()
+        }
+        ws.sessions.removeAll()
+        ws.activeSessionId = nil
+
+        ws.setupController?.discard()
+        ws.setupController = nil
+        ws.runController?.discard()
+        ws.runController = nil
+    }
+
+    private func worktreeExists(for workspace: Workspace) -> Bool {
+        FileManager.default.fileExists(atPath: workspace.worktreePath)
+    }
+
+    private func handleMissingWorktree(_ workspace: Workspace) {
+        guard workspaceById(workspace.id) != nil else { return }
+
+        detachWorkspace(workspace.id)
+        try? Workspaces.archive(id: workspace.id)
+        try? PRSnapshots.remove(workspaceId: workspace.id)
+        workspacesByRepo[workspace.repositoryId]?.removeAll { $0.id == workspace.id }
+        if selectedWorkspaceId == workspace.id {
+            clearSelectedWorkspace()
+        }
+        activityLog.record(
+            .lifecycle,
+            "Archived workspace \(workspace.name) because its worktree is missing",
+            repoId: workspace.repositoryId,
+            workspaceId: workspace.id
+        )
+        prTracker.sync()
     }
 
     // MARK: - Helpers
@@ -938,6 +1177,12 @@ final class AppState: ObservableObject {
     func workspaceById(_ id: String) -> Workspace? {
         for list in workspacesByRepo.values {
             if let ws = list.first(where: { $0.id == id }) { return ws }
+        }
+        if id.hasPrefix(Self.repositoryBaseWorkspacePrefix) {
+            let repoId = String(id.dropFirst(Self.repositoryBaseWorkspacePrefix.count))
+            if let repo = repositories.first(where: { $0.id == repoId }) {
+                return repositoryBaseWorkspace(for: repo)
+            }
         }
         return nil
     }

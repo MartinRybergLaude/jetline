@@ -102,6 +102,7 @@ struct ImportBranchPane: View {
                         .tag(row.ref)
                 }
                 .listStyle(.inset(alternatesRowBackgrounds: false))
+                .scrollIndicators(.visible)
             }
         }
         .frame(minHeight: 260)
