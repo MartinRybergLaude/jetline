@@ -9,7 +9,7 @@ import AppKit
 /// the Changes tab) would see all of its output dropped on the floor.
 ///
 /// Lifecycle:
-/// 1. `RunController` / `SetupController` calls `park(_:)` right after
+/// 1. `RunController` / `SetupController` calls `park(_:)` before
 ///    spawning the script — the emulator joins the incubator window, its
 ///    surface is built, and PTY output flows into ghostty's scrollback.
 /// 2. When the inspector's run panel mounts, it calls `adopt(_:into:)` to
@@ -19,14 +19,28 @@ import AppKit
 ///    stays alive; bytes keep accumulating.
 @MainActor
 enum TerminalIncubator {
+    private static let parkedSize = NSSize(width: 960, height: 600)
     private static let window: NSWindow = makeWindow()
 
-    /// Move `view` into the incubator's contentView. No-op if it's already
-    /// parked there.
+    /// Move `view` into the incubator's contentView and keep it at a real
+    /// terminal size. Re-parked views are resized in place.
     static func park(_ view: NSView) {
-        guard let parent = window.contentView, view.superview !== parent else { return }
+        guard let parent = window.contentView else { return }
+        window.setContentSize(parkedSize)
+        parent.frame = NSRect(origin: .zero, size: parkedSize)
+
+        view.translatesAutoresizingMaskIntoConstraints = true
+        view.autoresizingMask = [.width, .height]
+        view.frame = parent.bounds
+
+        guard view.superview !== parent else {
+            view.layoutSubtreeIfNeeded()
+            return
+        }
+
         view.removeFromSuperview()
         parent.addSubview(view)
+        view.layoutSubtreeIfNeeded()
     }
 
     /// Move `view` out of wherever it is and into `parent`. The caller is
@@ -40,7 +54,7 @@ enum TerminalIncubator {
 
     private static func makeWindow() -> NSWindow {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1, height: 1),
+            contentRect: NSRect(origin: .zero, size: parkedSize),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
@@ -50,7 +64,7 @@ enum TerminalIncubator {
         window.ignoresMouseEvents = true
         window.hasShadow = false
         window.collectionBehavior = [.transient, .ignoresCycle, .stationary]
-        window.contentView = NSView()
+        window.contentView = NSView(frame: NSRect(origin: .zero, size: parkedSize))
         return window
     }
 }

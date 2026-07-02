@@ -12,8 +12,11 @@ public final class InMemoryTerminalSession: @unchecked Sendable {
     private let lock = NSLock()
     private var surface: ghostty_surface_t?
     private var lastResize: InMemoryTerminalViewport?
+    private var pendingOutput = Data()
     private let writeHandler: @Sendable (Data) -> Void
     private let resizeHandler: @Sendable (InMemoryTerminalViewport) -> Void
+    private let maxPendingOutputBytes = 1_000_000
+    private let trimPendingOutputTargetBytes = 750_000
 
     public init(
         write: @escaping @Sendable (Data) -> Void,
@@ -27,12 +30,27 @@ public final class InMemoryTerminalSession: @unchecked Sendable {
 
     func setSurface(_ surface: ghostty_surface_t?) {
         lock.lock()
-        defer { lock.unlock() }
         self.surface = surface
+        let pending = surface == nil ? Data() : pendingOutput
+        if surface != nil {
+            pendingOutput.removeAll(keepingCapacity: true)
+        }
+        defer { lock.unlock() }
         TerminalDebugLog.log(
             .lifecycle,
             "in-memory session surface=\(surface == nil ? "nil" : "set")"
         )
+        guard let surface, !pending.isEmpty else { return }
+        TerminalDebugLog.log(
+            .output,
+            "terminal <- pending host \(TerminalDebugLog.describe(pending))"
+        )
+        pending.withUnsafeBytes { buffer in
+            guard let ptr = buffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                return
+            }
+            ghostty_surface_write_buffer(surface, ptr, UInt(buffer.count))
+        }
     }
 
     func clearSurface(ifMatches expectedSurface: ghostty_surface_t?) {
@@ -127,9 +145,10 @@ public final class InMemoryTerminalSession: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard let surface else {
+            appendPendingOutputLocked(data)
             TerminalDebugLog.log(
                 .output,
-                "terminal <- host dropped \(TerminalDebugLog.describe(data))"
+                "terminal <- host buffered \(TerminalDebugLog.describe(data))"
             )
             return
         }
@@ -237,6 +256,17 @@ public final class InMemoryTerminalSession: @unchecked Sendable {
             "resize dispatched cols=\(mergedResize.columns) rows=\(mergedResize.rows) pixels=\(mergedResize.widthPixels)x\(mergedResize.heightPixels) cell=\(mergedResize.cellWidthPixels)x\(mergedResize.cellHeightPixels)"
         )
         resizeHandler(mergedResize)
+    }
+
+    private func appendPendingOutputLocked(_ data: Data) {
+        pendingOutput.append(data)
+        guard pendingOutput.count > maxPendingOutputBytes else { return }
+        let dropCount = pendingOutput.count - trimPendingOutputTargetBytes
+        pendingOutput.removeFirst(dropCount)
+        TerminalDebugLog.log(
+            .output,
+            "terminal pending host output trimmed bytes=\(dropCount)"
+        )
     }
 
     private func mergedResize(_ resize: InMemoryTerminalViewport) -> InMemoryTerminalViewport {
