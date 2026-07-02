@@ -86,6 +86,27 @@ enum Workspaces {
         }
     }
 
+    static func updateBranchName(id: String, branchName: String) throws {
+        _ = try Database.shared.writer.write { db in
+            try Workspace
+                .filter(key: id)
+                .updateAll(db, Workspace.Columns.branchName.set(to: branchName))
+        }
+    }
+
+    static func updatePRIdentity(id: String, number: Int?, url: String?) throws {
+        try Database.shared.writer.write { db in
+            try db.execute(
+                sql: """
+                UPDATE workspaces
+                SET pullRequestNumber = ?, pullRequestURL = ?
+                WHERE id = ?
+                """,
+                arguments: [number, url, id]
+            )
+        }
+    }
+
     static func archive(id: String) throws {
         _ = try Database.shared.writer.write { db in
             try Workspace

@@ -2,6 +2,16 @@ import Foundation
 
 /// Worktree lifecycle: create branch + worktree, remove worktree, detect repo info.
 enum WorktreeOps {
+    struct BranchIdentity: Sendable, Equatable {
+        var localBranch: String?
+        var upstreamBranch: String?
+
+        /// GitHub PR lookup is keyed to the remote head branch. Prefer the
+        /// upstream when it exists; otherwise fall back to the checked-out
+        /// local branch.
+        var lookupBranch: String? { upstreamBranch ?? localBranch }
+    }
+
     enum ImportError: LocalizedError {
         case branchInUse(branch: String, byPath: String)
 
@@ -68,6 +78,36 @@ enum WorktreeOps {
         )
         let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed?.nonBlank
+    }
+
+    static func branchIdentity(at worktreePath: String, remote: String) async -> BranchIdentity {
+        async let local = currentBranch(at: worktreePath)
+        async let upstream = upstreamBranch(at: worktreePath, remote: remote)
+        return await BranchIdentity(localBranch: local, upstreamBranch: upstream)
+    }
+
+    static func currentBranch(at worktreePath: String) async -> String? {
+        let raw = try? await GitRunner.runChecked(
+            ["branch", "--show-current"],
+            cwd: worktreePath
+        )
+        return raw?.trimmingCharacters(in: .whitespacesAndNewlines).nonBlank
+    }
+
+    static func upstreamBranch(at worktreePath: String, remote: String) async -> String? {
+        let raw = try? await GitRunner.runChecked(
+            ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+            cwd: worktreePath
+        )
+        guard let upstream = raw?.trimmingCharacters(in: .whitespacesAndNewlines).nonBlank else {
+            return nil
+        }
+        let prefix = "\(remote)/"
+        if upstream.hasPrefix(prefix) {
+            return String(upstream.dropFirst(prefix.count)).nonBlank
+        }
+        guard let slash = upstream.firstIndex(of: "/") else { return upstream }
+        return String(upstream[upstream.index(after: slash)...]).nonBlank
     }
 
     /// Remove a stale `index.lock` left behind when a git process was

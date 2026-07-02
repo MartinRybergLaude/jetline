@@ -108,8 +108,9 @@ sidebar → AppState.selectWorkspace → ensure PTYSession → spawn agent
                                                                      → WorkspaceState
                                                                      → inspector views
 
-PRTracker (timer + kicks) → gh pr view / gh pr checks → AppState.applyPR
-                                                      → on-disk PRSnapshots cache
+PRTracker (timer + kicks) → reconcile branch/upstream → gh GraphQL PR poll
+                          → PR number/url identity + on-disk PRSnapshots cache
+                          → AppState.applyPR
 
 git action bar → GitActionPrompts.render → new PTYSession with initial prompt
               ↘ mergePR → gh pr merge (no agent)
@@ -117,8 +118,8 @@ git action bar → GitActionPrompts.render → new PTYSession with initial promp
 ```
 
 Workspaces live in `~/.jetline/worktrees/<repoId>/<workspaceId>`. The
-SQLite db lives at `~/.jetline/jetline.sqlite`. PR snapshots are cached
-alongside it. Terminal receive diagnostics are written to
+SQLite db lives at `~/.jetline/jetline.sqlite`. PR identities and snapshots are
+cached alongside it. Terminal receive diagnostics are written to
 `~/.jetline/jetline-terminal-receive.log` and rotated at 5 MB. Override the
 data dir with the `JETLINE_DATA_DIR` env var.
 

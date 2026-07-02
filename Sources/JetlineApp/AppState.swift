@@ -265,7 +265,9 @@ final class AppState: ObservableObject {
             in: repo,
             branchName: pr.headRefName,
             baseBranch: pr.baseRefName,
-            name: name
+            name: name,
+            pullRequestNumber: pr.number,
+            pullRequestURL: pr.url
         )
     }
 
@@ -292,7 +294,9 @@ final class AppState: ObservableObject {
         in repo: Repository,
         branchName: String,
         baseBranch: String,
-        name: String
+        name: String,
+        pullRequestNumber: Int? = nil,
+        pullRequestURL: String? = nil
     ) async {
         let id = UUID().uuidString
         let agent = settings.defaultAgent
@@ -324,6 +328,8 @@ final class AppState: ObservableObject {
             name: name,
             branchName: branchName,
             baseBranch: baseBranch,
+            pullRequestNumber: pullRequestNumber,
+            pullRequestURL: pullRequestURL,
             worktreePath: path,
             agent: agent,
             createdAt: now,
@@ -1028,6 +1034,52 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Correct stale workspace branch metadata when the underlying worktree or
+    /// upstream branch changed outside Jetline (for example, an agent pushed
+    /// `HEAD` to a renamed remote branch before opening a PR).
+    @discardableResult
+    func updateWorkspaceBranchName(_ branchName: String, for workspaceId: String) -> Workspace? {
+        guard var workspace = workspaceById(workspaceId),
+              !isRepositoryBaseWorkspace(workspace) else { return nil }
+        guard workspace.branchName != branchName else { return workspace }
+
+        let previous = workspace.branchName
+        workspace.branchName = branchName
+        let hadPRIdentity = workspace.pullRequestNumber != nil || workspace.pullRequestURL != nil
+        workspace.pullRequestNumber = nil
+        workspace.pullRequestURL = nil
+        replaceWorkspace(workspace)
+        activityLog.record(
+            .prPoll,
+            "Reconciled branch \(previous) → \(branchName)",
+            repoId: workspace.repositoryId,
+            workspaceId: workspace.id
+        )
+        Task.detached(priority: .utility) {
+            try? Workspaces.updateBranchName(id: workspaceId, branchName: branchName)
+            if hadPRIdentity {
+                try? Workspaces.updatePRIdentity(id: workspaceId, number: nil, url: nil)
+            }
+        }
+        return workspace
+    }
+
+    /// Persist a durable PR identity once a poll or import has discovered it.
+    /// Future polls can refresh by number instead of relying on branch-name
+    /// lookup, which is fragile when tools rename/switch branches.
+    func applyPRIdentity(number: Int, url: String, for workspaceId: String) {
+        guard var workspace = workspaceById(workspaceId),
+              !isRepositoryBaseWorkspace(workspace) else { return }
+        guard workspace.pullRequestNumber != number || workspace.pullRequestURL != url else { return }
+
+        workspace.pullRequestNumber = number
+        workspace.pullRequestURL = url
+        replaceWorkspace(workspace)
+        Task.detached(priority: .utility) {
+            try? Workspaces.updatePRIdentity(id: workspaceId, number: number, url: url)
+        }
+    }
+
     /// User-initiated refresh: mark the workspace as awaiting a poll result
     /// (drives the spinner) and wake the tracker. The marker is cleared by
     /// `endPRRefresh` from `pollGitHub`'s defer; the timeout is a backstop
@@ -1185,6 +1237,13 @@ final class AppState: ObservableObject {
             }
         }
         return nil
+    }
+
+    private func replaceWorkspace(_ workspace: Workspace) {
+        guard var list = workspacesByRepo[workspace.repositoryId],
+              let idx = list.firstIndex(where: { $0.id == workspace.id }) else { return }
+        list[idx] = workspace
+        workspacesByRepo[workspace.repositoryId] = list
     }
 
     func saveSettings(_ s: AppSettings) {

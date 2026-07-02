@@ -9,6 +9,8 @@ struct Workspace: Codable, Identifiable, Hashable, FetchableRecord, PersistableR
     var name: String
     var branchName: String
     var baseBranch: String
+    var pullRequestNumber: Int?
+    var pullRequestURL: String?
     var worktreePath: String
     var agent: AgentKind
     var createdAt: Date
@@ -48,6 +50,8 @@ struct Workspace: Codable, Identifiable, Hashable, FetchableRecord, PersistableR
         static let name = Column(CodingKeys.name)
         static let branchName = Column(CodingKeys.branchName)
         static let baseBranch = Column(CodingKeys.baseBranch)
+        static let pullRequestNumber = Column(CodingKeys.pullRequestNumber)
+        static let pullRequestURL = Column(CodingKeys.pullRequestURL)
         static let worktreePath = Column(CodingKeys.worktreePath)
         static let agent = Column(CodingKeys.agent)
         static let createdAt = Column(CodingKeys.createdAt)

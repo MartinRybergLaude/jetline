@@ -243,6 +243,7 @@ struct CheckRun: Codable, Sendable, Hashable, Identifiable {
 struct PRSummary: Sendable, Hashable, Identifiable {
     let number: Int
     let title: String
+    let url: String
     let authorLogin: String
     let headRefName: String
     let headRepositoryOwner: String
@@ -307,6 +308,40 @@ enum MergeMethod: String, CaseIterable, Hashable, Sendable {
 }
 
 enum GitHubRunner {
+    private static let pullRequestFragment = """
+    fragment PR on PullRequest {
+      number title url state isDraft headRefName baseRefName createdAt mergedAt
+      mergeable mergeStateStatus reviewDecision
+      reviewThreads(first: 50) {
+        nodes { isResolved }
+        pageInfo { hasNextPage }
+      }
+      comments { totalCount }
+      author { login }
+      commits(last: 1) {
+        nodes {
+          commit {
+            statusCheckRollup {
+              contexts(first: 100) {
+                nodes {
+                  __typename
+                  ... on CheckRun {
+                    name status conclusion detailsUrl startedAt completedAt
+                    checkSuite { workflowRun { workflow { name } } }
+                  }
+                  ... on StatusContext {
+                    context state targetUrl createdAt
+                  }
+                }
+                pageInfo { hasNextPage }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+
     enum Error: LocalizedError {
         case ghMissing
         case authRequired
@@ -387,37 +422,7 @@ enum GitHubRunner {
         \(aliasFields)
           }
         }
-        fragment PR on PullRequest {
-          number title url state isDraft headRefName baseRefName createdAt mergedAt
-          mergeable mergeStateStatus reviewDecision
-          reviewThreads(first: 50) {
-            nodes { isResolved }
-            pageInfo { hasNextPage }
-          }
-          comments { totalCount }
-          author { login }
-          commits(last: 1) {
-            nodes {
-              commit {
-                statusCheckRollup {
-                  contexts(first: 100) {
-                    nodes {
-                      __typename
-                      ... on CheckRun {
-                        name status conclusion detailsUrl startedAt completedAt
-                        checkSuite { workflowRun { workflow { name } } }
-                      }
-                      ... on StatusContext {
-                        context state targetUrl createdAt
-                      }
-                    }
-                    pageInfo { hasNextPage }
-                  }
-                }
-              }
-            }
-          }
-        }
+        \(pullRequestFragment)
         """
 
         var args: [String] = [
@@ -453,11 +458,81 @@ enum GitHubRunner {
         return out
     }
 
+    /// Fetch PR snapshots by durable PR number. This is the preferred refresh
+    /// path once a workspace has discovered a PR, because it survives branch
+    /// renames and stale local workspace metadata.
+    static func batchFetchPRsByNumber(
+        repo: RepoIdentifier,
+        numbers: [Int],
+        cwd: String
+    ) async throws -> [Int: (PullRequest, [CheckRun])] {
+        let uniqueNumbers = Array(Set(numbers)).sorted()
+        guard !uniqueNumbers.isEmpty else { return [:] }
+
+        let aliases = uniqueNumbers.enumerated().map { (alias: "n\($0.offset)", number: $0.element) }
+        let varDecls = (["$owner: String!", "$name: String!"]
+            + aliases.map { "$\($0.alias): Int!" }).joined(separator: ", ")
+        let aliasFields = aliases.map { a in
+            """
+              \(a.alias): pullRequest(number: $\(a.alias)) { ...PR }
+            """
+        }.joined(separator: "\n")
+        let query = """
+        query(\(varDecls)) {
+          repository(owner: $owner, name: $name) {
+        \(aliasFields)
+          }
+        }
+        \(pullRequestFragment)
+        """
+
+        var args: [String] = [
+            "api", "graphql",
+            "-F", "owner=\(repo.owner)",
+            "-F", "name=\(repo.name)"
+        ]
+        for a in aliases { args.append(contentsOf: ["-F", "\(a.alias)=\(a.number)"]) }
+        args.append(contentsOf: ["-f", "query=\(query)"])
+
+        let stdout = try await runGH(args, cwd: cwd)
+        let response = try JSONDecoder().decode(GraphQLResponse<RepoNumberBatch>.self, from: Data(stdout.utf8))
+        if let errors = response.errors, !errors.isEmpty {
+            throw Error.other(errors.map(\.message).joined(separator: "; "))
+        }
+        guard let aliasMap = response.data?.repository?.aliases else { return [:] }
+
+        var out: [Int: (PullRequest, [CheckRun])] = [:]
+        for a in aliases {
+            guard let node = aliasMap[a.alias] else { continue }
+            if node.reviewThreads?.pageInfo?.hasNextPage == true {
+                print("batchFetchPRsByNumber: PR #\(node.number) in \(repo.owner)/\(repo.name) has more than 50 review threads; tail truncated.")
+            }
+            if node.commits?.nodes.first?.commit.statusCheckRollup?.contexts.pageInfo?.hasNextPage == true {
+                print("batchFetchPRsByNumber: PR #\(node.number) in \(repo.owner)/\(repo.name) has more than 100 check contexts; tail truncated.")
+            }
+            out[a.number] = (node.toPullRequest(), node.checkRuns)
+        }
+        return out
+    }
+
     /// Merge a PR with the chosen strategy. Goes through `runGH` so the
     /// caller gets the same `ghMissing` / `authRequired` error mapping as
     /// the rest of the gh surface.
     static func mergePR(_ number: Int, method: MergeMethod, cwd: String) async throws {
         _ = try await runGH(["pr", "merge", String(number), method.ghFlag], cwd: cwd)
+    }
+
+    /// Ask `gh` which PR is associated with the checkout's current branch.
+    /// Returns nil for the normal "no PR for this branch" case and throws only
+    /// for real CLI/auth/API failures.
+    static func currentBranchPRNumber(cwd: String) async throws -> Int? {
+        do {
+            let stdout = try await runGH(["pr", "view", "--json", "number"], cwd: cwd)
+            struct Response: Decodable { let number: Int }
+            return try JSONDecoder().decode(Response.self, from: Data(stdout.utf8)).number
+        } catch Error.other(let msg) where isNoPullRequestMessage(msg) {
+            return nil
+        }
     }
 
     /// Open PRs on the repo, newest-update first. Slimmer than
@@ -474,7 +549,7 @@ enum GitHubRunner {
           repository(owner: $owner, name: $name) {
             pullRequests(first: 100, states: OPEN, orderBy: {field: UPDATED_AT, direction: DESC}) {
               nodes {
-                number title isDraft updatedAt
+                number title url isDraft updatedAt
                 headRefName baseRefName
                 headRepositoryOwner { login }
                 author { login }
@@ -533,6 +608,13 @@ enum GitHubRunner {
         }
         throw Error.other(result.stderr.nonBlank ?? "gh exited with status \(result.status)")
     }
+
+    private static func isNoPullRequestMessage(_ message: String) -> Bool {
+        let lower = message.lowercased()
+        return lower.contains("no pull requests found")
+            || lower.contains("no open pull requests")
+            || lower.contains("no pull request found")
+    }
 }
 
 // MARK: - GraphQL response wiring
@@ -557,6 +639,25 @@ private struct RepoBatch: Decodable {
             var map: [String: PRBatchEntry] = [:]
             for key in c.allKeys {
                 map[key.stringValue] = try c.decode(PRBatchEntry.self, forKey: key)
+            }
+            aliases = map
+        }
+    }
+}
+
+private struct RepoNumberBatch: Decodable {
+    let repository: AliasedRepository?
+
+    struct AliasedRepository: Decodable {
+        let aliases: [String: PRNode]
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: DynamicKey.self)
+            var map: [String: PRNode] = [:]
+            for key in c.allKeys {
+                if let node = try c.decodeIfPresent(PRNode.self, forKey: key) {
+                    map[key.stringValue] = node
+                }
             }
             aliases = map
         }
@@ -742,6 +843,7 @@ private struct OpenPRsRepo: Decodable {
 private struct PRSummaryNode: Decodable {
     let number: Int
     let title: String
+    let url: String
     let isDraft: Bool
     let updatedAt: String
     let headRefName: String
@@ -781,6 +883,7 @@ private struct PRSummaryNode: Decodable {
         return PRSummary(
             number: number,
             title: title,
+            url: url,
             authorLogin: author?.login ?? "unknown",
             headRefName: headRefName,
             headRepositoryOwner: headRepositoryOwner?.login ?? "",

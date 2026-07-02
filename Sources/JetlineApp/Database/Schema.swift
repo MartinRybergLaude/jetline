@@ -198,5 +198,12 @@ enum Schema {
                     .defaults(to: true)
             }
         }
+
+        migrator.registerMigration("v18_workspace_pr_identity") { db in
+            try db.alter(table: "workspaces") { t in
+                t.add(column: "pullRequestNumber", .integer)
+                t.add(column: "pullRequestURL", .text)
+            }
+        }
     }
 }
