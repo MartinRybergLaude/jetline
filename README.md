@@ -12,7 +12,7 @@ action bar that fast-paths the common things and hands the rest to an agent.
 - SQLite persistence (workspaces, settings, PR snapshots) ✅
 - Sidebar with repos & workspaces, drag-reorder, per-repo settings ✅
 - Embedded terminal hosting `claude` / `codex` / `vibe` / shell ✅ (libghostty-backed)
-- Multiple session tabs per workspace, ⌘1…⌘9 / ⌘⌥← →, drag-reorder ✅
+- Multiple session tabs per workspace, ⌘N new workspace, ⌘1…⌘9 tabs, ⌘⇧←/→ terminals, ⌘⇧↑/↓ workspaces, drag-reorder ✅
 - Inspector: changes (combined / PR / local), PR + checks, run output ✅
 - FSEvents watcher → live diff refresh + PR poll kick ✅
 - Git action bar: commit / create PR / pull / rebase / fix CI / fix comments / review / merge ✅

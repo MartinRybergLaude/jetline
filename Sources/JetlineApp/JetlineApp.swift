@@ -29,6 +29,14 @@ struct JetlineApp: App {
                 CheckForUpdatesMenuItem(vm: updater)
             }
             CommandGroup(replacing: .newItem) {
+                Button("New Workspace…") {
+                    state.openWorkspaceCreationForSelectedRepository()
+                }
+                .keyboardShortcut("n", modifiers: [.command])
+                .disabled(state.selectedRepository == nil)
+
+                Divider()
+
                 Button("New Tab") {
                     if let ws = activeWorkspace() {
                         state.startNewSession(for: ws, agent: state.settings.defaultAgent)

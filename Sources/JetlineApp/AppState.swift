@@ -37,12 +37,19 @@ final class AppState: ObservableObject {
     /// of its own) so AppShell can host the sheet; sidebar / welcome do
     /// the same locally without going through this.
     @Published var repoPendingSettings: Repository?
+    /// Repo whose workspace-creation sheet should be presented at shell
+    /// level. Used by menu commands that don't have access to SidebarView's
+    /// local sheet state.
+    @Published var repoPendingWorkspaceCreation: Repository?
 
     /// Per-workspace mutable state. Not `@Published` — views look up the
     /// `WorkspaceState` for their workspace and `WorkspaceState` is
     /// `@Observable`, so a single workspace's mutations only invalidate
     /// views that actually read the changed keypath.
     private var workspaceStates: [String: WorkspaceState] = [:]
+    /// Defers non-visual selection work so the selected row and terminal
+    /// region can repaint before watchers/diff/session startup run.
+    private var workspaceActivationTask: Task<Void, Never>?
     /// Cancels pending inspector rebinds while the user is moving quickly
     /// through the workspace list.
     private var inspectorSelectionTask: Task<Void, Never>?
@@ -182,6 +189,17 @@ final class AppState: ObservableObject {
 
     func selectRepositoryHead(_ repo: Repository) {
         selectWorkspace(repositoryBaseWorkspaceId(for: repo))
+    }
+
+    var selectedRepository: Repository? {
+        guard let id = selectedWorkspaceId,
+              let workspace = workspaceById(id) else { return nil }
+        return repositories.first { $0.id == workspace.repositoryId }
+    }
+
+    func openWorkspaceCreationForSelectedRepository() {
+        guard let repo = selectedRepository else { return }
+        repoPendingWorkspaceCreation = repo
     }
 
     private func repositoryBaseWorkspace(for repo: Repository) -> Workspace {
@@ -541,6 +559,28 @@ final class AppState: ObservableObject {
     func selectWorkspace(_ id: String) {
         selectedWorkspaceId = id
         scheduleInspectorWorkspace(id)
+        scheduleWorkspaceActivation(id)
+    }
+
+    private func clearSelectedWorkspace() {
+        selectedWorkspaceId = nil
+        workspaceActivationTask?.cancel()
+        inspectorSelectionTask?.cancel()
+        inspectorWorkspaceId = nil
+    }
+
+    private func scheduleWorkspaceActivation(_ id: String) {
+        workspaceActivationTask?.cancel()
+        workspaceActivationTask = Task { [weak self] in
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            guard let self,
+                  self.selectedWorkspaceId == id else { return }
+            self.activateSelectedWorkspace(id)
+        }
+    }
+
+    private func activateSelectedWorkspace(_ id: String) {
         guard let ws = workspaceById(id) else { return }
         persistSelectionTouch(id)
         guard worktreeExists(for: ws) else {
@@ -550,12 +590,6 @@ final class AppState: ObservableObject {
         ensureSessionExists(for: ws)
         startWatcher(for: ws)
         Task { await refreshDiff(for: ws) }
-    }
-
-    private func clearSelectedWorkspace() {
-        selectedWorkspaceId = nil
-        inspectorSelectionTask?.cancel()
-        inspectorWorkspaceId = nil
     }
 
     private func scheduleInspectorWorkspace(_ id: String) {
@@ -952,16 +986,24 @@ final class AppState: ObservableObject {
         selectSession(ws.sessions[next].id, in: wsId)
     }
 
-    /// Move through the sidebar's repo/workspace stack as a vertical axis:
-    /// base checkout, then that repo's workspaces, then the next repo. Wraps.
+    /// Move through already-open workspaces as a vertical axis. Keyboard
+    /// navigation should not open a new worktree just because it sits between
+    /// two loaded rows in the sidebar.
     func cycleWorkspaceSelection(forward: Bool) {
-        let ids = sidebarWorkspaceOrder()
+        let ids = loadedSidebarWorkspaceOrder()
         guard !ids.isEmpty else { return }
         let current = selectedWorkspaceId.flatMap { ids.firstIndex(of: $0) }
         let start = forward ? -1 : 0
         let idx = current ?? start
         let next = (idx + (forward ? 1 : -1) + ids.count) % ids.count
         selectWorkspace(ids[next])
+    }
+
+    private func loadedSidebarWorkspaceOrder() -> [String] {
+        sidebarWorkspaceOrder().filter { id in
+            guard let state = workspaceStates[id] else { return false }
+            return !state.sessions.isEmpty
+        }
     }
 
     private func sidebarWorkspaceOrder() -> [String] {
