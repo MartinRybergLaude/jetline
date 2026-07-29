@@ -55,6 +55,8 @@ final class AppState: ObservableObject {
     private var inspectorSelectionTask: Task<Void, Never>?
 
     private var watchers: [String: WorktreeWatcher] = [:]
+    private var diffRefreshTasks: [String: Task<Void, Never>] = [:]
+    private var diffRefreshQueued: Set<String> = []
     private(set) lazy var prTracker: PRTracker = PRTracker(state: self)
     /// In-memory debug log of background activity (poll, fetch, FF, user
     /// git actions). Surfaced through the hidden Activity Log window;
@@ -1074,6 +1076,24 @@ final class AppState: ObservableObject {
     // MARK: - Diff & watcher
 
     func refreshDiff(for workspace: Workspace) async {
+        let id = workspace.id
+        if let running = diffRefreshTasks[id] {
+            diffRefreshQueued.insert(id)
+            await running.value
+            return
+        }
+        let task = Task { [weak self] in
+            await self?.performDiffRefresh(for: workspace)
+            while let self, self.diffRefreshQueued.remove(id) != nil {
+                await self.performDiffRefresh(for: workspace)
+            }
+            self?.diffRefreshTasks[id] = nil
+        }
+        diffRefreshTasks[id] = task
+        await task.value
+    }
+
+    private func performDiffRefresh(for workspace: Workspace) async {
         guard worktreeExists(for: workspace) else {
             handleMissingWorktree(workspace)
             return
