@@ -10,9 +10,10 @@ action bar that fast-paths the common things and hands the rest to an agent.
 - Repo + worktree management ✅
 - Import an existing branch or PR as a workspace ✅
 - SQLite persistence (workspaces, settings, PR snapshots) ✅
-- Sidebar with repos & workspaces, drag-reorder, per-repo settings ✅
+- Sidebar with repos & workspaces, drag-reorder of repo sections and workspace rows (hold to lift, drag, release; within one repo), per-repo settings ✅
 - Embedded terminal hosting `claude` / `codex` / `vibe` / shell ✅ (libghostty-backed)
-- Multiple session tabs per workspace, ⌘N new workspace, ⌘1…⌘9 tabs, ⌘⇧←/→ terminals, ⌘⇧↑/↓ workspaces, drag-reorder ✅
+- Multiple session tabs per workspace, ⌘N new workspace, ⌘1…⌘9 tabs, ⌘⇧←/→ (or ⌘⇧H/L) terminals, ⌘⇧↑/↓ (or ⌘⇧J/K) workspaces, drag-reorder ✅ — the ⌘⇧ shortcuts yield to standard text selection while repo or app settings are being edited
+- Close a workspace from its sidebar row (✕ on hover) or by closing its last tab — ends its sessions and drops it from ⌘⇧↑/↓ cycling ✅
 - Inspector: changes (combined / PR / local), PR + checks, run output ✅
 - FSEvents watcher → live diff refresh + PR poll kick ✅
 - Git action bar: commit / create PR / pull / rebase / fix CI / fix comments / review / merge ✅
