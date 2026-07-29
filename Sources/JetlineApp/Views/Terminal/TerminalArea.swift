@@ -24,6 +24,21 @@ struct TerminalArea: View {
     @State private var visibleTargetIndex: Int?
     @State private var tabFrames: [String: CGRect] = [:]
 
+    /// The session whose terminal is currently mounted. Trails
+    /// `workspaceState.activeSessionId` during rapid keyboard navigation
+    /// (⌘⇧↑/↓ workspace cycling, ⌘⇧←/→ tab cycling): every mount/unmount
+    /// costs two ghostty surface reflows plus a SIGWINCH-driven TUI redraw,
+    /// so remounting on each hop makes held-key navigation crawl. A single
+    /// switch applies immediately; only switches arriving within
+    /// `rapidSwitchWindow` of the previous one blank the surface and settle
+    /// after `settleDelay`.
+    @State private var displayedSession: PTYSession?
+    @State private var displaySettleTask: Task<Void, Never>?
+    @State private var lastSessionSwitch: ContinuousClock.Instant?
+
+    private static let rapidSwitchWindow: Duration = .milliseconds(350)
+    private static let settleDelay: Duration = .milliseconds(120)
+
     private struct TabDragState: Equatable {
         let sessionId: String
         var translation: CGFloat
@@ -40,6 +55,9 @@ struct TerminalArea: View {
             terminalSurface
         }
         .background(Color(nsColor: .textBackgroundColor))
+        .onChange(of: workspaceState.activeSessionId, initial: true) {
+            syncDisplayedSession()
+        }
         .navigationTitle(workspace.name)
         // Suppress the stock title rendering — our principal item below
         // takes its place. `navigationTitle` above still drives the window
@@ -234,12 +252,46 @@ struct TerminalArea: View {
 
     @ViewBuilder
     private var terminalSurface: some View {
-        if let id = workspaceState.activeSessionId,
-           let session = workspaceState.sessions.first(where: { $0.id == id }) {
+        if let session = displayedSession {
             SessionSurface(session: session)
                 .id(session.id)
+        } else if workspaceState.activeSessionId != nil {
+            // Mid-navigation settle window — hold the slot in the terminal
+            // background colour so the eventual mount doesn't flash chrome.
+            Color(nsColor: colorScheme == .dark
+                ? GhosttyEmulator.darkBackground
+                : GhosttyEmulator.lightBackground)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    /// Leading-edge/trailing-edge debounce for the mounted terminal. The
+    /// first switch after a quiet period mounts immediately (no flash on a
+    /// plain click or single keystroke); switches inside `rapidSwitchWindow`
+    /// unmount the surface once and re-mount only after the burst settles,
+    /// so cycling across N workspaces pays two surface reflows instead of 2N.
+    private func syncDisplayedSession() {
+        displaySettleTask?.cancel()
+        let target = workspaceState.activeSessionId.flatMap { id in
+            workspaceState.sessions.first(where: { $0.id == id })
+        }
+        guard target !== displayedSession else { return }
+
+        let now = ContinuousClock.now
+        let isRapid = lastSessionSwitch.map { now - $0 < Self.rapidSwitchWindow } ?? false
+        lastSessionSwitch = now
+
+        guard isRapid else {
+            displayedSession = target
+            return
+        }
+        displayedSession = nil
+        displaySettleTask = Task { @MainActor in
+            try? await Task.sleep(for: Self.settleDelay)
+            guard !Task.isCancelled else { return }
+            displayedSession = target
         }
     }
 }
