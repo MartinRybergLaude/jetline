@@ -18,6 +18,7 @@ enum TerminalReceiveLog {
         let started: DispatchTime
         let bytes: Int
         let preview: String
+        var warned = false
     }
 
     private static let capBytes: UInt64 = 5 * 1024 * 1024
@@ -30,6 +31,7 @@ enum TerminalReceiveLog {
         var handle: FileHandle?
         var currentBytes: UInt64 = 0
         var active: [UInt64: ActiveWrite] = [:]
+        var stallCheckArmed = false
     }
 
     private static let store = Store()
@@ -65,7 +67,7 @@ enum TerminalReceiveLog {
         store.lock.unlock()
 
         write("begin id=\(token.id) session=\(sessionId) bytes=\(data.count) preview=\(quote(activeWrite.preview))")
-        scheduleStallWarning(id: token.id)
+        armStallCheck(afterNanos: stallWarningNanos)
         return token
     }
 
@@ -85,17 +87,45 @@ enum TerminalReceiveLog {
         write("drop-title-update session=\(sessionId) bytes=\(data.count) preview=\(quote(describe(data)))")
     }
 
-    private static func scheduleStallWarning(id: UInt64) {
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .nanoseconds(Int(stallWarningNanos))) {
-            store.lock.lock()
-            let item = store.active[id]
+    private static func armStallCheck(afterNanos: UInt64) {
+        store.lock.lock()
+        if store.stallCheckArmed {
             store.lock.unlock()
+            return
+        }
+        store.stallCheckArmed = true
+        store.lock.unlock()
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .nanoseconds(Int(afterNanos))) {
+            runStallCheck()
+        }
+    }
 
-            guard let item else { return }
-            let duration = elapsedMilliseconds(since: item.started)
+    private static func runStallCheck() {
+        var stalled: [(id: UInt64, item: ActiveWrite)] = []
+        var oldestPending: DispatchTime?
+
+        store.lock.lock()
+        let now = DispatchTime.now()
+        store.stallCheckArmed = false
+        for (id, item) in store.active where !item.warned {
+            if now.uptimeNanoseconds - item.started.uptimeNanoseconds >= stallWarningNanos {
+                store.active[id]?.warned = true
+                stalled.append((id, item))
+            } else if oldestPending.map({ item.started < $0 }) ?? true {
+                oldestPending = item.started
+            }
+        }
+        store.lock.unlock()
+
+        for entry in stalled {
+            let duration = elapsedMilliseconds(since: entry.item.started)
             write(
-                "stalled id=\(id) session=\(item.sessionId) durationMs=\(format(duration)) bytes=\(item.bytes) preview=\(quote(item.preview))"
+                "stalled id=\(entry.id) session=\(entry.item.sessionId) durationMs=\(format(duration)) bytes=\(entry.item.bytes) preview=\(quote(entry.item.preview))"
             )
+        }
+        if let oldestPending {
+            let age = now.uptimeNanoseconds - oldestPending.uptimeNanoseconds
+            armStallCheck(afterNanos: stallWarningNanos - min(age, stallWarningNanos - 1))
         }
     }
 
