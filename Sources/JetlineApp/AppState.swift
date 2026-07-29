@@ -177,6 +177,21 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Same convention as `moveRepositorySections`, scoped to one repo's
+    /// workspace rows. Reordering never crosses repositories.
+    func moveWorkspaces(in repoId: String, from offsets: IndexSet, to destination: Int) {
+        guard var list = workspacesByRepo[repoId],
+              offsets.allSatisfy({ list.indices.contains($0) }),
+              (0...list.count).contains(destination) else { return }
+        list.move(fromOffsets: offsets, toOffset: destination)
+        workspacesByRepo[repoId] = list
+        do {
+            try Workspaces.reorder(orderedIds: list.map(\.id))
+        } catch {
+            Task { await presentError(error.localizedDescription) }
+        }
+    }
+
     // MARK: - Workspaces
 
     func repositoryBaseWorkspaceId(for repo: Repository) -> String {

@@ -205,5 +205,32 @@ enum Schema {
                 t.add(column: "pullRequestURL", .text)
             }
         }
+
+        migrator.registerMigration("v19_workspace_sort_index") { db in
+            try db.alter(table: "workspaces") { t in
+                t.add(column: "sortIndex", .integer).notNull().defaults(to: 0)
+            }
+            // Backfill per repository in the order rows were displayed
+            // pre-migration so the first launch after upgrading shows the
+            // same arrangement. Subsequent reorders rewrite the column.
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT id, repositoryId FROM workspaces
+                ORDER BY repositoryId, lastActiveAt DESC, createdAt DESC
+                """)
+            var currentRepo: String?
+            var idx = 0
+            for row in rows {
+                let repoId: String = row["repositoryId"]
+                if repoId != currentRepo {
+                    currentRepo = repoId
+                    idx = 0
+                }
+                try db.execute(
+                    sql: "UPDATE workspaces SET sortIndex = ? WHERE id = ?",
+                    arguments: [idx, row["id"] as String]
+                )
+                idx += 1
+            }
+        }
     }
 }

@@ -16,6 +16,10 @@ struct Workspace: Codable, Identifiable, Hashable, FetchableRecord, PersistableR
     var createdAt: Date
     var lastActiveAt: Date
     var archivedAt: Date?
+    /// Manual sidebar ordering within the repository section. Lower = nearer
+    /// the top. New workspaces are inserted below the current min so they
+    /// land at the top; reorders rewrite the column with 0…n-1 values.
+    var sortIndex: Int = 0
 
     enum AgentKind: String, Codable, CaseIterable, DatabaseValueConvertible {
         case claude
@@ -57,6 +61,7 @@ struct Workspace: Codable, Identifiable, Hashable, FetchableRecord, PersistableR
         static let createdAt = Column(CodingKeys.createdAt)
         static let lastActiveAt = Column(CodingKeys.lastActiveAt)
         static let archivedAt = Column(CodingKeys.archivedAt)
+        static let sortIndex = Column(CodingKeys.sortIndex)
     }
 
     static let repository = belongsTo(Repository.self)
