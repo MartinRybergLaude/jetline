@@ -27,6 +27,7 @@ final class PTYProcess: @unchecked Sendable {
     private var masterFd: Int32 = -1
     private var childPid: pid_t = 0
     private var readSource: DispatchSourceRead?
+    private var procSource: DispatchSourceProcess?
     private let queue = DispatchQueue(label: "PTYProcess.io", qos: .userInitiated)
     private var hasStarted = false
     private var hasReportedExit = false
@@ -139,6 +140,7 @@ final class PTYProcess: @unchecked Sendable {
         _ = fcntl(masterFd, F_SETFL, flags | O_NONBLOCK)
 
         startReadSource()
+        startProcessWatch()
     }
 
     /// Write bytes to the child's stdin. Loops over EAGAIN/EINTR.
@@ -193,18 +195,18 @@ final class PTYProcess: @unchecked Sendable {
         _ = kill(-childPid, SIGINT)
     }
 
-    /// Force-kill the child group, then close the master fd. The read
-    /// source's cancel handler reaps the exit status.
+    /// SIGHUP the child group so shells save history and agents clean up,
+    /// mirroring a real terminal close. The read source's cancel handler
+    /// reaps the exit status, escalating to SIGKILL if the child lingers,
+    /// and closes the master fd once the source is fully cancelled.
     func terminate() {
         if childPid > 0 {
-            _ = kill(-childPid, SIGKILL)
+            _ = kill(-childPid, SIGHUP)
         }
+        procSource?.cancel()
+        procSource = nil
         readSource?.cancel()
         readSource = nil
-        if masterFd >= 0 {
-            close(masterFd)
-            masterFd = -1
-        }
     }
 
     private func startReadSource() {
@@ -217,6 +219,24 @@ final class PTYProcess: @unchecked Sendable {
             self?.reapChildIfNeeded()
         }
         readSource = source
+        source.resume()
+    }
+
+    private func startProcessWatch() {
+        guard childPid > 0 else { return }
+        let source = DispatchSource.makeProcessSource(
+            identifier: childPid,
+            eventMask: .exit,
+            queue: queue
+        )
+        source.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.procSource?.cancel()
+            self.procSource = nil
+            self.drainOutput()
+            self.readSource?.cancel()
+        }
+        procSource = source
         source.resume()
     }
 
@@ -256,6 +276,9 @@ final class PTYProcess: @unchecked Sendable {
     private func reapChildIfNeeded() {
         if hasReportedExit { return }
         hasReportedExit = true
+
+        procSource?.cancel()
+        procSource = nil
 
         var status: Int32 = 0
         let pid = childPid

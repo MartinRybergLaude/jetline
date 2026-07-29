@@ -90,9 +90,10 @@ final class RunController: ObservableObject, Identifiable {
         DispatchQueue.main.asyncAfter(deadline: .now() + startupGrace, execute: warmup)
     }
 
-    /// Stop the run. SIGKILL via PTYProcess.terminate() — the run script
-    /// trampoline (`zsh -lc`) puts the script in its own process group, so
-    /// killing the group catches every descendant.
+    /// Stop the run. SIGHUP via PTYProcess.terminate(), escalating to
+    /// SIGKILL if the child lingers — the run script trampoline (`zsh -lc`)
+    /// puts the script in its own process group, so signalling the group
+    /// catches every descendant.
     func stop() {
         emulator?.terminate()
     }
