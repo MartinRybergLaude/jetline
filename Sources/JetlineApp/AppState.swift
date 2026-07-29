@@ -515,8 +515,8 @@ final class AppState: ObservableObject {
         }
         try? Workspaces.archive(id: workspace.id)
         try? PRSnapshots.remove(workspaceId: workspace.id)
+        reassignSelection(afterClosing: workspace.id)
         workspacesByRepo[workspace.repositoryId]?.removeAll { $0.id == workspace.id }
-        if selectedWorkspaceId == workspace.id { clearSelectedWorkspace() }
         activityLog.record(
             .lifecycle,
             "Archived workspace \(workspace.name)\(removeWorktree ? " (worktree removed)" : "")",
@@ -556,10 +556,48 @@ final class AppState: ObservableObject {
         return repo.addUniqueBranchSuffix ? "\(base)-\(id.prefix(6))" : base
     }
 
+    /// Selection recency, most recent last. Drives where selection lands
+    /// when the selected workspace closes. In-memory only: after a relaunch
+    /// there is no "previous tab" worth restoring.
+    private var selectionHistory: [String] = []
+
     func selectWorkspace(_ id: String) {
+        selectionHistory.removeAll { $0 == id }
+        selectionHistory.append(id)
         selectedWorkspaceId = id
         scheduleInspectorWorkspace(id)
         scheduleWorkspaceActivation(id)
+    }
+
+    /// Where selection should land after `id` closes: the most recently
+    /// selected workspace that is still open, else the nearest open sidebar
+    /// row above the closed one (below when nothing is open above). Only
+    /// open workspaces qualify — landing on a closed row would spawn a
+    /// session as a side effect.
+    private func nextSelection(afterClosing id: String) -> String? {
+        let openOrder = loadedSidebarWorkspaceOrder().filter { $0 != id }
+        guard !openOrder.isEmpty else { return nil }
+        let open = Set(openOrder)
+        if let recent = selectionHistory.reversed().first(where: { $0 != id && open.contains($0) }) {
+            return recent
+        }
+        let order = sidebarWorkspaceOrder()
+        if let idx = order.firstIndex(of: id) {
+            if let above = order[..<idx].last(where: { open.contains($0) }) { return above }
+            if let below = order[idx...].first(where: { open.contains($0) }) { return below }
+        }
+        return openOrder.first
+    }
+
+    /// Re-point selection after `id` closed or vanished. Falls back to an
+    /// empty selection when no other workspace is open.
+    private func reassignSelection(afterClosing id: String) {
+        guard selectedWorkspaceId == id else { return }
+        if let next = nextSelection(afterClosing: id) {
+            selectWorkspace(next)
+        } else {
+            clearSelectedWorkspace()
+        }
     }
 
     private func clearSelectedWorkspace() {
@@ -900,8 +938,8 @@ final class AppState: ObservableObject {
             ws.activeSessionId = neighbour?.id
         }
 
-        if ws.sessions.isEmpty, let workspace = workspaceById(workspaceId) {
-            startNewSession(for: workspace, agent: settings.defaultAgent)
+        if ws.sessions.isEmpty {
+            closeWorkspace(workspaceId)
         }
     }
 
@@ -1229,13 +1267,40 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Close a workspace's live runtime — sessions, watcher, run/setup
+    /// controllers — while keeping its sidebar entry and cached diff/PR
+    /// state. With no sessions left it drops out of ⌘⇧↑/↓ cycling.
+    func closeWorkspace(_ id: String) {
+        watchers[id]?.stop()
+        watchers.removeValue(forKey: id)
+        if let ws = workspaceStates[id] {
+            tearDownWorkspaceRuntime(ws)
+        }
+        removeStrandedIndexLock(workspaceId: id)
+        reassignSelection(afterClosing: id)
+        selectionHistory.removeAll { $0 == id }
+    }
+
     private func detachWorkspace(_ id: String) {
         watchers[id]?.stop()
         watchers.removeValue(forKey: id)
         if let ws = workspaceStates[id] {
             tearDownWorkspaceRuntime(ws)
         }
+        removeStrandedIndexLock(workspaceId: id)
         workspaceStates.removeValue(forKey: id)
+        selectionHistory.removeAll { $0 == id }
+    }
+
+    private func removeStrandedIndexLock(workspaceId: String) {
+        guard let workspace = workspaceById(workspaceId) else { return }
+        let worktreePath = workspace.worktreePath
+        Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard let gitDir = await WorktreeOps.gitDir(at: worktreePath) else { return }
+            guard !WorktreeOps.hasActiveIndexWrite(worktreePath: worktreePath) else { return }
+            WorktreeOps.removeIndexLock(gitDir: gitDir)
+        }
     }
 
     private func tearDownWorkspaceRuntime(_ ws: WorkspaceState) {
@@ -1262,10 +1327,8 @@ final class AppState: ObservableObject {
         detachWorkspace(workspace.id)
         try? Workspaces.archive(id: workspace.id)
         try? PRSnapshots.remove(workspaceId: workspace.id)
+        reassignSelection(afterClosing: workspace.id)
         workspacesByRepo[workspace.repositoryId]?.removeAll { $0.id == workspace.id }
-        if selectedWorkspaceId == workspace.id {
-            clearSelectedWorkspace()
-        }
         activityLog.record(
             .lifecycle,
             "Archived workspace \(workspace.name) because its worktree is missing",

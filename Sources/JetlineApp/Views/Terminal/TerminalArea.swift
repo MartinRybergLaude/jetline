@@ -854,9 +854,14 @@ struct TerminalHostView: NSViewRepresentable {
     /// libghostty's surface tears down, and PTY chunks that arrive while the
     /// tab is hidden get dropped. The surface persists across the reparent
     /// so when the user comes back the conversation is intact.
+    /// Only re-park while the terminal is still our subview: a closed
+    /// session's view was already detached by `closeSession` /
+    /// `tearDownWorkspaceRuntime` to release the libghostty surface, and
+    /// parking it here would resurrect that strong reference for good.
     static func dismantleNSView(_ nsView: NSView, coordinator: ()) {
         guard let container = nsView as? TerminalDropContainer,
-              let session = container.session else { return }
+              let session = container.session,
+              session.emulator.nsView.superview === container else { return }
         TerminalIncubator.park(session.emulator.nsView)
         session.emulator.setActive(false)
     }
