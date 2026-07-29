@@ -2,6 +2,10 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var state: AppState
+    /// Keyed off window activity, not appear/disappear — the Settings
+    /// window can stay open behind the main window, and ⌘⇧ navigation
+    /// should come back the moment the user clicks away from it.
+    @Environment(\.appearsActive) private var appearsActive
 
     var body: some View {
         TabView {
@@ -15,6 +19,10 @@ struct SettingsView: View {
                 .tabItem { Label("Terminal", systemImage: "terminal") }
         }
         .frame(width: 580, height: 520)
+        .onChange(of: appearsActive, initial: true) { _, active in
+            state.setNavShortcutsSuppressed(active, by: "app-settings")
+        }
+        .onDisappear { state.setNavShortcutsSuppressed(false, by: "app-settings") }
     }
 }
 

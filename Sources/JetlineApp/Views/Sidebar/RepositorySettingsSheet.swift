@@ -15,6 +15,9 @@ struct RepositorySettingsSheet: View {
     /// branch-prefix preview can show the live value the workspace creator
     /// will pick up.
     @State private var usernameSlug: String = ""
+    /// Per-instance token so overlapping open/close of two sheets can't
+    /// clear each other's ⌘⇧-navigation suppression.
+    @State private var navSuppressorId = UUID().uuidString
 
     init(repository: Repository) {
         self.repository = repository
@@ -37,6 +40,8 @@ struct RepositorySettingsSheet: View {
             footer
         }
         .frame(width: 580, height: 680)
+        .onAppear { state.setNavShortcutsSuppressed(true, by: navSuppressorId) }
+        .onDisappear { state.setNavShortcutsSuppressed(false, by: navSuppressorId) }
         .task { await loadRefs() }
         .confirmationDialog(
             "Delete \(repository.name)?",

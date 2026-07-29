@@ -41,6 +41,23 @@ final class AppState: ObservableObject {
     /// level. Used by menu commands that don't have access to SidebarView's
     /// local sheet state.
     @Published var repoPendingWorkspaceCreation: Repository?
+    /// Surfaces (repo settings sheet, app Settings window) that currently
+    /// want the ⌘⇧ navigation key equivalents released back to the text
+    /// system, so ⌘⇧←/→/↑/↓ extend the selection instead of switching
+    /// tabs/workspaces underneath the form being edited. The menu commands
+    /// disable themselves while this is non-empty; a disabled key
+    /// equivalent falls through to the field editor.
+    @Published private(set) var navShortcutSuppressors: Set<String> = []
+
+    var navShortcutsSuppressed: Bool { !navShortcutSuppressors.isEmpty }
+
+    func setNavShortcutsSuppressed(_ suppressed: Bool, by id: String) {
+        if suppressed {
+            navShortcutSuppressors.insert(id)
+        } else {
+            navShortcutSuppressors.remove(id)
+        }
+    }
 
     /// Per-workspace mutable state. Not `@Published` — views look up the
     /// `WorkspaceState` for their workspace and `WorkspaceState` is
