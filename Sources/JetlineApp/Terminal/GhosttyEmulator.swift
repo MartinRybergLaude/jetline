@@ -45,6 +45,13 @@ final class GhosttyEmulator: TerminalEmulatorView {
                 pendingPTY.process?.write(data)
             },
             resize: { viewport in
+                // Always record the viewport, even with no process yet: the
+                // surface is built (and its grid reported) while the view sits
+                // in the incubator, before spawn. `spawn` reads this back so
+                // the child's initial winsize matches the surface — and
+                // libghostty dedupes resize dispatch, so a report dropped
+                // here would never be re-sent once the process exists.
+                pendingPTY.viewport = viewport
                 pendingPTY.process?.resize(
                     cols: viewport.columns,
                     rows: viewport.rows,
@@ -65,9 +72,23 @@ final class GhosttyEmulator: TerminalEmulatorView {
 
     /// Captures the PTY reference so the InMemoryTerminalSession's
     /// `@Sendable` closures (constructed before `pty` exists) can route
-    /// writes/resizes to the eventual PTY.
+    /// writes/resizes to the eventual PTY. Also remembers the most recent
+    /// viewport so `spawn` can size the forkpty winsize to the surface's
+    /// real grid instead of the 80×24 default.
     private final class PTYHolder: @unchecked Sendable {
-        var process: PTYProcess?
+        private let lock = NSLock()
+        private var _process: PTYProcess?
+        private var _viewport: InMemoryTerminalViewport?
+
+        var process: PTYProcess? {
+            get { lock.lock(); defer { lock.unlock() }; return _process }
+            set { lock.lock(); defer { lock.unlock() }; _process = newValue }
+        }
+
+        var viewport: InMemoryTerminalViewport? {
+            get { lock.lock(); defer { lock.unlock() }; return _viewport }
+            set { lock.lock(); defer { lock.unlock() }; _viewport = newValue }
+        }
     }
     private let ptyHolder: PTYHolder
 
@@ -85,11 +106,20 @@ final class GhosttyEmulator: TerminalEmulatorView {
         let session = self.session
         let receiveLogSessionId = self.receiveLogSessionId
         TerminalReceiveLog.processStarted(sessionId: receiveLogSessionId, executable: executable, cwd: cwd)
+        // Spawn with the surface's current grid as the initial winsize. The
+        // surface reports its size before the process exists (the view is
+        // parked in the incubator from birth), so without this the child
+        // starts at 80×24 while the surface renders a different grid —
+        // full-screen TUIs like Claude Code and Codex then draw for a
+        // width the terminal doesn't have, leaving wrapped artifacts.
+        let viewport = ptyHolder.viewport
         let pty = PTYProcess(
             executable: executable,
             args: args,
             cwd: cwd,
             env: environment,
+            initialCols: viewport?.columns ?? 80,
+            initialRows: viewport?.rows ?? 24,
             output: { data in
                 // Hop to main before handing bytes to libghostty.
                 // `InMemoryTerminalSession.receive` holds an NSLock across
@@ -134,6 +164,18 @@ final class GhosttyEmulator: TerminalEmulatorView {
             try pty.start()
             self.pty = pty
             ptyHolder.process = pty
+            // Re-apply the latest viewport in case the grid changed between
+            // reading it above and the process coming up — libghostty's
+            // dispatch dedupes, so it won't re-send an unchanged grid now
+            // that someone is listening. Same-size TIOCSWINSZ is a no-op.
+            if let current = ptyHolder.viewport {
+                pty.resize(
+                    cols: current.columns,
+                    rows: current.rows,
+                    widthPx: current.widthPixels,
+                    heightPx: current.heightPixels
+                )
+            }
         } catch {
             // Surface the failure as terminal output so the user sees something.
             let message = "jetline: failed to spawn \(executable): \(error)\r\n"

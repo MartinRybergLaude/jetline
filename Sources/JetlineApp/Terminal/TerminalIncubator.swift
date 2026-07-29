@@ -22,16 +22,31 @@ enum TerminalIncubator {
     private static let parkedSize = NSSize(width: 960, height: 600)
     private static let window: NSWindow = makeWindow()
 
-    /// Move `view` into the incubator's contentView and keep it at a real
-    /// terminal size. Re-parked views are resized in place.
+    /// Views must be at least this large to keep their own size when
+    /// parked; anything smaller (fresh views are zero-sized) gets
+    /// `parkedSize` so the surface has a real grid to build against.
+    private static let minPreservedSize = NSSize(width: 64, height: 64)
+
+    /// Move `view` into the incubator's contentView, keeping it at a real
+    /// terminal size. A view that was live keeps its current frame: forcing
+    /// `parkedSize` here would round-trip the PTY through a foreign grid on
+    /// every tab switch (SIGWINCH → TUI redraw at the parked size, and again
+    /// on return), re-wrapping inline-drawn TUIs like Claude Code. Parking
+    /// size-neutral means hide/show fires no resize at all unless the
+    /// container genuinely changed size while the view was hidden. Parked
+    /// views may exceed the incubator window's bounds; the window is
+    /// invisible and the surface doesn't care about clipping.
     static func park(_ view: NSView) {
         guard let parent = window.contentView else { return }
-        window.setContentSize(parkedSize)
-        parent.frame = NSRect(origin: .zero, size: parkedSize)
 
         view.translatesAutoresizingMaskIntoConstraints = true
-        view.autoresizingMask = [.width, .height]
-        view.frame = parent.bounds
+        view.autoresizingMask = []
+        let hasLiveSize = view.frame.width >= minPreservedSize.width
+            && view.frame.height >= minPreservedSize.height
+        view.frame = NSRect(
+            origin: .zero,
+            size: hasLiveSize ? view.frame.size : parkedSize
+        )
 
         guard view.superview !== parent else {
             view.layoutSubtreeIfNeeded()
