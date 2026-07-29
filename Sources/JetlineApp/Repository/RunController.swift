@@ -47,7 +47,6 @@ final class RunController: ObservableObject, Identifiable {
     func start(script: String, cwd: String, env: [String: String]) {
         guard phase == .idle, let trimmed = script.nonBlank else { return }
 
-        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let term = GhosttyEmulator(
             fontSize: GhosttyEmulator.outputPanelFontSize,
             notifySurfaceOnExit: false
@@ -72,8 +71,8 @@ final class RunController: ObservableObject, Identifiable {
         term.setActive(false)
 
         term.spawn(
-            executable: shell,
-            args: ["-lc", trimmed],
+            executable: ShellScriptLauncher.shell,
+            args: ShellScriptLauncher.args(for: trimmed),
             cwd: cwd,
             env: env,
             outputTap: { [weak self] data in

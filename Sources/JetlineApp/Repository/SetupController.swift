@@ -48,7 +48,6 @@ final class SetupController: ObservableObject, Identifiable {
             phase = .finished(exitCode: 0)
             return
         }
-        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let term = GhosttyEmulator(
             fontSize: GhosttyEmulator.outputPanelFontSize,
             notifySurfaceOnExit: false
@@ -62,8 +61,8 @@ final class SetupController: ObservableObject, Identifiable {
         TerminalIncubator.park(term.nsView)
         term.setActive(false)
         term.spawn(
-            executable: shell,
-            args: ["-lc", trimmed],
+            executable: ShellScriptLauncher.shell,
+            args: ShellScriptLauncher.args(for: trimmed),
             cwd: cwd,
             env: env,
             outputTap: { [weak self] data in
