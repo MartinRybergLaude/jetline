@@ -64,9 +64,11 @@ enum BaseBranchSync {
 
         var movedSomewhere = false
         for path in consumers {
+            WorktreeOps.beginIndexWrite(worktreePath: path)
             let result = try? await GitRunner.run(
                 ["merge", "--ff-only", remoteRef], cwd: path
             )
+            WorktreeOps.endIndexWrite(worktreePath: path)
             if result?.success == true { movedSomewhere = true }
         }
         return movedSomewhere ? upstreamSHA : nil

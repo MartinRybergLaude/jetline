@@ -127,6 +127,40 @@ enum WorktreeOps {
         try? FileManager.default.removeItem(atPath: lockPath)
     }
 
+    static func removeIndexLock(gitDir: String) {
+        try? FileManager.default.removeItem(atPath: gitDir + "/index.lock")
+    }
+
+    private final class IndexWriteRegistry: @unchecked Sendable {
+        let lock = NSLock()
+        var counts: [String: Int] = [:]
+    }
+
+    private static let indexWrites = IndexWriteRegistry()
+
+    static func beginIndexWrite(worktreePath: String) {
+        indexWrites.lock.lock()
+        indexWrites.counts[worktreePath, default: 0] += 1
+        indexWrites.lock.unlock()
+    }
+
+    static func endIndexWrite(worktreePath: String) {
+        indexWrites.lock.lock()
+        let count = indexWrites.counts[worktreePath] ?? 0
+        if count <= 1 {
+            indexWrites.counts.removeValue(forKey: worktreePath)
+        } else {
+            indexWrites.counts[worktreePath] = count - 1
+        }
+        indexWrites.lock.unlock()
+    }
+
+    static func hasActiveIndexWrite(worktreePath: String) -> Bool {
+        indexWrites.lock.lock()
+        defer { indexWrites.lock.unlock() }
+        return indexWrites.counts[worktreePath] != nil
+    }
+
     /// True process start time via sysctl — a lazily-initialized `Date()`
     /// would capture the first *call* instead, which can postdate a live
     /// lock taken by one of our own earlier git procs.

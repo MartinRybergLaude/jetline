@@ -758,6 +758,9 @@ final class AppState: ObservableObject {
         let baseRef = "\(repo.remoteOrigin)/\(repo.localName(forRemoteRef: workspace.baseBranch))"
         let hasRemote = ws.branchPosition.remoteTrackingExists
 
+        WorktreeOps.beginIndexWrite(worktreePath: cwd)
+        defer { WorktreeOps.endIndexWrite(worktreePath: cwd) }
+
         let fellBack: Bool
         do {
             await BranchPositionOps.fetch(repoPath: cwd, remote: repo.remoteOrigin)
@@ -819,6 +822,9 @@ final class AppState: ObservableObject {
         )
 
         let cwd = workspace.worktreePath
+
+        WorktreeOps.beginIndexWrite(worktreePath: cwd)
+        defer { WorktreeOps.endIndexWrite(worktreePath: cwd) }
 
         let fellBack: Bool
         do {
@@ -1192,7 +1198,7 @@ final class AppState: ObservableObject {
             // crash during rebase) strands `index.lock` and blocks every
             // later index write. Workspace attach is the natural recovery
             // point — clear it if it's verifiably stale.
-            if let gitDir {
+            if let gitDir, !WorktreeOps.hasActiveIndexWrite(worktreePath: worktreePath) {
                 WorktreeOps.removeStaleIndexLock(gitDir: gitDir)
             }
             await MainActor.run {
@@ -1208,6 +1214,9 @@ final class AppState: ObservableObject {
                 ) { [weak self] in
                     guard let self else { return }
                     guard let ws = self.workspaceById(id) else { return }
+                    if let gitDir, !WorktreeOps.hasActiveIndexWrite(worktreePath: worktreePath) {
+                        WorktreeOps.removeStaleIndexLock(gitDir: gitDir)
+                    }
                     Task { await self.refreshDiff(for: ws) }
                     // Worktree changed — likely a commit or push. Wake the
                     // PR tracker so the sidebar reflects new state without
