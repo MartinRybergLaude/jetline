@@ -232,5 +232,45 @@ enum Schema {
                 idx += 1
             }
         }
+
+        migrator.registerMigration("v20_repo_folder_name") { db in
+            try db.alter(table: "repositories") { t in
+                // Directory under ~/.jetline/worktrees holding this repo's
+                // worktrees — a slug of the repo name instead of the legacy
+                // UUID id, so worktree paths read `worktrees/jetline/vega`.
+                t.add(column: "folderName", .text)
+            }
+            // Backfill from the repo name. The slug rules mirror
+            // `WorktreeOps.slug`, inlined so later changes to the app's
+            // slug function can't retroactively alter this migration.
+            func slug(_ name: String) -> String {
+                let lowered = name.lowercased()
+                let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+                let scalars = lowered.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" }
+                let base = String(scalars)
+                    .split(separator: "-", omittingEmptySubsequences: true)
+                    .joined(separator: "-")
+                let hasAlphanum = base.unicodeScalars.contains { CharacterSet.alphanumerics.contains($0) }
+                return hasAlphanum ? base : "repo"
+            }
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT id, name FROM repositories ORDER BY createdAt
+                """)
+            var used: Set<String> = []
+            for row in rows {
+                let base = slug(row["name"])
+                var candidate = base
+                var n = 2
+                while used.contains(candidate) {
+                    candidate = "\(base)-\(n)"
+                    n += 1
+                }
+                used.insert(candidate)
+                try db.execute(
+                    sql: "UPDATE repositories SET folderName = ? WHERE id = ?",
+                    arguments: [candidate, row["id"] as String]
+                )
+            }
+        }
     }
 }

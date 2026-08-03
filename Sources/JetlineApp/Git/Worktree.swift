@@ -183,12 +183,12 @@ enum WorktreeOps {
             result?.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "true"
     }
 
-    /// Create a new branch (off `baseBranch`) and a worktree for it.
+    /// Create a new branch (off `baseBranch`) and a worktree for it at
+    /// `worktreePath` (allocated by the caller, see `WorktreeNamer`).
     /// Returns the absolute path of the new worktree.
     static func create(
         repoPath: String,
-        worktreeId: String,
-        repoId: String,
+        worktreePath: String,
         branchName: String,
         baseBranch: String
     ) async throws -> String {
@@ -199,13 +199,10 @@ enum WorktreeOps {
             throw ImportError.branchInUse(branch: branchName, byPath: path)
         }
 
-        let worktreesRoot = Database.worktreesDirectory
-            .appendingPathComponent(repoId, isDirectory: true)
-        try FileManager.default.createDirectory(at: worktreesRoot, withIntermediateDirectories: true)
-
-        let worktreePath = worktreesRoot
-            .appendingPathComponent(worktreeId, isDirectory: true)
-            .path
+        try FileManager.default.createDirectory(
+            at: URL(fileURLWithPath: worktreePath).deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
 
         try await GitRunner.runChecked(
             ["worktree", "add", "-b", branchName, worktreePath, baseBranch],
@@ -228,8 +225,7 @@ enum WorktreeOps {
     /// gives the UI a chance to surface a useful message).
     static func importExisting(
         repoPath: String,
-        worktreeId: String,
-        repoId: String,
+        worktreePath: String,
         branchName: String,
         remote: String
     ) async throws -> String {
@@ -243,12 +239,10 @@ enum WorktreeOps {
         }
         try await fetch(repoPath: repoPath, remote: remote, ref: branchName)
 
-        let worktreesRoot = Database.worktreesDirectory
-            .appendingPathComponent(repoId, isDirectory: true)
-        try FileManager.default.createDirectory(at: worktreesRoot, withIntermediateDirectories: true)
-        let worktreePath = worktreesRoot
-            .appendingPathComponent(worktreeId, isDirectory: true)
-            .path
+        try FileManager.default.createDirectory(
+            at: URL(fileURLWithPath: worktreePath).deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
 
         try await GitRunner.runChecked(
             ["worktree", "add", "-B", branchName, worktreePath, "\(remote)/\(branchName)"],

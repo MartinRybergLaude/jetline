@@ -253,9 +253,11 @@ final class AppState: ObservableObject {
 
     func createWorkspace(in repo: Repository, name: String) async {
         let id = UUID().uuidString
+        let worktreePath = WorktreeNamer.allocatePath(in: worktreesFolder(for: repo))
+        let shortName = URL(fileURLWithPath: worktreePath).lastPathComponent
         let slug = WorktreeOps.slug(name)
         let prefix = await effectiveBranchPrefix(for: repo)
-        let branch = branchName(prefix: prefix, slug: slug, id: id, repo: repo)
+        let branch = branchName(prefix: prefix, slug: slug, suffix: shortName, repo: repo)
         let agent = settings.defaultAgent
 
         do {
@@ -265,8 +267,7 @@ final class AppState: ObservableObject {
                 operation: {
                     try await WorktreeOps.create(
                         repoPath: repo.path,
-                        worktreeId: id,
-                        repoId: repo.id,
+                        worktreePath: worktreePath,
                         branchName: branch,
                         baseBranch: repo.defaultBranch
                     )
@@ -351,6 +352,7 @@ final class AppState: ObservableObject {
         pullRequestURL: String? = nil
     ) async {
         let id = UUID().uuidString
+        let worktreePath = WorktreeNamer.allocatePath(in: worktreesFolder(for: repo))
         let agent = settings.defaultAgent
         let path: String
         do {
@@ -360,8 +362,7 @@ final class AppState: ObservableObject {
                 operation: {
                     try await WorktreeOps.importExisting(
                         repoPath: repo.path,
-                        worktreeId: id,
-                        repoId: repo.id,
+                        worktreePath: worktreePath,
                         branchName: branchName,
                         remote: repo.remoteOrigin
                     )
@@ -611,9 +612,20 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func branchName(prefix: String, slug: String, id: String, repo: Repository) -> String {
+    /// Root directory for a repo's worktrees: `~/.jetline/worktrees/<folder>`
+    /// where `<folder>` is the repo-name slug (legacy repos: the UUID id).
+    private func worktreesFolder(for repo: Repository) -> URL {
+        Database.worktreesDirectory
+            .appendingPathComponent(repo.worktreeFolderName, isDirectory: true)
+    }
+
+    /// `suffix` is the worktree's short name (e.g. `vega`) — readable in a
+    /// prompt, and unique among the repo's live worktrees. A deleted
+    /// worktree's name can be re-allocated while its branch still exists;
+    /// the `branchInUse` collision path catches that like any other clash.
+    private func branchName(prefix: String, slug: String, suffix: String, repo: Repository) -> String {
         let base = "\(prefix)\(slug)"
-        return repo.addUniqueBranchSuffix ? "\(base)-\(id.prefix(6))" : base
+        return repo.addUniqueBranchSuffix ? "\(base)-\(suffix)" : base
     }
 
     /// Selection recency, most recent last. Drives where selection lands

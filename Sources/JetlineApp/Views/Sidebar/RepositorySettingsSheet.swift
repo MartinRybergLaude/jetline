@@ -113,7 +113,7 @@ struct RepositorySettingsSheet: View {
             branchPrefixRow
             describedRow(
                 title: "Unique branch suffix",
-                description: "Append a short random suffix to new branch names to avoid collisions."
+                description: "Append the workspace's short worktree name to new branch names to avoid collisions."
             ) {
                 Toggle("", isOn: $draft.addUniqueBranchSuffix)
                     .labelsHidden()
@@ -415,6 +415,6 @@ private struct BranchPrefixField: View {
             }
         }()
         let base = prefix + exampleSlug
-        return addUniqueSuffix ? base + "-A1B2C3" : base
+        return addUniqueSuffix ? base + "-vega" : base
     }
 }

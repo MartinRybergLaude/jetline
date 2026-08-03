@@ -2,7 +2,10 @@ import Foundation
 import GRDB
 
 /// A workspace is a git worktree on a feature branch where an agent runs.
-/// Lives at `~/.jetline/worktrees/<repoId>/<id>`.
+/// Lives at `~/.jetline/worktrees/<repoFolder>/<shortName>` where
+/// `<repoFolder>` is the repo-name slug and `<shortName>` is a star name
+/// allocated by `WorktreeNamer` (legacy rows: UUIDs for both components —
+/// the stored `worktreePath` is authoritative either way).
 struct Workspace: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
     var id: String
     var repositoryId: String

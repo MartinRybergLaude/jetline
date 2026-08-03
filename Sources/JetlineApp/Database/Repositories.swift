@@ -22,6 +22,10 @@ enum Repositories {
             // does. Subsequent reorders rewrite indices to 0…n-1, so the
             // negative drift here doesn't accumulate.
             let minIdx = try Int.fetchOne(db, sql: "SELECT MIN(sortIndex) FROM repositories") ?? 0
+            let existingFolders = try Set(String.fetchAll(
+                db,
+                sql: "SELECT folderName FROM repositories WHERE folderName IS NOT NULL"
+            ))
             var repo = Repository(
                 id: UUID().uuidString,
                 name: name,
@@ -31,9 +35,26 @@ enum Repositories {
                 lastOpenedAt: Date()
             )
             repo.sortIndex = minIdx - 1
+            repo.folderName = allocateFolderName(name: name, existing: existingFolders)
             try repo.insert(db)
             return repo
         }
+    }
+
+    /// Slug of the repo name, disambiguated against other repos' folder
+    /// names and anything already on disk under the worktrees root (legacy
+    /// UUID folders, leftovers from removed repos).
+    private static func allocateFolderName(name: String, existing: Set<String>) -> String {
+        func taken(_ candidate: String) -> Bool {
+            existing.contains(candidate) || FileManager.default.fileExists(
+                atPath: Database.worktreesDirectory.appendingPathComponent(candidate).path
+            )
+        }
+        let base = WorktreeOps.slug(name)
+        if !taken(base) { return base }
+        var n = 2
+        while taken("\(base)-\(n)") { n += 1 }
+        return "\(base)-\(n)"
     }
 
     /// Persist a manual sidebar ordering. Writes 0…n-1 across the supplied

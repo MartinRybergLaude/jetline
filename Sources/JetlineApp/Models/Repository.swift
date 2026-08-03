@@ -29,6 +29,12 @@ struct Repository: Codable, Identifiable, Hashable, FetchableRecord, Persistable
     /// rewrite the column with consecutive 0…n-1 values.
     var sortIndex: Int = 0
 
+    /// Directory under `~/.jetline/worktrees` holding this repo's worktrees.
+    /// A slug of the repo name, allocated once at add time (renaming the
+    /// repo doesn't move existing worktrees, so the folder stays put).
+    /// `nil` only for rows that somehow escaped the v20 backfill.
+    var folderName: String?
+
     var remoteOrigin: String = "origin"
     /// Custom prefix used when `branchPrefixMode` is `.custom`.
     var branchPrefix: String?
@@ -36,8 +42,9 @@ struct Repository: Codable, Identifiable, Hashable, FetchableRecord, Persistable
     /// resolves to `.custom` if `branchPrefix` is set, else `.username`.
     /// Recognised values: `username`, `custom`, `none`.
     var branchPrefixMode: String?
-    /// When true, new workspace branches get a short UUID suffix to avoid
-    /// collisions between workspaces with the same name.
+    /// When true, new workspace branches get the worktree's short name as a
+    /// suffix (e.g. `-vega`) to avoid collisions between workspaces with the
+    /// same name.
     var addUniqueBranchSuffix: Bool = true
     var setupScript: String?
     var runScript: String?
@@ -67,6 +74,10 @@ struct Repository: Codable, Identifiable, Hashable, FetchableRecord, Persistable
     var trimmedRunScript: String? { runScript?.nonBlank }
     var trimmedArchiveScript: String? { archiveScript?.nonBlank }
 
+    /// Resolved worktree folder — falls back to the legacy UUID id when
+    /// `folderName` is unset so path construction never breaks.
+    var worktreeFolderName: String { folderName?.nonBlank ?? id }
+
     /// Strip the `<remoteOrigin>/` prefix from a remote-tracking ref so the
     /// caller has the local-branch form. `git for-each-ref` emits the prefixed
     /// form; the worktree + workspace use the local name.
@@ -91,6 +102,7 @@ struct Repository: Codable, Identifiable, Hashable, FetchableRecord, Persistable
         static let createdAt = Column(CodingKeys.createdAt)
         static let lastOpenedAt = Column(CodingKeys.lastOpenedAt)
         static let sortIndex = Column(CodingKeys.sortIndex)
+        static let folderName = Column(CodingKeys.folderName)
         static let remoteOrigin = Column(CodingKeys.remoteOrigin)
         static let branchPrefix = Column(CodingKeys.branchPrefix)
         static let branchPrefixMode = Column(CodingKeys.branchPrefixMode)
