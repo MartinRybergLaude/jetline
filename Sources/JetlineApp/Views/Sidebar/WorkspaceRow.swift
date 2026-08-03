@@ -44,9 +44,13 @@ private struct WorkspaceRowContent: View {
                 CloseWorkspaceButton(visible: hovering, action: onClose)
             }
         }
-        .padding(.leading, 14)
+        // 27.5 centers the 13pt PR icon on the repo favicon in the section
+        // header above: the header's icon center sits at 4 (leading) + 12
+        // (chevron) + 3 (gap) + 4 (label padding) + 11 (icon-slot center)
+        // = 34pt from the shared content origin, and 27.5 + 6.5 = 34.
+        .padding(.leading, 27.5)
         .padding(.trailing, 8)
-        .padding(.vertical, 7)
+        .padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
             if isSelected {

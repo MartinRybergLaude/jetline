@@ -95,6 +95,10 @@ struct RepositorySection: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(!hasWorkspaces)
+                // Pull the repo label to 3pt from the chevron; the stack's
+                // 8pt spacing is right for the trailing buttons but too
+                // airy here.
+                .padding(.trailing, -5)
                 Button {
                     state.selectRepositoryHead(repo)
                 } label: {
@@ -127,7 +131,7 @@ struct RepositorySection: View {
                         Spacer(minLength: 0)
                     }
                     .padding(.horizontal, 4)
-                    .padding(.vertical, 3)
+                    .padding(.vertical, 2)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -154,8 +158,8 @@ struct RepositorySection: View {
                 .help("Repository settings")
                 .padding(.trailing, 8)
             }
-            .padding(.leading, 8)
-            .padding(.vertical, 4)
+            .padding(.leading, 4)
+            .padding(.vertical, 2)
             .background {
                 if isBaseSelected {
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -170,6 +174,13 @@ struct RepositorySection: View {
             // width), so a plain translation is what lines the header pill up
             // with the workspace-row pills below.
             .offset(x: -6)
+            // Sidebar section spacing (`listSectionSpacing` et al. are
+            // macOS-unavailable) can only be shrunk by shrinking the header
+            // slot itself: negative padding reduces the header's intrinsic
+            // height, which is what the list sizes the slot from. The list
+            // absorbs ~7pt before the overflow starts visibly clipping the
+            // top of the repo name, so -7 is the floor.
+            .padding(.top, -7)
             .onHover { headerHovering = $0 }
             .contextMenu {
                 Button("New workspace…", action: onNewWorkspace)
