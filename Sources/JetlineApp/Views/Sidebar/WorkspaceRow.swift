@@ -58,9 +58,6 @@ private struct WorkspaceRowContent: View {
                     .fill(Color.primary.opacity(0.06))
             }
         }
-        .overlay(alignment: .leading) {
-            OpenWorkspaceBar(isOpen: isOpen, isSelected: isSelected)
-        }
         .accessibilityValue(isOpen ? "Open" : "")
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
@@ -80,23 +77,6 @@ private struct WorkspaceRowContent: View {
     private func nameColor(isOpen: Bool) -> Color {
         if isSelected { return Color.accentColor.opacity(0.9) }
         return isOpen ? Color.primary : Color.secondary
-    }
-}
-
-/// Leading-edge state bar, the sidebar analog of the tab strip's active
-/// accent bar: thin and grey while the workspace has open sessions,
-/// slightly wider and accent-tinted when it's also the selection.
-struct OpenWorkspaceBar: View {
-    let isOpen: Bool
-    let isSelected: Bool
-    var height: CGFloat = 18
-
-    var body: some View {
-        if isOpen || isSelected {
-            RoundedRectangle(cornerRadius: 1)
-                .fill(isSelected ? Color.accentColor : Color.secondary.opacity(0.45))
-                .frame(width: isSelected ? 3 : 2, height: height)
-        }
     }
 }
 

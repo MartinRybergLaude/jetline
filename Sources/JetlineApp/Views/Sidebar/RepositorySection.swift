@@ -131,7 +131,7 @@ struct RepositorySection: View {
                         Spacer(minLength: 0)
                     }
                     .padding(.horizontal, 4)
-                    .padding(.vertical, 2)
+                    .padding(.vertical, 1)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -159,28 +159,24 @@ struct RepositorySection: View {
                 .padding(.trailing, 8)
             }
             .padding(.leading, 4)
-            .padding(.vertical, 2)
+            .padding(.vertical, 1)
             .background {
                 if isBaseSelected {
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .fill(Color.primary.opacity(0.06))
                 }
             }
-            .overlay(alignment: .leading) {
-                OpenWorkspaceBar(isOpen: isBaseOpen, isSelected: isBaseSelected, height: 26)
-            }
             // The sidebar list ignores `.listRowInsets` on section headers and
             // places the header slot 6pt to the right of row slots (same
             // width), so a plain translation is what lines the header pill up
             // with the workspace-row pills below.
             .offset(x: -6)
-            // Sidebar section spacing (`listSectionSpacing` et al. are
-            // macOS-unavailable) can only be shrunk by shrinking the header
-            // slot itself: negative padding reduces the header's intrinsic
-            // height, which is what the list sizes the slot from. The list
-            // absorbs ~7pt before the overflow starts visibly clipping the
-            // top of the repo name, so -7 is the floor.
-            .padding(.top, -7)
+            // Compactness comes from the real paddings above, not from
+            // negative padding: the list sizes the header slot from the
+            // content's fitting height and clips exactly at the slot's top,
+            // so a negative top padding shears that many points off the
+            // selection pill (`listSectionSpacing` et al., which would trim
+            // the spacing properly, are macOS-unavailable).
             .onHover { headerHovering = $0 }
             .contextMenu {
                 Button("New workspace…", action: onNewWorkspace)
