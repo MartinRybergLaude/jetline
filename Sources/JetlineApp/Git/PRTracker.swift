@@ -229,7 +229,12 @@ final class PRTracker {
     private func pollLocal(repoId: String) async {
         guard let state,
               let repo = state.repositories.first(where: { $0.id == repoId }) else { return }
-        var workspaces = state.workspacesByRepo[repoId] ?? []
+        let workspaces = state.workspacesByRepo[repoId] ?? []
+        // Idle-paused and never-opened workspaces skip the per-workspace
+        // git work below (diff refresh, branch reconcile, ahead/behind) —
+        // selection wakes them and kicks a fresh poll. The repo-level
+        // fetch and fast-forward still run for everyone.
+        let awake = workspaces.filter { state.isWorkspaceAwake($0.id) }
 
         // Refresh refs first — must run even when the repo has no
         // workspaces yet so the local default branch stays current and
@@ -256,11 +261,11 @@ final class PRTracker {
             // open; refreshDiff is deduped on equality. Left sequential
             // because the baseMoved branch is rare and each refreshDiff
             // already fans out internally.
-            for ws in workspaces {
+            for ws in awake {
                 await state.refreshDiff(for: ws)
             }
         }
-        workspaces = await reconcileWorkspaceBranches(workspaces, repo: repo, state: state)
+        let reconciled = await reconcileWorkspaceBranches(awake, repo: repo, state: state)
 
         // Compute every workspace's branch position concurrently. The
         // computes themselves are read-only; we apply the results back on
@@ -271,7 +276,7 @@ final class PRTracker {
         let positions: [(String, BranchPosition)] = await withTaskGroup(
             of: (String, BranchPosition).self
         ) { group in
-            for ws in workspaces {
+            for ws in reconciled {
                 let id = ws.id
                 let worktreePath = ws.worktreePath
                 let branchName = ws.branchName
@@ -336,7 +341,17 @@ final class PRTracker {
         }
 
         do {
-            let workspaces = await reconcileWorkspaceBranches(workspaces, repo: repo, state: state)
+            // Branch reconciliation costs two git subprocesses per
+            // workspace, so it only runs for awake ones. Asleep workspaces
+            // keep their stored branch name, which still feeds the batched
+            // PR lookup below — merge detection and auto-archive keep
+            // working for paused workspaces.
+            _ = await reconcileWorkspaceBranches(
+                workspaces.filter { state.isWorkspaceAwake($0.id) },
+                repo: repo,
+                state: state
+            )
+            let workspaces = workspaces.map { state.workspaceById($0.id) ?? $0 }
             let result = try await fetchPRSnapshots(
                 for: workspaces,
                 repo: repo,

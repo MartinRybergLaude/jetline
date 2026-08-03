@@ -72,6 +72,24 @@ final class AppState: ObservableObject {
     private var inspectorSelectionTask: Task<Void, Never>?
 
     private var watchers: [String: WorktreeWatcher] = [:]
+
+    // MARK: Idle pausing
+
+    /// Last sign of life per workspace: selection, a session spawn, or an
+    /// FSEvents tick from its worktree. Missing entry = never activated
+    /// this run.
+    private var workspaceLastActivity: [String: Date] = [:]
+    /// Workspaces whose watcher was stopped by the idle sweep. Selecting
+    /// one wakes it: the flag clears, activation re-arms the watcher and
+    /// refreshes the diff, and a tracker kick catches PR/position state up.
+    private var pausedWorkspaces: Set<String> = []
+    private var idleSweepTask: Task<Void, Never>?
+    /// Untouched for this long → the workspace is paused: its watcher stops
+    /// and it drops out of per-workspace poll work (browser-style tab
+    /// pausing). Sessions and PTYs stay alive — output from a still-working
+    /// agent hits the worktree and re-bumps activity before the sweep fires.
+    private static let idlePauseThreshold: TimeInterval = 15 * 60
+
     private var diffRefreshTasks: [String: Task<Void, Never>] = [:]
     private var diffRefreshQueued: Set<String> = []
     private(set) lazy var prTracker: PRTracker = PRTracker(state: self)
@@ -120,6 +138,50 @@ final class AppState: ObservableObject {
             print("AppState load error: \(error)")
         }
         prTracker.sync()
+        startIdleSweep()
+    }
+
+    // MARK: - Idle pausing
+
+    /// Awake = worth spending per-workspace background work on (branch
+    /// reconciliation, ahead/behind computes, diff refreshes). Selected
+    /// always counts; otherwise an armed watcher is the signal — never-
+    /// opened, closed, and idle-paused workspaces all lack one.
+    func isWorkspaceAwake(_ id: String) -> Bool {
+        selectedWorkspaceId == id || watchers[id] != nil
+    }
+
+    private func noteWorkspaceActivity(_ id: String) {
+        workspaceLastActivity[id] = Date()
+        pausedWorkspaces.remove(id)
+    }
+
+    private func startIdleSweep() {
+        guard idleSweepTask == nil else { return }
+        idleSweepTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                self?.pauseIdleWorkspaces()
+            }
+        }
+    }
+
+    private func pauseIdleWorkspaces() {
+        let cutoff = Date().addingTimeInterval(-Self.idlePauseThreshold)
+        for (id, watcher) in watchers {
+            guard id != selectedWorkspaceId,
+                  (workspaceLastActivity[id] ?? .distantPast) < cutoff
+            else { continue }
+            watcher.stop()
+            watchers.removeValue(forKey: id)
+            pausedWorkspaces.insert(id)
+            activityLog.record(
+                .lifecycle,
+                "Paused idle workspace",
+                repoId: workspaceById(id)?.repositoryId,
+                workspaceId: id
+            )
+        }
     }
 
     // MARK: - Repositories
@@ -671,6 +733,19 @@ final class AppState: ObservableObject {
     private var selectionHistory: [String] = []
 
     func selectWorkspace(_ id: String) {
+        if pausedWorkspaces.contains(id) {
+            // Waking from idle pause. Activation below re-arms the watcher
+            // and refreshes the diff; the kick catches branch position and
+            // PR state up without waiting for the next scheduled poll.
+            prTracker.kick(workspaceId: id)
+            activityLog.record(
+                .lifecycle,
+                "Woke idle workspace",
+                repoId: workspaceById(id)?.repositoryId,
+                workspaceId: id
+            )
+        }
+        noteWorkspaceActivity(id)
         selectionHistory.removeAll { $0 == id }
         selectionHistory.append(id)
         selectedWorkspaceId = id
@@ -772,6 +847,7 @@ final class AppState: ObservableObject {
     }
 
     func startNewSession(for workspace: Workspace, agent: Workspace.AgentKind) {
+        noteWorkspaceActivity(workspace.id)
         let session = PTYSession(
             workspaceId: workspace.id,
             agent: agent,
@@ -1379,6 +1455,10 @@ final class AppState: ObservableObject {
                 ) { [weak self] in
                     guard let self else { return }
                     guard let ws = self.workspaceById(id) else { return }
+                    // Worktree writes count as activity — a background
+                    // agent that is still working keeps its workspace out
+                    // of the idle-pause sweep.
+                    self.noteWorkspaceActivity(id)
                     if let gitDir, !WorktreeOps.hasActiveIndexWrite(worktreePath: worktreePath) {
                         WorktreeOps.removeStaleIndexLock(gitDir: gitDir)
                     }
@@ -1400,6 +1480,7 @@ final class AppState: ObservableObject {
     func closeWorkspace(_ id: String) {
         watchers[id]?.stop()
         watchers.removeValue(forKey: id)
+        pausedWorkspaces.remove(id)
         if let ws = workspaceStates[id] {
             tearDownWorkspaceRuntime(ws)
         }
@@ -1411,6 +1492,7 @@ final class AppState: ObservableObject {
     private func detachWorkspace(_ id: String) {
         watchers[id]?.stop()
         watchers.removeValue(forKey: id)
+        pausedWorkspaces.remove(id)
         if let ws = workspaceStates[id] {
             tearDownWorkspaceRuntime(ws)
         }

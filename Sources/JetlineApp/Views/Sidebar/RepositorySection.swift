@@ -10,7 +10,6 @@ struct RepositorySection: View {
     let onOpenSettings: () -> Void
 
     @State private var expanded: Bool = true
-    @State private var headerHovering = false
     @State private var rowHeight: CGFloat = 30
     @GestureState private var rowDrag: RowDrag?
 
@@ -137,11 +136,6 @@ struct RepositorySection: View {
                 .buttonStyle(.plain)
                 .help("Open \(repo.defaultBranch) in \(repo.name)")
                 Spacer(minLength: 0)
-                if isBaseOpen {
-                    CloseWorkspaceButton(visible: headerHovering) {
-                        state.closeWorkspace(baseWorkspaceId)
-                    }
-                }
                 Button(action: onNewWorkspace) {
                     Image(systemName: "plus")
                         .font(.system(size: 13, weight: .regular))
@@ -177,7 +171,6 @@ struct RepositorySection: View {
             // so a negative top padding shears that many points off the
             // selection pill (`listSectionSpacing` et al., which would trim
             // the spacing properly, are macOS-unavailable).
-            .onHover { headerHovering = $0 }
             .contextMenu {
                 Button("New workspace…", action: onNewWorkspace)
                 if isBaseOpen {

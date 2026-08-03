@@ -27,8 +27,6 @@ private struct WorkspaceRowContent: View {
     let onArchive: (_ keepWorktree: Bool) -> Void
     let onClose: () -> Void
 
-    @State private var hovering = false
-
     var body: some View {
         let isOpen = !workspaceState.sessions.isEmpty
         HStack(spacing: 0) {
@@ -40,9 +38,6 @@ private struct WorkspaceRowContent: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
             Spacer(minLength: 0)
-            if isOpen {
-                CloseWorkspaceButton(visible: hovering, action: onClose)
-            }
         }
         // 27.5 centers the 13pt PR icon on the repo favicon in the section
         // header above: the header's icon center sits at 4 (leading) + 12
@@ -60,7 +55,6 @@ private struct WorkspaceRowContent: View {
         }
         .accessibilityValue(isOpen ? "Open" : "")
         .contentShape(Rectangle())
-        .onHover { hovering = $0 }
         .contextMenu {
             Button("Reveal worktree in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: workspace.worktreePath)])
@@ -77,31 +71,6 @@ private struct WorkspaceRowContent: View {
     private func nameColor(isOpen: Bool) -> Color {
         if isSelected { return Color.accentColor.opacity(0.9) }
         return isOpen ? Color.primary : Color.secondary
-    }
-}
-
-struct CloseWorkspaceButton: View {
-    let visible: Bool
-    let action: () -> Void
-
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: "xmark")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(hovering ? .primary : .secondary)
-                .frame(width: 16, height: 16)
-                .background(
-                    Circle()
-                        .fill(Color.primary.opacity(hovering ? 0.16 : 0))
-                )
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .opacity(visible || hovering ? 1 : 0)
-        .onHover { hovering = $0 }
-        .help("Close workspace — ends its sessions")
     }
 }
 
