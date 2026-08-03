@@ -12,6 +12,7 @@ enum OpenInApp: String, Codable, CaseIterable, DatabaseValueConvertible, Hashabl
     case vscode
     case cursor
     case androidStudio
+    case webstorm
     case fork
 
     var displayName: String {
@@ -24,6 +25,7 @@ enum OpenInApp: String, Codable, CaseIterable, DatabaseValueConvertible, Hashabl
         case .vscode: return "VS Code"
         case .cursor: return "Cursor"
         case .androidStudio: return "Android Studio"
+        case .webstorm: return "WebStorm"
         case .fork: return "Fork"
         }
     }
@@ -38,6 +40,7 @@ enum OpenInApp: String, Codable, CaseIterable, DatabaseValueConvertible, Hashabl
         case .vscode: return "com.microsoft.VSCode"
         case .cursor: return "com.todesktop.230313mzl4w4u92"
         case .androidStudio: return "com.google.android.studio"
+        case .webstorm: return "com.jetbrains.WebStorm"
         case .fork: return "com.DanPristupov.Fork"
         }
     }
