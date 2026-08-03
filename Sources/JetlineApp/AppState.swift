@@ -253,15 +253,14 @@ final class AppState: ObservableObject {
 
     func createWorkspace(in repo: Repository, name: String) async {
         let id = UUID().uuidString
-        let worktreePath = WorktreeNamer.allocatePath(in: worktreesFolder(for: repo))
-        let shortName = URL(fileURLWithPath: worktreePath).lastPathComponent
+        let (worktreePath, shortName) = allocateWorktreePath(for: repo)
         let slug = WorktreeOps.slug(name)
         let prefix = await effectiveBranchPrefix(for: repo)
         let branch = branchName(prefix: prefix, slug: slug, suffix: shortName, repo: repo)
         let agent = settings.defaultAgent
 
         do {
-            guard let path = try await createWorktreeResolvingBranchCollision(
+            guard try await createWorktreeResolvingBranchCollision(
                 in: repo,
                 branchName: branch,
                 operation: {
@@ -280,7 +279,7 @@ final class AppState: ObservableObject {
                 name: name,
                 branchName: branch,
                 baseBranch: repo.defaultBranch,
-                worktreePath: path,
+                worktreePath: worktreePath,
                 agent: agent,
                 createdAt: now,
                 lastActiveAt: now
@@ -352,11 +351,10 @@ final class AppState: ObservableObject {
         pullRequestURL: String? = nil
     ) async {
         let id = UUID().uuidString
-        let worktreePath = WorktreeNamer.allocatePath(in: worktreesFolder(for: repo))
+        let (worktreePath, _) = allocateWorktreePath(for: repo)
         let agent = settings.defaultAgent
-        let path: String
         do {
-            guard let createdPath = try await createWorktreeResolvingBranchCollision(
+            guard try await createWorktreeResolvingBranchCollision(
                 in: repo,
                 branchName: branchName,
                 operation: {
@@ -368,7 +366,6 @@ final class AppState: ObservableObject {
                     )
                 }
             ) else { return }
-            path = createdPath
         } catch {
             await presentError(error.localizedDescription)
             return
@@ -383,7 +380,7 @@ final class AppState: ObservableObject {
             baseBranch: baseBranch,
             pullRequestNumber: pullRequestNumber,
             pullRequestURL: pullRequestURL,
-            worktreePath: path,
+            worktreePath: worktreePath,
             agent: agent,
             createdAt: now,
             lastActiveAt: now
@@ -397,7 +394,7 @@ final class AppState: ObservableObject {
             // ours, and they may want it for a retry.
             try? await WorktreeOps.remove(
                 repoPath: repo.path,
-                worktreePath: path,
+                worktreePath: worktreePath,
                 branchName: nil,
                 force: true
             )
@@ -416,13 +413,17 @@ final class AppState: ObservableObject {
         startSetupIfNeeded(workspace: ws, repository: repo)
     }
 
+    /// Runs `operation`, resolving a `branchInUse` collision by asking the
+    /// user and force-removing the offending worktree. Returns `false` when
+    /// the user declined the override.
     private func createWorktreeResolvingBranchCollision(
         in repo: Repository,
         branchName: String,
-        operation: () async throws -> String
-    ) async throws -> String? {
+        operation: () async throws -> Void
+    ) async throws -> Bool {
         do {
-            return try await operation()
+            try await operation()
+            return true
         } catch WorktreeOps.ImportError.branchInUse(branch: let branch, byPath: let path) {
             let dirty = await DiffComputer.hasUncommittedChanges(worktreePath: path)
             guard confirmWorktreeOverride(
@@ -430,7 +431,7 @@ final class AppState: ObservableObject {
                 worktreePath: path,
                 hasUncommittedChanges: dirty
             ) else {
-                return nil
+                return false
             }
             archiveWorkspaceRecordsForOverriddenWorktree(
                 repoId: repo.id,
@@ -448,7 +449,8 @@ final class AppState: ObservableObject {
                 "Overrode existing worktree for \(branch)",
                 repoId: repo.id
             )
-            return try await operation()
+            try await operation()
+            return true
         }
     }
 
@@ -560,6 +562,31 @@ final class AppState: ObservableObject {
         )
     }
 
+    /// Archived rows whose worktree still exists on disk — the restorable
+    /// set. Rows pointing at a deleted worktree are pruned here, so every
+    /// consumer sees only rows `restoreArchivedWorkspace` can actually
+    /// reattach.
+    func archivedWorkspaces(for repoId: String) -> [Workspace] {
+        let rows = (try? Workspaces.archivedForRepository(repoId)) ?? []
+        return rows.filter { ws in
+            let alive = FileManager.default.fileExists(atPath: ws.worktreePath)
+            if !alive { try? Workspaces.delete(id: ws.id) }
+            return alive
+        }
+    }
+
+    /// Restore an archived workspace, falling back to a fresh import of its
+    /// branch when the worktree vanished between listing and click.
+    func restoreOrImportWorkspace(_ archived: Workspace, in repo: Repository) async {
+        if await restoreArchivedWorkspace(archived) { return }
+        await importBranchAsWorkspace(
+            in: repo,
+            branchName: archived.branchName,
+            baseBranch: archived.baseBranch,
+            name: archived.name
+        )
+    }
+
     /// Reattach an archived workspace (auto-archived on merge). Worktree
     /// and local branch are still on disk because `archiveWorkspace` runs
     /// with `removeWorktree: false` for the merge path. If the worktree
@@ -581,6 +608,12 @@ final class AppState: ObservableObject {
         restored.archivedAt = nil
         restored.lastActiveAt = Date()
         workspacesByRepo[workspace.repositoryId, default: []].insert(restored, at: 0)
+        activityLog.record(
+            .lifecycle,
+            "Restored workspace \(restored.name) (\(restored.branchName))",
+            repoId: restored.repositoryId,
+            workspaceId: restored.id
+        )
         prTracker.kick(repoId: workspace.repositoryId)
         selectWorkspace(restored.id)
         return true
@@ -612,11 +645,15 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Root directory for a repo's worktrees: `~/.jetline/worktrees/<folder>`
-    /// where `<folder>` is the repo-name slug (legacy repos: the UUID id).
-    private func worktreesFolder(for repo: Repository) -> URL {
-        Database.worktreesDirectory
+    /// Allocate the path for a new worktree:
+    /// `~/.jetline/worktrees/<repo-slug>/<star>` (legacy repos keep their
+    /// UUID folder). `shortName` is the star component, reused as the
+    /// branch suffix.
+    private func allocateWorktreePath(for repo: Repository) -> (path: String, shortName: String) {
+        let folder = Database.worktreesDirectory
             .appendingPathComponent(repo.worktreeFolderName, isDirectory: true)
+        let shortName = WorktreeNamer.allocate(in: folder)
+        return (folder.appendingPathComponent(shortName, isDirectory: true).path, shortName)
     }
 
     /// `suffix` is the worktree's short name (e.g. `vega`) — readable in a

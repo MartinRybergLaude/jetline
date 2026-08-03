@@ -16,16 +16,21 @@ enum Repositories {
     }
 
     static func add(name: String, path: String, defaultBranch: String) throws -> Repository {
-        try Database.shared.writer.write { db in
+        // Folder allocation probes the filesystem, so it runs outside the
+        // write transaction (adds are user-driven and effectively serial).
+        let existingFolders = try Database.shared.writer.read { db in
+            try Set(String.fetchAll(
+                db,
+                sql: "SELECT folderName FROM repositories WHERE folderName IS NOT NULL"
+            ))
+        }
+        let folderName = WorktreeNamer.allocateRepoFolder(name: name, existing: existingFolders)
+        return try Database.shared.writer.write { db in
             // Sit above the current min so a fresh add lands at the top of
             // the sidebar, matching the in-memory `insert(at: 0)` AppState
             // does. Subsequent reorders rewrite indices to 0…n-1, so the
             // negative drift here doesn't accumulate.
             let minIdx = try Int.fetchOne(db, sql: "SELECT MIN(sortIndex) FROM repositories") ?? 0
-            let existingFolders = try Set(String.fetchAll(
-                db,
-                sql: "SELECT folderName FROM repositories WHERE folderName IS NOT NULL"
-            ))
             var repo = Repository(
                 id: UUID().uuidString,
                 name: name,
@@ -35,26 +40,10 @@ enum Repositories {
                 lastOpenedAt: Date()
             )
             repo.sortIndex = minIdx - 1
-            repo.folderName = allocateFolderName(name: name, existing: existingFolders)
+            repo.folderName = folderName
             try repo.insert(db)
             return repo
         }
-    }
-
-    /// Slug of the repo name, disambiguated against other repos' folder
-    /// names and anything already on disk under the worktrees root (legacy
-    /// UUID folders, leftovers from removed repos).
-    private static func allocateFolderName(name: String, existing: Set<String>) -> String {
-        func taken(_ candidate: String) -> Bool {
-            existing.contains(candidate) || FileManager.default.fileExists(
-                atPath: Database.worktreesDirectory.appendingPathComponent(candidate).path
-            )
-        }
-        let base = WorktreeOps.slug(name)
-        if !taken(base) { return base }
-        var n = 2
-        while taken("\(base)-\(n)") { n += 1 }
-        return "\(base)-\(n)"
     }
 
     /// Persist a manual sidebar ordering. Writes 0…n-1 across the supplied

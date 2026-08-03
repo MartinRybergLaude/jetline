@@ -185,13 +185,12 @@ enum WorktreeOps {
 
     /// Create a new branch (off `baseBranch`) and a worktree for it at
     /// `worktreePath` (allocated by the caller, see `WorktreeNamer`).
-    /// Returns the absolute path of the new worktree.
     static func create(
         repoPath: String,
         worktreePath: String,
         branchName: String,
         baseBranch: String
-    ) async throws -> String {
+    ) async throws {
         // Match importExisting's typed collision path so the UI can offer
         // an explicit override instead of surfacing git's raw worktree error.
         _ = try? await GitRunner.run(["worktree", "prune"], cwd: repoPath)
@@ -199,16 +198,12 @@ enum WorktreeOps {
             throw ImportError.branchInUse(branch: branchName, byPath: path)
         }
 
-        try FileManager.default.createDirectory(
-            at: URL(fileURLWithPath: worktreePath).deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
+        try ensureParentDirectory(of: worktreePath)
 
         try await GitRunner.runChecked(
             ["worktree", "add", "-b", branchName, worktreePath, baseBranch],
             cwd: repoPath
         )
-        return worktreePath
     }
 
     /// Fetch a single ref from a remote so the local repo has the commits
@@ -228,7 +223,7 @@ enum WorktreeOps {
         worktreePath: String,
         branchName: String,
         remote: String
-    ) async throws -> String {
+    ) async throws {
         // Drop registry entries whose worktree directories no longer exist —
         // otherwise a previously-deleted worktree would still hold its branch
         // hostage and we'd report a phantom collision.
@@ -239,16 +234,19 @@ enum WorktreeOps {
         }
         try await fetch(repoPath: repoPath, remote: remote, ref: branchName)
 
-        try FileManager.default.createDirectory(
-            at: URL(fileURLWithPath: worktreePath).deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
+        try ensureParentDirectory(of: worktreePath)
 
         try await GitRunner.runChecked(
             ["worktree", "add", "-B", branchName, worktreePath, "\(remote)/\(branchName)"],
             cwd: repoPath
         )
-        return worktreePath
+    }
+
+    private static func ensureParentDirectory(of path: String) throws {
+        try FileManager.default.createDirectory(
+            at: URL(fileURLWithPath: path).deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
     }
 
     /// Hoisted: configuring an `ISO8601DateFormatter` is non-trivial and

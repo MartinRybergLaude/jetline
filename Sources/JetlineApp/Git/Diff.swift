@@ -165,30 +165,36 @@ enum DiffComputer {
             stats[String(parts[2])] = (adds, dels)
         }
 
-        // Phase 2: split entries into cache hits and misses.
-        var cached: [String: HunkCache.Value] = [:]
-        var missEntries: [RawEntry] = []
-        var missKeys: [String: HunkCache.Key] = [:]
-        for entry in entries {
-            let key = cacheKey(for: entry, worktreePath: worktreePath)
-            if let hit = await HunkCache.shared.get(key) {
-                cached[entry.path] = hit
+        // Phase 2: split entries into cache hits and misses. Keys (including
+        // stat fingerprints) are built synchronously so the cache lookup is
+        // one batched actor call instead of a hop per file.
+        let keyed = entries.map { ($0, cacheKey(for: $0, worktreePath: worktreePath)) }
+        var hunksByPath: [String: HunkCache.Value] = [:]
+        var misses: [(entry: RawEntry, key: HunkCache.Key)] = []
+        for ((entry, key), hit) in zip(keyed, await HunkCache.shared.get(keyed.map(\.1))) {
+            if let hit {
+                hunksByPath[entry.path] = hit
             } else {
-                missEntries.append(entry)
-                missKeys[entry.path] = key
+                misses.append((entry, key))
             }
         }
 
         // Phase 3: fetch + parse the patch for cache-misses only. Pathspecs
         // limit the patch to the changed subset, so a 23k-line full diff
         // collapses to a per-file fetch on FSEvents-driven refreshes.
-        var parsedHunks: [String: HunkCache.Value] = [:]
-        if !missEntries.isEmpty {
-            var args = ["diff", "--no-color", "-U3", revspec, "--"]
-            args.append(contentsOf: missEntries.map(\.path))
+        if !misses.isEmpty {
+            var args = ["diff", "--no-color", "-U3", revspec]
+            // A pathspec naming every changed file filters nothing and can
+            // blow past argv limits on a cold cache — omit it when all
+            // entries missed.
+            if misses.count < entries.count {
+                args.append("--")
+                args.append(contentsOf: misses.map(\.entry.path))
+            }
             let patchOut = try await GitRunner.runChecked(args, cwd: worktreePath)
+            var parsedByPath: [String: HunkCache.Value] = [:]
             for parsed in PatchParser.parse(patchOut) {
-                parsedHunks[parsed.path] = HunkCache.Value(
+                parsedByPath[parsed.path] = HunkCache.Value(
                     hunks: parsed.hunks,
                     isBinary: parsed.isBinary
                 )
@@ -196,12 +202,13 @@ enum DiffComputer {
             // Persist parsed entries (and empty results — a real "no hunks"
             // answer for this SHA pair, e.g. mode-only changes, deserves a
             // cache entry too so we don't re-fetch).
-            for entry in missEntries {
-                guard let key = missKeys[entry.path] else { continue }
-                let value = parsedHunks[entry.path]
-                    ?? HunkCache.Value(hunks: [], isBinary: false)
-                await HunkCache.shared.set(key, value)
+            var toCache: [(HunkCache.Key, HunkCache.Value)] = []
+            for (entry, key) in misses {
+                let value = parsedByPath[entry.path] ?? .empty
+                hunksByPath[entry.path] = value
+                toCache.append((key, value))
             }
+            await HunkCache.shared.set(toCache)
         }
 
         // Phase 4: assemble FileDiffs. Order mirrors the historical sort by
@@ -211,9 +218,7 @@ enum DiffComputer {
         var totalDels = 0
         for entry in entries {
             let stat = stats[entry.path] ?? (0, 0)
-            let payload = cached[entry.path]
-                ?? parsedHunks[entry.path]
-                ?? HunkCache.Value(hunks: [], isBinary: false)
+            let payload = hunksByPath[entry.path] ?? .empty
             files.append(FileDiff(
                 path: entry.path,
                 status: entry.status,
@@ -388,20 +393,32 @@ actor HunkCache {
     struct Value {
         var hunks: [FileDiff.Hunk]
         var isBinary: Bool
+
+        static let empty = Value(hunks: [], isBinary: false)
     }
 
     private var entries: [Key: Value] = [:]
-    /// Cap on entries. Hit when a session walks a lot of file history; we
-    /// drop everything rather than implementing LRU because the cost of a
-    /// re-fetch on the next compute is bounded and the working set typically
-    /// re-warms within a few refreshes.
+    /// Cap on entries. When hit, an arbitrary half is evicted rather than
+    /// everything — a full flush would force the next refresh of every open
+    /// workspace to re-fetch and re-parse its whole working set at once.
     private let limit = 4096
+    /// Per-entry ceiling on cached hunk lines. Pathological diffs (generated
+    /// files, lockfiles) re-fetch on demand instead of pinning large payloads
+    /// in a process-lifetime cache.
+    private let maxCachedLines = 20_000
 
-    func get(_ key: Key) -> Value? { entries[key] }
+    func get(_ keys: [Key]) -> [Value?] { keys.map { entries[$0] } }
 
-    func set(_ key: Key, _ value: Value) {
-        if entries.count >= limit { entries.removeAll(keepingCapacity: true) }
-        entries[key] = value
+    func set(_ pairs: [(Key, Value)]) {
+        for (key, value) in pairs {
+            guard value.hunks.reduce(0, { $0 + $1.lines.count }) <= maxCachedLines else { continue }
+            if entries.count >= limit {
+                for evicted in entries.keys.prefix(limit / 2) {
+                    entries.removeValue(forKey: evicted)
+                }
+            }
+            entries[key] = value
+        }
     }
 
     /// Test hook so the parser tests can isolate cache state.

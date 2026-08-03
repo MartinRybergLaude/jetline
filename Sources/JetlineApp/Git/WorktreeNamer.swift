@@ -9,15 +9,11 @@ import Foundation
 /// automatically accounts for active workspaces, archived-but-kept worktrees,
 /// and stray leftovers — and frees a name the moment its worktree is deleted.
 enum WorktreeNamer {
-    /// Pick a free name in `folder` and return the full worktree path.
-    /// Creates nothing on disk — the caller's `git worktree add` materializes
-    /// the directory. Two concurrent creations could race between allocation
-    /// and the add; git rejects the second with "already exists", which
-    /// surfaces through the normal error path.
-    static func allocatePath(in folder: URL) -> String {
-        folder.appendingPathComponent(allocate(in: folder), isDirectory: true).path
-    }
-
+    /// Pick a free star name in `folder`. Creates nothing on disk — the
+    /// caller's `git worktree add` materializes the directory. Two concurrent
+    /// creations could race between allocation and the add; git rejects the
+    /// second with "already exists", which surfaces through the normal error
+    /// path.
     static func allocate(in folder: URL) -> String {
         func taken(_ name: String) -> Bool {
             FileManager.default.fileExists(
@@ -29,9 +25,26 @@ enum WorktreeNamer {
         }
         // Every star in use — implausible for one repo, but suffix rather
         // than fail.
-        let base = starNames.randomElement() ?? "star"
+        return uniqueName(base: starNames.randomElement() ?? "star", isTaken: taken)
+    }
+
+    /// Allocate the per-repo folder under the worktrees root: slug of the
+    /// repo name, disambiguated against other repos' folder names and
+    /// anything already on disk (legacy UUID folders, leftovers from
+    /// removed repos).
+    static func allocateRepoFolder(name: String, existing: Set<String>) -> String {
+        uniqueName(base: WorktreeOps.slug(name)) { candidate in
+            existing.contains(candidate) || FileManager.default.fileExists(
+                atPath: Database.worktreesDirectory.appendingPathComponent(candidate).path
+            )
+        }
+    }
+
+    /// `base` if free, else the first free `base-2`, `base-3`, …
+    private static func uniqueName(base: String, isTaken: (String) -> Bool) -> String {
+        if !isTaken(base) { return base }
         var n = 2
-        while taken("\(base)-\(n)") { n += 1 }
+        while isTaken("\(base)-\(n)") { n += 1 }
         return "\(base)-\(n)"
     }
 

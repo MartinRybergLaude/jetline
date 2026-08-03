@@ -18,7 +18,7 @@ struct ImportBranchPane: View {
     @State private var importing: Bool = false
     /// Archived workspaces for this repo, keyed by their local branch name.
     /// A row whose branch is in this dict renders the "Merged" badge and
-    /// routes Import → `restoreArchivedWorkspace` instead of fresh import.
+    /// routes Import → `restoreOrImportWorkspace` instead of fresh import.
     @State private var archivedByBranch: [String: Workspace] = [:]
 
     private static let recentWindow: TimeInterval = 90 * 24 * 60 * 60
@@ -27,6 +27,14 @@ struct ImportBranchPane: View {
         case fresh
         case merged
         case active
+
+        var badgeText: String? {
+            switch self {
+            case .fresh:  return nil
+            case .merged: return "Merged"
+            case .active: return "Already imported"
+            }
+        }
     }
 
     var body: some View {
@@ -94,9 +102,16 @@ struct ImportBranchPane: View {
         return "Import"
     }
 
+    /// Single-lookup form for spots outside the list. The list itself uses
+    /// the `imported:` overload so the set is built once per render, not
+    /// once per row.
     private func status(for ref: String) -> RowStatus {
+        status(for: ref, imported: importedBranchNames)
+    }
+
+    private func status(for ref: String, imported: Set<String>) -> RowStatus {
         let local = repository.localName(forRemoteRef: ref)
-        if importedBranchNames.contains(local) { return .active }
+        if imported.contains(local) { return .active }
         if archivedByBranch[local] != nil { return .merged }
         return .fresh
     }
@@ -117,12 +132,13 @@ struct ImportBranchPane: View {
 
     private var branchList: some View {
         let rows = filteredRows
+        let imported = importedBranchNames
         return Group {
             if rows.isEmpty {
                 emptyState
             } else {
                 List(rows, selection: $selectedRef) { row in
-                    branchRowView(row, status: status(for: row.ref))
+                    branchRowView(row, status: status(for: row.ref, imported: imported))
                         .tag(row.ref)
                 }
                 .listStyle(.inset(alternatesRowBackgrounds: false))
@@ -168,7 +184,14 @@ struct ImportBranchPane: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            badge(for: status)
+            if let badgeText = status.badgeText {
+                Text(badgeText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.primary.opacity(0.06)))
+            }
         }
         .padding(.vertical, 2)
         // Only `.active` rows are unselectable, so they're the only ones
@@ -176,28 +199,6 @@ struct ImportBranchPane: View {
         // them does something useful (restore).
         .opacity(status == .active ? 0.55 : 1)
         .contentShape(Rectangle())
-    }
-
-    @ViewBuilder
-    private func badge(for status: RowStatus) -> some View {
-        switch status {
-        case .fresh:
-            EmptyView()
-        case .merged:
-            Text("Merged")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Capsule().fill(Color.primary.opacity(0.06)))
-        case .active:
-            Text("Already imported")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Capsule().fill(Color.primary.opacity(0.06)))
-        }
     }
 
     private func defaultName(for ref: String) -> String {
@@ -240,14 +241,20 @@ struct ImportBranchPane: View {
     private func refresh() async {
         refreshing = true
         defer { refreshing = false }
+        // Archived rows first — synchronous, and independent of the remote
+        // listing below. Rows are newest-first, so the most recently active
+        // workspace wins if two archived rows share a branch.
+        let archived = state.archivedWorkspaces(for: repository.id)
+        archivedByBranch = Dictionary(
+            archived.map { ($0.branchName, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
         let raw = await WorktreeOps.listRemoteBranches(
             repoPath: repository.path,
             remote: repository.remoteOrigin
         )
         branches = raw.map { BranchRow(ref: $0.ref, lastCommitAt: $0.lastCommitAt) }
-
-        let archived = (try? Workspaces.archivedForRepository(repository.id)) ?? []
-        archivedByBranch = Dictionary(uniqueKeysWithValues: archived.map { ($0.branchName, $0) })
     }
 
     private func runImport() async {
@@ -257,18 +264,7 @@ struct ImportBranchPane: View {
 
         let local = repository.localName(forRemoteRef: ref)
         if let archived = archivedByBranch[local] {
-            let restored = await state.restoreArchivedWorkspace(archived)
-            if !restored {
-                // Worktree was missing on disk; the stale row was deleted.
-                // Fall through to a fresh import so the user still gets a
-                // workspace for this branch.
-                archivedByBranch[local] = nil
-                await state.createWorkspaceFromBranch(
-                    in: repository,
-                    remoteRef: ref,
-                    name: defaultName(for: ref)
-                )
-            }
+            await state.restoreOrImportWorkspace(archived, in: repository)
         } else {
             await state.createWorkspaceFromBranch(
                 in: repository,
