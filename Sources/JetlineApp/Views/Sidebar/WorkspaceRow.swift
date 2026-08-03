@@ -14,7 +14,8 @@ struct WorkspaceRow: View {
             isSelected: state.selectedWorkspaceId == workspace.id,
             onArchive: { keepWorktree in
                 Task { await state.archiveWorkspace(workspace, removeWorktree: !keepWorktree) }
-            }
+            },
+            onClose: { state.closeWorkspace(workspace.id) }
         )
     }
 }
@@ -24,18 +25,26 @@ private struct WorkspaceRowContent: View {
     let workspaceState: WorkspaceState
     let isSelected: Bool
     let onArchive: (_ keepWorktree: Bool) -> Void
+    let onClose: () -> Void
+
+    @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: 10) {
+        let isOpen = !workspaceState.sessions.isEmpty
+        HStack(spacing: 0) {
             PRStatusIcon(snapshot: workspaceState.pr, size: 13)
+            Spacer().frame(width: 10)
             Text(workspace.name)
                 .font(.body)
-                .foregroundStyle(isSelected ? Color.accentColor.opacity(0.9) : Color.primary)
+                .foregroundStyle(nameColor(isOpen: isOpen))
                 .lineLimit(1)
                 .truncationMode(.tail)
             Spacer(minLength: 0)
+            if isOpen {
+                CloseWorkspaceButton(visible: hovering, action: onClose)
+            }
         }
-        .padding(.leading, 28)
+        .padding(.leading, 14)
         .padding(.trailing, 8)
         .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -45,15 +54,70 @@ private struct WorkspaceRowContent: View {
                     .fill(Color.primary.opacity(0.06))
             }
         }
+        .overlay(alignment: .leading) {
+            OpenWorkspaceBar(isOpen: isOpen, isSelected: isSelected)
+        }
+        .accessibilityValue(isOpen ? "Open" : "")
         .contentShape(Rectangle())
+        .onHover { hovering = $0 }
         .contextMenu {
             Button("Reveal worktree in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: workspace.worktreePath)])
+            }
+            if !workspaceState.sessions.isEmpty {
+                Button("Close workspace") { onClose() }
             }
             Divider()
             Button("Archive (keep worktree)") { onArchive(true) }
             Button("Delete worktree…", role: .destructive) { onArchive(false) }
         }
+    }
+
+    private func nameColor(isOpen: Bool) -> Color {
+        if isSelected { return Color.accentColor.opacity(0.9) }
+        return isOpen ? Color.primary : Color.secondary
+    }
+}
+
+/// Leading-edge state bar, the sidebar analog of the tab strip's active
+/// accent bar: thin and grey while the workspace has open sessions,
+/// slightly wider and accent-tinted when it's also the selection.
+struct OpenWorkspaceBar: View {
+    let isOpen: Bool
+    let isSelected: Bool
+    var height: CGFloat = 18
+
+    var body: some View {
+        if isOpen || isSelected {
+            RoundedRectangle(cornerRadius: 1)
+                .fill(isSelected ? Color.accentColor : Color.secondary.opacity(0.45))
+                .frame(width: isSelected ? 3 : 2, height: height)
+        }
+    }
+}
+
+struct CloseWorkspaceButton: View {
+    let visible: Bool
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(hovering ? .primary : .secondary)
+                .frame(width: 16, height: 16)
+                .background(
+                    Circle()
+                        .fill(Color.primary.opacity(hovering ? 0.16 : 0))
+                )
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .opacity(visible || hovering ? 1 : 0)
+        .onHover { hovering = $0 }
+        .help("Close workspace — ends its sessions")
     }
 }
 

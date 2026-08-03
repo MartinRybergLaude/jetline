@@ -23,6 +23,9 @@ struct AppShell: View {
                 }
         }
         .background(WindowTabbingDisabler())
+        .sheet(item: $state.repoPendingWorkspaceCreation) { repo in
+            WorkspaceCreationSheet(repository: repo)
+        }
         .sheet(item: $state.repoPendingSettings) { repo in
             RepositorySettingsSheet(repository: repo)
         }

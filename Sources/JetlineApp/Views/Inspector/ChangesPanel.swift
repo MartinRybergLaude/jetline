@@ -7,7 +7,7 @@ struct ChangesPanel: View {
     let scrollOffset: MutableBox<CGFloat>
 
     var body: some View {
-        if let id = state.selectedWorkspaceId,
+        if let id = state.inspectorWorkspaceId,
            let ws = state.workspaceById(id) {
             ChangesPanelContent(
                 workspace: ws,

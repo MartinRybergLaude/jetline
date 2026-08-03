@@ -174,5 +174,63 @@ enum Schema {
                 t.add(column: "terminalPaddingX", .integer).notNull().defaults(to: 2)
             }
         }
+
+        migrator.registerMigration("v15_branch_suffix_setting") { db in
+            try db.alter(table: "repositories") { t in
+                t.add(column: "addUniqueBranchSuffix", .boolean)
+                    .notNull()
+                    .defaults(to: true)
+            }
+        }
+
+        migrator.registerMigration("v16_tab_strip_scroll_indicators") { db in
+            try db.alter(table: "app_settings") { t in
+                t.add(column: "showTabStripScrollIndicators", .boolean)
+                    .notNull()
+                    .defaults(to: true)
+            }
+        }
+
+        migrator.registerMigration("v17_delete_worktree_on_merge") { db in
+            try db.alter(table: "app_settings") { t in
+                t.add(column: "deleteWorktreeOnMerge", .boolean)
+                    .notNull()
+                    .defaults(to: true)
+            }
+        }
+
+        migrator.registerMigration("v18_workspace_pr_identity") { db in
+            try db.alter(table: "workspaces") { t in
+                t.add(column: "pullRequestNumber", .integer)
+                t.add(column: "pullRequestURL", .text)
+            }
+        }
+
+        migrator.registerMigration("v19_workspace_sort_index") { db in
+            try db.alter(table: "workspaces") { t in
+                t.add(column: "sortIndex", .integer).notNull().defaults(to: 0)
+            }
+            // Backfill per repository in the order rows were displayed
+            // pre-migration so the first launch after upgrading shows the
+            // same arrangement. Subsequent reorders rewrite the column.
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT id, repositoryId FROM workspaces
+                ORDER BY repositoryId, lastActiveAt DESC, createdAt DESC
+                """)
+            var currentRepo: String?
+            var idx = 0
+            for row in rows {
+                let repoId: String = row["repositoryId"]
+                if repoId != currentRepo {
+                    currentRepo = repoId
+                    idx = 0
+                }
+                try db.execute(
+                    sql: "UPDATE workspaces SET sortIndex = ? WHERE id = ?",
+                    arguments: [idx, row["id"] as String]
+                )
+                idx += 1
+            }
+        }
     }
 }

@@ -10,15 +10,16 @@ action bar that fast-paths the common things and hands the rest to an agent.
 - Repo + worktree management ✅
 - Import an existing branch or PR as a workspace ✅
 - SQLite persistence (workspaces, settings, PR snapshots) ✅
-- Sidebar with repos & workspaces, drag-reorder, per-repo settings ✅
+- Sidebar with repos & workspaces, drag-reorder of repo sections and workspace rows (hold to lift, drag, release; within one repo), per-repo settings ✅
 - Embedded terminal hosting `claude` / `codex` / `vibe` / shell ✅ (libghostty-backed)
-- Multiple session tabs per workspace, ⌘1…⌘9 / ⌘⌥← →, drag-reorder ✅
+- Multiple session tabs per workspace, ⌘N new workspace, ⌘1…⌘9 tabs, ⌘⇧←/→ (or ⌘⇧H/L) terminals, ⌘⇧↑/↓ (or ⌘⇧J/K) workspaces, drag-reorder ✅ — the ⌘⇧ shortcuts yield to standard text selection while repo or app settings are being edited
+- Close a workspace from its sidebar row (✕ on hover) or by closing its last tab — ends its sessions and drops it from ⌘⇧↑/↓ cycling ✅
 - Inspector: changes (combined / PR / local), PR + checks, run output ✅
 - FSEvents watcher → live diff refresh + PR poll kick ✅
 - Git action bar: commit / create PR / pull / rebase / fix CI / fix comments / review / merge ✅
 - Fast-path rebase + pull (no agent token spend on the no-conflict case) ✅
-- Per-repo setup / run / archive scripts, exclusive run ✅
-- Settings: agents, binary paths, prompt overrides (global + per-repo), theme, terminal font ✅
+- Per-repo branch naming controls, setup / run / archive scripts, exclusive run ✅
+- Settings: agents, binary paths, prompt overrides (global + per-repo), theme, terminal font, tab strip scrollbar ✅
 - File editor, Conductor import ❌ explicitly out of scope
 
 ## Build
@@ -108,8 +109,9 @@ sidebar → AppState.selectWorkspace → ensure PTYSession → spawn agent
                                                                      → WorkspaceState
                                                                      → inspector views
 
-PRTracker (timer + kicks) → gh pr view / gh pr checks → AppState.applyPR
-                                                      → on-disk PRSnapshots cache
+PRTracker (timer + kicks) → reconcile branch/upstream → gh GraphQL PR poll
+                          → PR number/url identity + on-disk PRSnapshots cache
+                          → AppState.applyPR
 
 git action bar → GitActionPrompts.render → new PTYSession with initial prompt
               ↘ mergePR → gh pr merge (no agent)
@@ -117,8 +119,21 @@ git action bar → GitActionPrompts.render → new PTYSession with initial promp
 ```
 
 Workspaces live in `~/.jetline/worktrees/<repoId>/<workspaceId>`. The
-SQLite db lives at `~/.jetline/jetline.sqlite`. PR snapshots are cached
-alongside it. Override the data dir with the `JETLINE_DATA_DIR` env var.
+SQLite db lives at `~/.jetline/jetline.sqlite`. PR identities and snapshots are
+cached alongside it. Terminal receive diagnostics are written to
+`~/.jetline/jetline-terminal-receive.log` and rotated at 5 MB. Override the
+data dir with the `JETLINE_DATA_DIR` env var.
+
+Clicking a repository header in the sidebar opens the repository's base
+checkout (`repo.path`) in the same terminal/inspector view as a workspace,
+with its own in-memory terminal tabs. These base-repo tabs are not persisted
+as workspace rows and are not included in PR polling.
+
+Merged PRs auto-archive their workspace and, by default, delete the local
+worktree/branch; this can be disabled in Settings. Reusing a branch name
+after an old PR merged is guarded by the PR merge timestamp, and branch
+creation/import offers an explicit override if that branch is still checked
+out in another worktree.
 
 Per-workspace mutable state (diff snapshots, PR snapshot, sessions, branch
 position, run/setup controllers) lives on `WorkspaceState` instances looked

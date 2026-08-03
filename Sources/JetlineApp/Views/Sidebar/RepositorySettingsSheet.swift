@@ -15,6 +15,9 @@ struct RepositorySettingsSheet: View {
     /// branch-prefix preview can show the live value the workspace creator
     /// will pick up.
     @State private var usernameSlug: String = ""
+    /// Per-instance token so overlapping open/close of two sheets can't
+    /// clear each other's ⌘⇧-navigation suppression.
+    @State private var navSuppressorId = UUID().uuidString
 
     init(repository: Repository) {
         self.repository = repository
@@ -33,9 +36,12 @@ struct RepositorySettingsSheet: View {
                 }
                 .formStyle(.grouped)
             }
+            .scrollIndicators(.visible)
             footer
         }
         .frame(width: 580, height: 680)
+        .onAppear { state.setNavShortcutsSuppressed(true, by: navSuppressorId) }
+        .onDisappear { state.setNavShortcutsSuppressed(false, by: navSuppressorId) }
         .task { await loadRefs() }
         .confirmationDialog(
             "Delete \(repository.name)?",
@@ -105,6 +111,13 @@ struct RepositorySettingsSheet: View {
                 .fixedSize()
             }
             branchPrefixRow
+            describedRow(
+                title: "Unique branch suffix",
+                description: "Append a short random suffix to new branch names to avoid collisions."
+            ) {
+                Toggle("", isOn: $draft.addUniqueBranchSuffix)
+                    .labelsHidden()
+            }
         } header: {
             Text("Branching")
         }
@@ -114,7 +127,8 @@ struct RepositorySettingsSheet: View {
         BranchPrefixField(
             mode: branchPrefixModeBinding,
             customValue: branchPrefixCustomBinding,
-            usernameSlug: usernameSlug
+            usernameSlug: usernameSlug,
+            addUniqueSuffix: draft.addUniqueBranchSuffix
         )
     }
 
@@ -281,6 +295,7 @@ struct RepositorySettingsSheet: View {
                 TextEditor(text: text)
                     .font(.system(.callout, design: .monospaced))
                     .scrollContentBackground(.hidden)
+                    .scrollIndicators(.visible)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 6)
                     .background(Color(nsColor: .textBackgroundColor))
@@ -343,6 +358,7 @@ private struct BranchPrefixField: View {
     @Binding var mode: BranchPrefixMode
     @Binding var customValue: String
     let usernameSlug: String
+    let addUniqueSuffix: Bool
 
     /// Workspace name used in the preview only. A short, plausible English
     /// noun reads more naturally than "<workspace-name>" or `slug` and
@@ -398,6 +414,7 @@ private struct BranchPrefixField: View {
                 return ""
             }
         }()
-        return prefix + exampleSlug
+        let base = prefix + exampleSlug
+        return addUniqueSuffix ? base + "-A1B2C3" : base
     }
 }

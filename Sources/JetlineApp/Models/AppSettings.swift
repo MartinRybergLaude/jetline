@@ -17,6 +17,10 @@ struct AppSettings: Codable, FetchableRecord, PersistableRecord {
     /// `window-padding-x` is inert for embedded surfaces). Default of 2
     /// matches ghostty's own padding default.
     var terminalPaddingX: Int = 2
+    var showTabStripScrollIndicators: Bool = true
+    /// When a workspace PR is detected as merged, remove its local worktree
+    /// and branch instead of only archiving the sidebar row.
+    var deleteWorktreeOnMerge: Bool = true
     var theme: Theme = .system
     /// Comma-separated raw values of agents the user has hidden from the
     /// new-tab menu. Stored as a string so adding new agents doesn't require

@@ -9,7 +9,7 @@ import AppKit
 /// the Changes tab) would see all of its output dropped on the floor.
 ///
 /// Lifecycle:
-/// 1. `RunController` / `SetupController` calls `park(_:)` right after
+/// 1. `RunController` / `SetupController` calls `park(_:)` before
 ///    spawning the script — the emulator joins the incubator window, its
 ///    surface is built, and PTY output flows into ghostty's scrollback.
 /// 2. When the inspector's run panel mounts, it calls `adopt(_:into:)` to
@@ -19,14 +19,43 @@ import AppKit
 ///    stays alive; bytes keep accumulating.
 @MainActor
 enum TerminalIncubator {
+    private static let parkedSize = NSSize(width: 960, height: 600)
     private static let window: NSWindow = makeWindow()
 
-    /// Move `view` into the incubator's contentView. No-op if it's already
-    /// parked there.
+    /// Views must be at least this large to keep their own size when
+    /// parked; anything smaller (fresh views are zero-sized) gets
+    /// `parkedSize` so the surface has a real grid to build against.
+    private static let minPreservedSize = NSSize(width: 64, height: 64)
+
+    /// Move `view` into the incubator's contentView, keeping it at a real
+    /// terminal size. A view that was live keeps its current frame: forcing
+    /// `parkedSize` here would round-trip the PTY through a foreign grid on
+    /// every tab switch (SIGWINCH → TUI redraw at the parked size, and again
+    /// on return), re-wrapping inline-drawn TUIs like Claude Code. Parking
+    /// size-neutral means hide/show fires no resize at all unless the
+    /// container genuinely changed size while the view was hidden. Parked
+    /// views may exceed the incubator window's bounds; the window is
+    /// invisible and the surface doesn't care about clipping.
     static func park(_ view: NSView) {
-        guard let parent = window.contentView, view.superview !== parent else { return }
+        guard let parent = window.contentView else { return }
+
+        view.translatesAutoresizingMaskIntoConstraints = true
+        view.autoresizingMask = []
+        let hasLiveSize = view.frame.width >= minPreservedSize.width
+            && view.frame.height >= minPreservedSize.height
+        view.frame = NSRect(
+            origin: .zero,
+            size: hasLiveSize ? view.frame.size : parkedSize
+        )
+
+        guard view.superview !== parent else {
+            view.layoutSubtreeIfNeeded()
+            return
+        }
+
         view.removeFromSuperview()
         parent.addSubview(view)
+        view.layoutSubtreeIfNeeded()
     }
 
     /// Move `view` out of wherever it is and into `parent`. The caller is
@@ -40,7 +69,7 @@ enum TerminalIncubator {
 
     private static func makeWindow() -> NSWindow {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1, height: 1),
+            contentRect: NSRect(origin: .zero, size: parkedSize),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
@@ -50,7 +79,7 @@ enum TerminalIncubator {
         window.ignoresMouseEvents = true
         window.hasShadow = false
         window.collectionBehavior = [.transient, .ignoresCycle, .stationary]
-        window.contentView = NSView()
+        window.contentView = NSView(frame: NSRect(origin: .zero, size: parkedSize))
         return window
     }
 }

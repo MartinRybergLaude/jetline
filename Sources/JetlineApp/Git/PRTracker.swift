@@ -1,5 +1,13 @@
 import Foundation
 
+enum MergeCleanupPolicy {
+    static func shouldArchive(workspace: Workspace, pr: PullRequest) -> Bool {
+        guard pr.state.uppercased() == "MERGED",
+              let mergedAt = pr.mergedAt else { return false }
+        return mergedAt >= workspace.createdAt
+    }
+}
+
 /// Background tracker that keeps each workspace's `WorkspaceState.pr`
 /// populated for every workspace in every repository. Two loops per repo
 /// run in parallel,
@@ -221,7 +229,7 @@ final class PRTracker {
     private func pollLocal(repoId: String) async {
         guard let state,
               let repo = state.repositories.first(where: { $0.id == repoId }) else { return }
-        let workspaces = state.workspacesByRepo[repoId] ?? []
+        var workspaces = state.workspacesByRepo[repoId] ?? []
 
         // Refresh refs first — must run even when the repo has no
         // workspaces yet so the local default branch stays current and
@@ -252,6 +260,7 @@ final class PRTracker {
                 await state.refreshDiff(for: ws)
             }
         }
+        workspaces = await reconcileWorkspaceBranches(workspaces, repo: repo, state: state)
 
         // Compute every workspace's branch position concurrently. The
         // computes themselves are read-only; we apply the results back on
@@ -327,27 +336,30 @@ final class PRTracker {
         }
 
         do {
-            let result = try await GitHubRunner.batchFetchPRs(
-                repo: identifier,
-                branches: workspaces.map(\.branchName),
-                cwd: repo.path
+            let workspaces = await reconcileWorkspaceBranches(workspaces, repo: repo, state: state)
+            let result = try await fetchPRSnapshots(
+                for: workspaces,
+                repo: repo,
+                identifier: identifier,
+                state: state
             )
             loops[repoId]?.githubFailures = 0
             updateStatus(.ok)
             state.activityLog.record(
                 .prPoll,
-                "Polled GitHub (\(workspaces.count) branch\(workspaces.count == 1 ? "" : "es"))",
+                "Polled GitHub (\(workspaces.count) workspace\(workspaces.count == 1 ? "" : "s"))",
                 repoId: repoId
             )
             for ws in workspaces {
-                let snap: PRSnapshot
-                if let (pr, checks) = result[ws.branchName] {
-                    snap = .loaded(pr, checks)
-                } else {
-                    snap = .absent
+                let snap = result[ws.id] ?? .absent
+                if case let .loaded(pr, _) = snap {
+                    if pr.headRefName != ws.branchName {
+                        _ = state.updateWorkspaceBranchName(pr.headRefName, for: ws.id)
+                    }
+                    state.applyPRIdentity(number: pr.number, url: pr.url, for: ws.id)
                 }
                 state.applyPR(snap, for: ws.id)
-                autoArchiveIfMerged(workspace: ws, snapshot: snap, state: state)
+                autoArchiveIfMerged(workspace: state.workspaceById(ws.id) ?? ws, snapshot: snap, state: state)
             }
         } catch GitHubRunner.Error.ghMissing {
             updateStatus(.ghMissing)
@@ -387,6 +399,101 @@ final class PRTracker {
                 continue
             }
         }
+    }
+
+    private func reconcileWorkspaceBranches(
+        _ workspaces: [Workspace],
+        repo: Repository,
+        state: AppState
+    ) async -> [Workspace] {
+        let remote = repo.remoteOrigin
+        let identities: [(String, String?)] = await withTaskGroup(
+            of: (String, String?).self
+        ) { group in
+            for ws in workspaces {
+                let id = ws.id
+                let path = ws.worktreePath
+                group.addTask {
+                    let identity = await WorktreeOps.branchIdentity(at: path, remote: remote)
+                    return (id, identity.lookupBranch)
+                }
+            }
+
+            var collected: [(String, String?)] = []
+            for await result in group {
+                collected.append(result)
+            }
+            return collected
+        }
+
+        for (id, branch) in identities {
+            guard let branch else { continue }
+            _ = state.updateWorkspaceBranchName(branch, for: id)
+        }
+        return workspaces.map { state.workspaceById($0.id) ?? $0 }
+    }
+
+    private func fetchPRSnapshots(
+        for workspaces: [Workspace],
+        repo: Repository,
+        identifier: RepoIdentifier,
+        state: AppState
+    ) async throws -> [String: PRSnapshot] {
+        var snapshots: [String: PRSnapshot] = [:]
+
+        let knownNumbers = workspaces.compactMap(\.pullRequestNumber)
+        if !knownNumbers.isEmpty {
+            let byNumber = try await GitHubRunner.batchFetchPRsByNumber(
+                repo: identifier,
+                numbers: knownNumbers,
+                cwd: repo.path
+            )
+            for ws in workspaces {
+                guard let number = ws.pullRequestNumber,
+                      let (pr, checks) = byNumber[number] else { continue }
+                snapshots[ws.id] = .loaded(pr, checks)
+            }
+        }
+
+        let needsBranchLookup = workspaces.filter { snapshots[$0.id] == nil }
+        if !needsBranchLookup.isEmpty {
+            let byBranch = try await GitHubRunner.batchFetchPRs(
+                repo: identifier,
+                branches: needsBranchLookup.map(\.branchName),
+                cwd: repo.path
+            )
+            for ws in needsBranchLookup {
+                guard let (pr, checks) = byBranch[ws.branchName] else { continue }
+                snapshots[ws.id] = .loaded(pr, checks)
+            }
+        }
+
+        let needsCheckoutDiscovery = workspaces.filter { ws in
+            snapshots[ws.id] == nil
+                && ws.pullRequestNumber == nil
+                && (state.selectedWorkspaceId == ws.id || state.workspaceState(for: ws.id).isRefreshingPR)
+        }
+        if !needsCheckoutDiscovery.isEmpty {
+            var discoveredNumbersByWorkspace: [String: Int] = [:]
+            for ws in needsCheckoutDiscovery {
+                if let number = try await GitHubRunner.currentBranchPRNumber(cwd: ws.worktreePath) {
+                    discoveredNumbersByWorkspace[ws.id] = number
+                }
+            }
+            if !discoveredNumbersByWorkspace.isEmpty {
+                let byNumber = try await GitHubRunner.batchFetchPRsByNumber(
+                    repo: identifier,
+                    numbers: Array(discoveredNumbersByWorkspace.values),
+                    cwd: repo.path
+                )
+                for (workspaceId, number) in discoveredNumbersByWorkspace {
+                    guard let (pr, checks) = byNumber[number] else { continue }
+                    snapshots[workspaceId] = .loaded(pr, checks)
+                }
+            }
+        }
+
+        return snapshots
     }
 
     private enum IdentifierResult {
@@ -440,14 +547,16 @@ final class PRTracker {
         return anyActive ? 15 : 60
     }
 
-    /// Worktree is preserved (`removeWorktree: false`) so the user keeps
-    /// any uncommitted post-merge work; the row simply leaves the sidebar.
+    /// Auto-cleanup is tied to the specific PR lifetime, not just the branch
+    /// name. A same-named branch recreated after an older PR merged should
+    /// not be archived by that historical merged PR.
     private func autoArchiveIfMerged(workspace: Workspace, snapshot: PRSnapshot, state: AppState) {
         guard case let .loaded(pr, _) = snapshot,
-              pr.state.uppercased() == "MERGED",
+              MergeCleanupPolicy.shouldArchive(workspace: workspace, pr: pr),
               !autoArchived.contains(workspace.id) else { return }
         autoArchived.insert(workspace.id)
-        Task { await state.archiveWorkspace(workspace, removeWorktree: false) }
+        let removeWorktree = state.settings.deleteWorktreeOnMerge
+        Task { await state.archiveWorkspace(workspace, removeWorktree: removeWorktree) }
     }
 
     private func updateStatus(_ new: Status) {

@@ -4,8 +4,8 @@ import Foundation
 /// we want a synchronous result (success/failure + captured output) rather
 /// than a long-running process the user controls.
 ///
-/// We invoke through `/bin/zsh -lc` so the user's PATH (Homebrew, asdf,
-/// nvm) is loaded — same reasoning as `AgentLauncher.shellCommand`.
+/// We invoke through the user's interactive login shell so scripts see the
+/// same startup files as the embedded terminal.
 enum ScriptRunner {
     /// Env var pointing at the original repo path. Setup/run/archive scripts
     /// can read it to copy or symlink files (e.g. `.env`).
@@ -24,13 +24,12 @@ enum ScriptRunner {
         _ script: String,
         cwd: String,
         env: [String: String] = [:],
-        timeout: TimeInterval? = nil
+        timeout: TimeInterval? = 300
     ) async -> Result? {
         guard let trimmed = script.nonBlank else { return nil }
-        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         return await Subprocess.run(
-            executable: shell,
-            args: ["-lc", trimmed],
+            executable: ShellScriptLauncher.shell,
+            args: ShellScriptLauncher.args(for: trimmed),
             cwd: cwd,
             env: env,
             closeStdin: true,

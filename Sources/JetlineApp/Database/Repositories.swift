@@ -75,14 +75,60 @@ enum Workspaces {
             try Workspace
                 .filter(Workspace.Columns.repositoryId == repoId)
                 .filter(Workspace.Columns.archivedAt == nil)
-                .order(Workspace.Columns.lastActiveAt.desc)
+                .order(
+                    Workspace.Columns.sortIndex.asc,
+                    Workspace.Columns.lastActiveAt.desc
+                )
                 .fetchAll(db)
         }
     }
 
     static func insert(_ ws: Workspace) throws {
         try Database.shared.writer.write { db in
-            try ws.insert(db)
+            // Sit above the repo's current min so the fresh workspace lands
+            // at the top of its section, matching the in-memory
+            // `insert(at: 0)` AppState does.
+            let minIdx = try Int.fetchOne(
+                db,
+                sql: "SELECT MIN(sortIndex) FROM workspaces WHERE repositoryId = ?",
+                arguments: [ws.repositoryId]
+            ) ?? 0
+            var copy = ws
+            copy.sortIndex = minIdx - 1
+            try copy.insert(db)
+        }
+    }
+
+    /// Persist a manual ordering within one repository section. Writes
+    /// 0…n-1 across the supplied id sequence in a single transaction.
+    static func reorder(orderedIds: [String]) throws {
+        try Database.shared.writer.write { db in
+            for (idx, id) in orderedIds.enumerated() {
+                try Workspace
+                    .filter(key: id)
+                    .updateAll(db, Workspace.Columns.sortIndex.set(to: idx))
+            }
+        }
+    }
+
+    static func updateBranchName(id: String, branchName: String) throws {
+        _ = try Database.shared.writer.write { db in
+            try Workspace
+                .filter(key: id)
+                .updateAll(db, Workspace.Columns.branchName.set(to: branchName))
+        }
+    }
+
+    static func updatePRIdentity(id: String, number: Int?, url: String?) throws {
+        try Database.shared.writer.write { db in
+            try db.execute(
+                sql: """
+                UPDATE workspaces
+                SET pullRequestNumber = ?, pullRequestURL = ?
+                WHERE id = ?
+                """,
+                arguments: [number, url, id]
+            )
         }
     }
 

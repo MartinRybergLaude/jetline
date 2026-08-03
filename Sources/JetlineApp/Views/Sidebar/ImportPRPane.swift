@@ -120,6 +120,7 @@ struct ImportPRPane: View {
                         .tag(pr.number)
                 }
                 .listStyle(.inset(alternatesRowBackgrounds: false))
+                .scrollIndicators(.visible)
             }
 
         case .authRequired:

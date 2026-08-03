@@ -36,6 +36,9 @@ struct Repository: Codable, Identifiable, Hashable, FetchableRecord, Persistable
     /// resolves to `.custom` if `branchPrefix` is set, else `.username`.
     /// Recognised values: `username`, `custom`, `none`.
     var branchPrefixMode: String?
+    /// When true, new workspace branches get a short UUID suffix to avoid
+    /// collisions between workspaces with the same name.
+    var addUniqueBranchSuffix: Bool = true
     var setupScript: String?
     var runScript: String?
     /// When true, starting a run stops every other active runner in the same repo.
@@ -91,6 +94,7 @@ struct Repository: Codable, Identifiable, Hashable, FetchableRecord, Persistable
         static let remoteOrigin = Column(CodingKeys.remoteOrigin)
         static let branchPrefix = Column(CodingKeys.branchPrefix)
         static let branchPrefixMode = Column(CodingKeys.branchPrefixMode)
+        static let addUniqueBranchSuffix = Column(CodingKeys.addUniqueBranchSuffix)
         static let setupScript = Column(CodingKeys.setupScript)
         static let runScript = Column(CodingKeys.runScript)
         static let runExclusive = Column(CodingKeys.runExclusive)

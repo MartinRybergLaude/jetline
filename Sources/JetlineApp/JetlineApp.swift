@@ -29,6 +29,14 @@ struct JetlineApp: App {
                 CheckForUpdatesMenuItem(vm: updater)
             }
             CommandGroup(replacing: .newItem) {
+                Button("New Workspace…") {
+                    state.openWorkspaceCreationForSelectedRepository()
+                }
+                .keyboardShortcut("n", modifiers: [.command])
+                .disabled(state.selectedRepository == nil)
+
+                Divider()
+
                 Button("New Tab") {
                     if let ws = activeWorkspace() {
                         state.startNewSession(for: ws, agent: state.settings.defaultAgent)
@@ -68,6 +76,38 @@ struct JetlineApp: App {
                     .keyboardShortcut("\t", modifiers: [.control])
                 Button("Previous Tab") { state.cycleSession(forward: false) }
                     .keyboardShortcut("\t", modifiers: [.control, .shift])
+                // The ⌘⇧ arrow/HJKL group disables itself while a settings
+                // surface is being edited — disabled key equivalents fall
+                // through to the field editor, restoring the standard
+                // select-to-line-start/-end text behavior there.
+                Group {
+                    Button("Next Terminal Tab") { state.cycleSession(forward: true) }
+                        .keyboardShortcut(.rightArrow, modifiers: [.command, .shift])
+                    Button("Previous Terminal Tab") { state.cycleSession(forward: false) }
+                        .keyboardShortcut(.leftArrow, modifiers: [.command, .shift])
+
+                    Divider()
+
+                    Button("Next Workspace") { state.cycleWorkspaceSelection(forward: true) }
+                        .keyboardShortcut(.downArrow, modifiers: [.command, .shift])
+                    Button("Previous Workspace") { state.cycleWorkspaceSelection(forward: false) }
+                        .keyboardShortcut(.upArrow, modifiers: [.command, .shift])
+
+                    // Vim spellings of the four ⌘⇧ navigation arrows. Nested in a
+                    // submenu so the Window menu doesn't list every action twice;
+                    // key equivalents fire regardless of nesting.
+                    Menu("Vim Navigation") {
+                        Button("Previous Terminal Tab") { state.cycleSession(forward: false) }
+                            .keyboardShortcut("h", modifiers: [.command, .shift])
+                        Button("Next Workspace") { state.cycleWorkspaceSelection(forward: true) }
+                            .keyboardShortcut("j", modifiers: [.command, .shift])
+                        Button("Previous Workspace") { state.cycleWorkspaceSelection(forward: false) }
+                            .keyboardShortcut("k", modifiers: [.command, .shift])
+                        Button("Next Terminal Tab") { state.cycleSession(forward: true) }
+                            .keyboardShortcut("l", modifiers: [.command, .shift])
+                    }
+                }
+                .disabled(state.navShortcutsSuppressed)
 
                 Divider()
 

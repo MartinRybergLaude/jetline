@@ -2,6 +2,16 @@ import Foundation
 
 /// Worktree lifecycle: create branch + worktree, remove worktree, detect repo info.
 enum WorktreeOps {
+    struct BranchIdentity: Sendable, Equatable {
+        var localBranch: String?
+        var upstreamBranch: String?
+
+        /// GitHub PR lookup is keyed to the remote head branch. Prefer the
+        /// upstream when it exists; otherwise fall back to the checked-out
+        /// local branch.
+        var lookupBranch: String? { upstreamBranch ?? localBranch }
+    }
+
     enum ImportError: LocalizedError {
         case branchInUse(branch: String, byPath: String)
 
@@ -70,6 +80,36 @@ enum WorktreeOps {
         return trimmed?.nonBlank
     }
 
+    static func branchIdentity(at worktreePath: String, remote: String) async -> BranchIdentity {
+        async let local = currentBranch(at: worktreePath)
+        async let upstream = upstreamBranch(at: worktreePath, remote: remote)
+        return await BranchIdentity(localBranch: local, upstreamBranch: upstream)
+    }
+
+    static func currentBranch(at worktreePath: String) async -> String? {
+        let raw = try? await GitRunner.runChecked(
+            ["branch", "--show-current"],
+            cwd: worktreePath
+        )
+        return raw?.trimmingCharacters(in: .whitespacesAndNewlines).nonBlank
+    }
+
+    static func upstreamBranch(at worktreePath: String, remote: String) async -> String? {
+        let raw = try? await GitRunner.runChecked(
+            ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+            cwd: worktreePath
+        )
+        guard let upstream = raw?.trimmingCharacters(in: .whitespacesAndNewlines).nonBlank else {
+            return nil
+        }
+        let prefix = "\(remote)/"
+        if upstream.hasPrefix(prefix) {
+            return String(upstream.dropFirst(prefix.count)).nonBlank
+        }
+        guard let slash = upstream.firstIndex(of: "/") else { return upstream }
+        return String(upstream[upstream.index(after: slash)...]).nonBlank
+    }
+
     /// Remove a stale `index.lock` left behind when a git process was
     /// SIGKILL'd mid-write (tab/workspace closed while `git commit` ran,
     /// app crash during a toolbar rebase). Git never cleans these up, so
@@ -85,6 +125,40 @@ enum WorktreeOps {
         let stale = mtime < processStartDate || Date().timeIntervalSince(mtime) > 300
         guard stale else { return }
         try? FileManager.default.removeItem(atPath: lockPath)
+    }
+
+    static func removeIndexLock(gitDir: String) {
+        try? FileManager.default.removeItem(atPath: gitDir + "/index.lock")
+    }
+
+    private final class IndexWriteRegistry: @unchecked Sendable {
+        let lock = NSLock()
+        var counts: [String: Int] = [:]
+    }
+
+    private static let indexWrites = IndexWriteRegistry()
+
+    static func beginIndexWrite(worktreePath: String) {
+        indexWrites.lock.lock()
+        indexWrites.counts[worktreePath, default: 0] += 1
+        indexWrites.lock.unlock()
+    }
+
+    static func endIndexWrite(worktreePath: String) {
+        indexWrites.lock.lock()
+        let count = indexWrites.counts[worktreePath] ?? 0
+        if count <= 1 {
+            indexWrites.counts.removeValue(forKey: worktreePath)
+        } else {
+            indexWrites.counts[worktreePath] = count - 1
+        }
+        indexWrites.lock.unlock()
+    }
+
+    static func hasActiveIndexWrite(worktreePath: String) -> Bool {
+        indexWrites.lock.lock()
+        defer { indexWrites.lock.unlock() }
+        return indexWrites.counts[worktreePath] != nil
     }
 
     /// True process start time via sysctl — a lazily-initialized `Date()`
@@ -118,6 +192,13 @@ enum WorktreeOps {
         branchName: String,
         baseBranch: String
     ) async throws -> String {
+        // Match importExisting's typed collision path so the UI can offer
+        // an explicit override instead of surfacing git's raw worktree error.
+        _ = try? await GitRunner.run(["worktree", "prune"], cwd: repoPath)
+        if let path = (try await worktreesUsing(branch: branchName, repoPath: repoPath)).first {
+            throw ImportError.branchInUse(branch: branchName, byPath: path)
+        }
+
         let worktreesRoot = Database.worktreesDirectory
             .appendingPathComponent(repoId, isDirectory: true)
         try FileManager.default.createDirectory(at: worktreesRoot, withIntermediateDirectories: true)

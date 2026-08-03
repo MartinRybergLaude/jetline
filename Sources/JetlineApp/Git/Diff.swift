@@ -127,6 +127,13 @@ enum DiffComputer {
         // numstat / name-status / patch are independent reads against the
         // same revspec — fan them out so the wall time is max(of three)
         // instead of sum.
+        // `git diff` reports tracked paths only, so files an agent just
+        // created (never `git add`ed) would not appear in the snapshot at
+        // all — the untracked listing fills that gap below.
+        async let untrackedTask = GitRunner.run(
+            ["ls-files", "--others", "--exclude-standard", "-z"],
+            cwd: worktreePath
+        )
         async let numstatTask = GitRunner.runChecked(
             ["diff", "--numstat", revspec],
             cwd: worktreePath
@@ -180,9 +187,72 @@ enum DiffComputer {
             totalAdds += stat.0
             totalDels += stat.1
         }
+
+        // Untracked listing is soft-fail: a hiccup here shouldn't take the
+        // tracked diff down with it. Skip paths git already reported — e.g.
+        // `git rm --cached` leaves a path both Deleted in the diff and
+        // untracked on disk, and duplicate ids would break the panel's
+        // ForEach.
+        if let untracked = try? await untrackedTask, untracked.success {
+            let trackedPaths = Set(files.map(\.path))
+            for sub in untracked.stdout.split(separator: "\0") {
+                let path = String(sub)
+                guard !trackedPaths.contains(path),
+                      let file = untrackedFileDiff(path: path, worktreePath: worktreePath)
+                else { continue }
+                totalAdds += file.additions
+                files.append(file)
+            }
+        }
+
         files.sort { $0.path < $1.path }
         return DiffSnapshot(files: files, totalAdditions: totalAdds, totalDeletions: totalDels)
     }
+
+    /// Synthesize the `FileDiff` for an untracked file: a single hunk of
+    /// pure additions, mirroring what `git diff` would emit once the file
+    /// is staged. Content is read straight from disk — one subprocess for
+    /// the whole listing instead of a `git diff --no-index /dev/null <path>`
+    /// per file. Returns nil when the file vanished between listing and read.
+    static func untrackedFileDiff(path: String, worktreePath: String) -> FileDiff? {
+        let url = URL(fileURLWithPath: worktreePath).appendingPathComponent(path)
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
+
+        // NUL in the first 8k is git's own binary heuristic. Oversized files
+        // get the same not-shown treatment: an agent-created file that large
+        // is an artifact, and materializing it as hunk lines would bloat the
+        // panel for no reading value.
+        if data.prefix(8000).contains(0) || data.count > maxUntrackedPreviewBytes {
+            return FileDiff(
+                path: path, status: .added, additions: 0, deletions: 0,
+                hunks: [], isBinary: true
+            )
+        }
+        guard !data.isEmpty else {
+            return FileDiff(path: path, status: .added, additions: 0, deletions: 0, hunks: [])
+        }
+
+        // Split on `Character.isNewline`, not the literal "\n": Swift folds
+        // "\r\n" into a single grapheme, so a literal-"\n" split leaves CRLF
+        // files as one giant line. Matching the whole newline grapheme also
+        // keeps the stray "\r" out of the rendered rows.
+        var lines = String(decoding: data, as: UTF8.self)
+            .split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+        if lines.last == "" { lines.removeLast() } // trailing newline isn't a line
+        let hunk = FileDiff.Hunk(
+            header: "@@ -0,0 +1,\(lines.count) @@",
+            lines: lines.map { FileDiff.Line(kind: .addition, text: String($0)) }
+        )
+        return FileDiff(
+            path: path,
+            status: .added,
+            additions: lines.count,
+            deletions: 0,
+            hunks: [hunk]
+        )
+    }
+
+    private static let maxUntrackedPreviewBytes = 4 << 20
 }
 
 /// Parses `git diff` unified-format output into per-file hunks.
@@ -213,7 +283,11 @@ enum PatchParser {
             currentFile = nil
         }
 
-        for rawLine in patch.split(separator: "\n", omittingEmptySubsequences: false) {
+        // `Character.isNewline` rather than a literal "\n": when the diffed
+        // file has CRLF endings, git emits "…\r\n" and Swift folds that into
+        // one grapheme a literal split can't cut — every content line of the
+        // hunk then glues into a single "+…" row.
+        for rawLine in patch.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
             let line = String(rawLine)
             if line.hasPrefix("diff --git ") {
                 flushFile()

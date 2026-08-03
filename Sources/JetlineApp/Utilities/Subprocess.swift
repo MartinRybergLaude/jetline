@@ -12,6 +12,8 @@ enum Subprocess {
         var success: Bool { status == 0 }
     }
 
+    private static let processSlots = ConcurrencyGate(limit: 12)
+
     /// Returns the current process environment with `overrides` layered on
     /// top. PATH is replaced with the login-shell PATH (`LoginShellPath`)
     /// unless the caller supplies their own — without this, Launchpad-
@@ -54,6 +56,7 @@ enum Subprocess {
         // completes), so non-interactive spawns like `gh`/`git` find homebrew
         // binaries even under a Launchpad launch.
         _ = await LoginShellPath.get()
+        await processSlots.acquire()
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -86,6 +89,7 @@ enum Subprocess {
                     let stderrData = errDrain.waitAndCollect(timeout: .milliseconds(250))
                     let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
                     let stderr = String(data: stderrData, encoding: .utf8) ?? ""
+                    processSlots.release()
                     cont.resume(returning: Result(
                         stdout: stdout,
                         stderr: stderr,
@@ -102,6 +106,7 @@ enum Subprocess {
                 // down and resume with the spawn-failure sentinel.
                 outDrain.cancel()
                 errDrain.cancel()
+                processSlots.release()
                 cont.resume(returning: Result(
                     stdout: "",
                     stderr: "spawn failed: \(error)",
@@ -115,6 +120,43 @@ enum Subprocess {
                     if process?.isRunning == true { process?.terminate() }
                 }
             }
+        }
+    }
+}
+
+private final class ConcurrencyGate: @unchecked Sendable {
+    private let limit: Int
+    private let lock = NSLock()
+    private var inUse = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(limit: Int) {
+        self.limit = limit
+    }
+
+    func acquire() async {
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            if inUse < limit {
+                inUse += 1
+                lock.unlock()
+                cont.resume()
+            } else {
+                waiters.append(cont)
+                lock.unlock()
+            }
+        }
+    }
+
+    func release() {
+        lock.lock()
+        if waiters.isEmpty {
+            inUse -= 1
+            lock.unlock()
+        } else {
+            let next = waiters.removeFirst()
+            lock.unlock()
+            next.resume()
         }
     }
 }

@@ -64,6 +64,7 @@ private struct ActivityLogContent: View {
                     }
                 }
             }
+            .scrollIndicators(.visible)
         }
     }
 
