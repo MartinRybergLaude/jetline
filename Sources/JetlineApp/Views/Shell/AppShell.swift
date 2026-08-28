@@ -16,13 +16,18 @@ struct AppShell: View {
             SidebarView()
                 .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 320)
         } detail: {
-            MainArea()
-                .inspector(isPresented: inspectorBinding) {
-                    InspectorView()
-                        .inspectorColumnWidth(min: 240, ideal: 320, max: 480)
-                }
+            VStack(spacing: 0) {
+                // Stands in for the titlebar separator AppKit won't draw
+                // reliably — see `WindowChromeView.silenceTitlebarSeparators`.
+                Hairline()
+                MainArea()
+            }
+            .inspector(isPresented: inspectorBinding) {
+                InspectorView()
+                    .inspectorColumnWidth(min: 240, ideal: 320, max: 480)
+            }
         }
-        .background(WindowTabbingDisabler())
+        .background(WindowChromeSetup())
         .sheet(item: $state.repoPendingWorkspaceCreation) { repo in
             WorkspaceCreationSheet(repository: repo)
         }
@@ -51,20 +56,54 @@ struct AppShell: View {
     }
 }
 
-/// Disables NSWindow tabbing for the hosting window — removes the
-/// View → Show Tab Bar / Merge All Windows / Move Tab to New Window items.
-/// Applied once per window via `viewDidMoveToWindow`; SwiftUI reuses the
-/// same NSView across updates, so we don't need to re-apply on every
-/// `updateNSView`.
-private struct WindowTabbingDisabler: NSViewRepresentable {
-    func makeNSView(context: Context) -> TabbingDisablerView { TabbingDisablerView() }
-    func updateNSView(_ view: TabbingDisablerView, context: Context) {}
+/// Window chrome SwiftUI doesn't expose: tabbing and the titlebar separator.
+private struct WindowChromeSetup: NSViewRepresentable {
+    func makeNSView(context: Context) -> WindowChromeView { WindowChromeView() }
+
+    // Split items get rebuilt as columns come and go (showing the inspector
+    // makes a fresh one), and each starts out `.automatic` again — so re-apply
+    // on every update rather than once at mount. The new item isn't installed
+    // until the update pass finishes, hence the trailing hop.
+    func updateNSView(_ view: WindowChromeView, context: Context) {
+        view.silenceTitlebarSeparators()
+        DispatchQueue.main.async { view.silenceTitlebarSeparators() }
+    }
 }
 
-private final class TabbingDisablerView: NSView {
+private final class WindowChromeView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        window?.tabbingMode = .disallowed
+        guard let window else { return }
+        // Removes View → Show Tab Bar / Merge All Windows / Move Tab to New Window.
+        window.tabbingMode = .disallowed
+        silenceTitlebarSeparators()
+        // The split view isn't built yet on the first pass through here.
+        DispatchQueue.main.async { [weak self] in self?.silenceTitlebarSeparators() }
+    }
+
+    /// Silences AppKit's own hairline under the toolbar, which we draw in
+    /// SwiftUI instead (`Hairline` at the top of the detail and inspector
+    /// columns). `.automatic` decides per split item and on a freshly
+    /// launched window it lands on "no line" for the detail column — the
+    /// hairline only turns up once toggling the inspector rebuilds a split
+    /// item. Nothing short of that changes its mind: not `.line` on the item,
+    /// not `NSWindow.titlebarSeparatorStyle` (an item's own style wins), not a
+    /// forced layout, toolbar reassignment or resize. So take AppKit out of
+    /// the decision entirely. The sidebar keeps `.automatic`, where it works —
+    /// its list is a scroll view, the case the automatic behaviour is built
+    /// around.
+    func silenceTitlebarSeparators() {
+        guard let root = window?.contentView else { return }
+        func walk(_ view: NSView) {
+            if let split = view as? NSSplitView,
+               let controller = split.delegate as? NSSplitViewController {
+                for item in controller.splitViewItems where item.behavior != .sidebar {
+                    item.titlebarSeparatorStyle = .none
+                }
+            }
+            view.subviews.forEach(walk)
+        }
+        walk(root)
     }
 }
 

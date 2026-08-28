@@ -16,22 +16,41 @@ struct InspectorView: View {
     @State private var changesScrollOffset = MutableBox<CGFloat>(0)
 
     var body: some View {
-        VStack(spacing: 0) {
-            CapsuleTabs(
-                selection: $state.inspectorTab,
-                tabs: [.changes, .pr, .run],
-                help: { Self.tooltip(for: $0) }
-            ) { tab, _ in
-                Self.icon(for: tab)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 5)
-            .overlay(alignment: .bottom) { Divider() }
+        HStack(spacing: 0) {
+            leadingSeparator
+            VStack(spacing: 0) {
+                Hairline()
+                CapsuleTabs(
+                    selection: $state.inspectorTab,
+                    tabs: [.changes, .pr, .run],
+                    help: { Self.tooltip(for: $0) }
+                ) { tab, _ in
+                    Self.icon(for: tab)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
+                .overlay(alignment: .bottom) { Divider() }
 
-            content
+                content
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    /// macOS 27 leaves this edge unmarked: the `NSSplitDividerView` the
+    /// inspector split still creates no longer reaches the screen, and the
+    /// tone difference that used to back it up is gone as well —
+    /// `windowBackgroundColor` and `textBackgroundColor` now resolve to the
+    /// same value (pure white in Aqua, #1E1E1E in Dark), so the inspector and
+    /// the terminal bleed into each other. Draw the hairline ourselves, one
+    /// physical pixel of `separatorColor` — the same ink AppKit used.
+    ///
+    /// It's a laid-out sibling rather than an `.overlay` on the column root —
+    /// the root goes into SwiftUI's own inspector container, so keep the line
+    /// somewhere the column definitely owns.
+    private var leadingSeparator: some View {
+        Hairline(orientation: .vertical)
     }
 
     /// Run output owns its own ScrollView (autoscroll-to-tail), so it sits

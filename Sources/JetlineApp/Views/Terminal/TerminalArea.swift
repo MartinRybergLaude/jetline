@@ -85,6 +85,10 @@ struct TerminalArea: View {
                 .environment(\.colorScheme, colorScheme)
                 .id(colorScheme)
             }
+            // macOS 26+ gives every toolbar item a glass capsule. The title
+            // block is text, not a control — opt it out so it reads as part
+            // of the titlebar rather than a button.
+            .sharedBackgroundVisibility(.hidden)
             ToolbarSpacer(.flexible)
             ToolbarItemGroup(placement: .primaryAction) {
                 runToolbarItems
@@ -154,7 +158,6 @@ struct TerminalArea: View {
                     .id("new-session-menu")
                     Spacer(minLength: 0)
                 }
-                .padding(.leading, 6)
                 .coordinateSpace(name: "tabstrip")
                 .onPreferenceChange(TabFramesKey.self) { tabFrames = $0 }
             }
