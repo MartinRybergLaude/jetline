@@ -190,7 +190,10 @@ private struct ReviewSection: View {
         switch pr.reviewState {
         case .approved:         return .green
         case .changesRequested: return .red
-        case .reviewRequired:   return .yellow
+        // Orange, not the yellow used for the check icons: this state
+        // renders as text, and system yellow is unreadable against the
+        // light inspector background.
+        case .reviewRequired:   return .orange
         case .unreviewed:       return .secondary
         }
     }
