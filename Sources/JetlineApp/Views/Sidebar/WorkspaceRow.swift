@@ -144,19 +144,23 @@ struct PRStatusIcon: View {
 
     private struct Badge { let symbol: String; let color: Color }
 
+    /// Failing and in-flight checks take precedence — they're the states
+    /// that want attention now. The green check is reserved for "approved",
+    /// not "CI is green": a passing build on an unreviewed PR still has
+    /// work left, so it gets no badge rather than a misleading tick.
     private var checkBadge: Badge? {
-        guard case let .loaded(_, checks) = snapshot, !checks.isEmpty else { return nil }
-        var fail = 0, active = 0, pass = 0
+        guard case let .loaded(pr, checks) = snapshot else { return nil }
+        var fail = 0, active = 0
         for run in checks {
             switch run.bucket {
             case .fail: fail += 1
-            case .pass: pass += 1
+            case .pass: break
             default:    if run.isActive { active += 1 }
             }
         }
-        if fail > 0   { return Badge(symbol: "xmark.circle.fill",     color: .red) }
-        if active > 0 { return Badge(symbol: "circle.fill",           color: .yellow) }
-        if pass > 0   { return Badge(symbol: "checkmark.circle.fill", color: .green) }
+        if fail > 0      { return Badge(symbol: "xmark.circle.fill",     color: .red) }
+        if active > 0    { return Badge(symbol: "circle.fill",           color: .yellow) }
+        if pr.isApproved { return Badge(symbol: "checkmark.circle.fill", color: .green) }
         return nil
     }
 

@@ -52,6 +52,7 @@ private struct PRPanelContent: View {
         case let .loaded(pr, checks):
             VStack(alignment: .leading, spacing: 12) {
                 PRHeaderCard(pr: pr)
+                ReviewSection(pr: pr)
                 ChecksSection(checks: checks)
                 HStack {
                     Spacer()
@@ -152,6 +153,55 @@ private struct RefreshButton: View {
         }
         .buttonStyle(.borderless)
         .disabled(isRefreshing)
+    }
+}
+
+/// Approval state, laid out like `ChecksSection`'s header so the two read
+/// as one column of gates. Mirrors the sidebar badge: the green checkmark
+/// means approved, not "CI is green".
+private struct ReviewSection: View {
+    let pr: PullRequest
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("Review")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Image(systemName: symbol)
+                .font(.caption)
+                .foregroundStyle(color)
+            Text(label)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(color)
+        }
+    }
+
+    private var symbol: String {
+        switch pr.reviewState {
+        case .approved:         return "checkmark.circle.fill"
+        case .changesRequested: return "xmark.circle.fill"
+        case .reviewRequired:   return "circle.dotted"
+        case .unreviewed:       return "minus.circle"
+        }
+    }
+
+    private var color: Color {
+        switch pr.reviewState {
+        case .approved:         return .green
+        case .changesRequested: return .red
+        case .reviewRequired:   return .yellow
+        case .unreviewed:       return .secondary
+        }
+    }
+
+    private var label: String {
+        switch pr.reviewState {
+        case .approved:         return "Approved"
+        case .changesRequested: return "Changes requested"
+        case .reviewRequired:   return "Review required"
+        case .unreviewed:       return "Not reviewed"
+        }
     }
 }
 

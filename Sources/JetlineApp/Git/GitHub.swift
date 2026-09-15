@@ -34,6 +34,28 @@ struct PullRequest: Codable, Sendable, Hashable {
     /// Drives the merge gate so the toolbar matches GitHub's UI.
     var reviewDecision: String?
 
+    /// Normalized `reviewDecision`. `.unreviewed` covers the `nil` case —
+    /// no branch protection and nobody has signed off yet.
+    enum ReviewState: Sendable, Hashable {
+        case approved, changesRequested, reviewRequired, unreviewed
+
+        /// Whether branch protection still holds the merge button shut.
+        var blocksMerge: Bool {
+            self == .reviewRequired || self == .changesRequested
+        }
+    }
+
+    var reviewState: ReviewState {
+        switch reviewDecision?.uppercased() {
+        case "APPROVED":          return .approved
+        case "CHANGES_REQUESTED": return .changesRequested
+        case "REVIEW_REQUIRED":   return .reviewRequired
+        default:                  return .unreviewed
+        }
+    }
+
+    var isApproved: Bool { reviewState == .approved }
+
     var hasOpenComments: Bool {
         unresolvedThreadCount > 0 || issueCommentCount > 0
     }
