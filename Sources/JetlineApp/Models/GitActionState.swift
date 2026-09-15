@@ -73,11 +73,7 @@ struct GitActionState: Equatable {
             // own merge button does. We stay permissive on `mergeStateStatus`
             // (UNSTABLE for non-required failing checks, UNKNOWN while it's
             // recomputing after a force-push) since those still mergeable.
-            let reviewBlocks = pull.reviewDecision.map {
-                let upper = $0.uppercased()
-                return upper == "REVIEW_REQUIRED" || upper == "CHANGES_REQUESTED"
-            } ?? false
-            avail[.mergePR] = !conflicting && !pull.isDraft && !reviewBlocks
+            avail[.mergePR] = !conflicting && !pull.isDraft && !pull.reviewState.blocksMerge
 
         case .absent:
             avail[.createPR] = hasDiffVsBase
