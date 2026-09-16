@@ -607,7 +607,10 @@ enum GitHubRunner {
         return nodes.compactMap { $0.toSummary() }
     }
 
-    private static func runGH(_ args: [String], cwd: String) async throws -> String {
+    /// Not `private`: the conversation/mutation surface in
+    /// `PRConversation.swift` runs through the same `gh` invocation so it
+    /// inherits the identical env scrubbing and error mapping.
+    static func runGH(_ args: [String], cwd: String) async throws -> String {
         let result = await Subprocess.run(
             executable: "/usr/bin/env",
             args: ["gh"] + args,
@@ -641,12 +644,12 @@ enum GitHubRunner {
 
 // MARK: - GraphQL response wiring
 
-private struct GraphQLResponse<T: Decodable>: Decodable {
+struct GraphQLResponse<T: Decodable>: Decodable {
     let data: T?
     let errors: [GQLError]?
 }
 
-private struct GQLError: Decodable { let message: String }
+struct GQLError: Decodable { let message: String }
 
 /// Wrapper around `repository(...)` whose only purpose is to forward the
 /// dynamic alias keys (`b0`, `b1`, …) into a `[String: PRBatchEntry]`.
@@ -847,7 +850,7 @@ private struct PRNode: Decodable {
 
 // MARK: - listOpenPRs response wiring
 
-private struct PageInfo: Decodable {
+struct PageInfo: Decodable {
     let hasNextPage: Bool
 }
 
