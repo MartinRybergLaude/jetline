@@ -289,7 +289,7 @@ private struct ReviewCard: View {
     /// inspector background.
     private var color: Color {
         switch review.verdict {
-        case .approved:         return .green
+        case .approved:         return .readableGreen
         case .changesRequested: return .red
         case .commented:        return .secondary
         case .dismissed:        return .secondary

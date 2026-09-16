@@ -211,7 +211,7 @@ private struct ToolsPage: View {
             )
             FeatureRow(
                 icon: "terminal.fill",
-                tint: .green,
+                tint: .readableGreen,
                 title: "Setup and run scripts",
                 detail: "Configure per-repo setup, run, and archive scripts; they spawn alongside your agent in a dedicated panel."
             )

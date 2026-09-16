@@ -82,7 +82,7 @@ struct ReviewThreadCard: View {
                 Spacer(minLength: 4)
                 if thread.isOutdated { pill("OUTDATED", color: .secondary) }
                 if thread.isResolved {
-                    pill("RESOLVED", color: .green)
+                    pill("RESOLVED", color: .readableGreen)
                 } else {
                     Text("\(thread.comments.count)")
                         .font(.system(size: 10, design: .monospaced))

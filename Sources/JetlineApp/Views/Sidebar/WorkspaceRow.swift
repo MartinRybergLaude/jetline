@@ -134,7 +134,7 @@ struct PRStatusIcon: View {
 
     private func stateColor(_ kind: Kind) -> Color {
         switch kind {
-        case .open:    return .green
+        case .open:    return .readableGreen
         case .draft:   return .secondary
         case .closed:  return .red
         case .noPR:    return .secondary
@@ -160,7 +160,7 @@ struct PRStatusIcon: View {
         }
         if fail > 0      { return Badge(symbol: "xmark.circle.fill",     color: .red) }
         if active > 0    { return Badge(symbol: "circle.fill",           color: .yellow) }
-        if pr.isApproved { return Badge(symbol: "checkmark.circle.fill", color: .green) }
+        if pr.isApproved { return Badge(symbol: "checkmark.circle.fill", color: .readableGreen) }
         return nil
     }
 

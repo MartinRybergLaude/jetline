@@ -105,7 +105,7 @@ private struct ActivityRow: View {
     private var color: Color {
         switch event.kind {
         case .fetch:       return .blue
-        case .fastForward: return .green
+        case .fastForward: return .readableGreen
         case .prPoll:      return .purple
         case .gitAction:   return .orange
         case .lifecycle:   return .gray

@@ -257,7 +257,7 @@ struct ImportPRPane: View {
 
     private func color(for bucket: CheckBucket) -> Color {
         switch bucket {
-        case .pass: return .green
+        case .pass: return .readableGreen
         case .fail: return .red
         case .pending: return .yellow
         case .cancel, .skipping, .unknown: return .secondary

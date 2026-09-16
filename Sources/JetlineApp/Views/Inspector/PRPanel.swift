@@ -153,7 +153,7 @@ private struct ReviewSection: View {
 
     private var color: Color {
         switch pr.reviewState {
-        case .approved:         return .green
+        case .approved:         return .readableGreen
         case .changesRequested: return .red
         // Orange, not the yellow used for the check icons: this state
         // renders as text, and system yellow is unreadable against the
@@ -287,7 +287,7 @@ private struct CheckRow: View {
     private var statusIcon: some View {
         switch visual {
         case .pass:
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.readableGreen)
         case .fail:
             Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
         case .pending:

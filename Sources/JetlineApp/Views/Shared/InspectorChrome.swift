@@ -136,19 +136,3 @@ struct AvatarView: View {
         return Color(hue: Double(hash % 360) / 360, saturation: 0.45, brightness: 0.65)
     }
 }
-
-extension Color {
-    /// System green is too light to read as text against the inspector's
-    /// white background — the same problem `PRPanel.ReviewSection` already
-    /// dodges by using orange instead of yellow. This is GitHub's own
-    /// light-mode success green (#1A7F37).
-    ///
-    /// Only the Aqua side is darkened: against the dark inspector
-    /// background (#1E1E1E) the system color is the more legible of the two,
-    /// and this darker one would sink into it.
-    static let readableGreen = Color(nsColor: NSColor(name: "readableGreen") { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? .systemGreen
-            : NSColor(srgbRed: 0.102, green: 0.498, blue: 0.216, alpha: 1)
-    })
-}

@@ -91,7 +91,7 @@ struct FileDiffSection: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer()
-                Text("+\(file.additions)").foregroundStyle(.green)
+                Text("+\(file.additions)").foregroundStyle(Color.readableGreen)
                 Text("-\(file.deletions)").foregroundStyle(.red)
             }
             .font(.system(.caption, design: .monospaced))
@@ -203,7 +203,7 @@ enum DiffLineTint {
 
     static func marker(_ kind: FileDiff.Line.Kind) -> Color {
         switch kind {
-        case .addition: return .green
+        case .addition: return .readableGreen
         case .deletion: return .red
         case .context:  return .secondary
         }
