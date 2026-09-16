@@ -34,6 +34,8 @@ struct PRConversation: Sendable, Hashable {
 struct PRComment: Sendable, Hashable, Identifiable {
     var id: String
     var author: String
+    /// Pre-sized by the GraphQL query; `nil` for a deleted account.
+    var avatarURL: String?
     var body: String
     var createdAt: Date
     var url: String
@@ -47,6 +49,7 @@ struct PRComment: Sendable, Hashable, Identifiable {
     init(
         id: String,
         author: String,
+        avatarURL: String?,
         body: String,
         createdAt: Date,
         url: String,
@@ -55,6 +58,7 @@ struct PRComment: Sendable, Hashable, Identifiable {
     ) {
         self.id = id
         self.author = author
+        self.avatarURL = avatarURL
         self.body = body
         self.createdAt = createdAt
         self.url = url
@@ -94,14 +98,24 @@ struct PRReview: Sendable, Hashable, Identifiable {
 
     var id: String
     var author: String
+    var avatarURL: String?
     var verdict: Verdict
     var submittedAt: Date
     var url: String
     var blocks: [MarkdownBlock]
 
-    init(id: String, author: String, body: String, verdict: Verdict, submittedAt: Date, url: String) {
+    init(
+        id: String,
+        author: String,
+        avatarURL: String?,
+        body: String,
+        verdict: Verdict,
+        submittedAt: Date,
+        url: String
+    ) {
         self.id = id
         self.author = author
+        self.avatarURL = avatarURL
         self.verdict = verdict
         self.submittedAt = submittedAt
         self.url = url
@@ -188,18 +202,18 @@ extension GitHubRunner {
       repository(owner: $owner, name: $name) {
         pullRequest(number: $number) {
           id number body createdAt url
-          author { login }
+          author { login avatarUrl(size: 48) }
           comments(first: 100) {
             nodes {
               id body createdAt url isMinimized minimizedReason
-              author { login }
+              author { login avatarUrl(size: 48) }
             }
             pageInfo { hasNextPage }
           }
           reviews(first: 100) {
             nodes {
               id body state submittedAt url
-              author { login }
+              author { login avatarUrl(size: 48) }
             }
             pageInfo { hasNextPage }
           }
@@ -211,7 +225,7 @@ extension GitHubRunner {
               comments(first: 100) {
                 nodes {
                   id body createdAt url diffHunk isMinimized minimizedReason
-                  author { login }
+                  author { login avatarUrl(size: 48) }
                 }
                 pageInfo { hasNextPage }
               }
@@ -354,7 +368,10 @@ private struct ConversationNode: Decodable {
     let reviews: Connection<ReviewNode>?
     let reviewThreads: Connection<ThreadNode>?
 
-    struct Login: Decodable { let login: String? }
+    struct Login: Decodable {
+        let login: String?
+        let avatarUrl: String?
+    }
 
     struct Connection<Node: Decodable>: Decodable {
         let nodes: [Node]?
@@ -412,6 +429,7 @@ private struct ConversationNode: Decodable {
             items.append(.comment(PRComment(
                 id: node.id,
                 author: node.author?.login ?? "ghost",
+                avatarURL: node.author?.avatarUrl,
                 body: node.body ?? "",
                 createdAt: GitHubTimestamp.date(node.createdAt) ?? .distantPast,
                 url: node.url ?? url,
@@ -430,6 +448,7 @@ private struct ConversationNode: Decodable {
             items.append(.review(PRReview(
                 id: node.id,
                 author: node.author?.login ?? "ghost",
+                avatarURL: node.author?.avatarUrl,
                 body: body,
                 verdict: verdict,
                 submittedAt: GitHubTimestamp.date(node.submittedAt) ?? .distantPast,
@@ -442,6 +461,7 @@ private struct ConversationNode: Decodable {
                 PRComment(
                     id: comment.id,
                     author: comment.author?.login ?? "ghost",
+                    avatarURL: comment.author?.avatarUrl,
                     body: comment.body ?? "",
                     createdAt: GitHubTimestamp.date(comment.createdAt) ?? .distantPast,
                     url: comment.url ?? url,
@@ -480,6 +500,7 @@ private struct ConversationNode: Decodable {
             PRComment(
                 id: "pr-body-\(id)",
                 author: author?.login ?? "ghost",
+                avatarURL: author?.avatarUrl,
                 body: $0,
                 createdAt: GitHubTimestamp.date(createdAt) ?? .distantPast,
                 url: url

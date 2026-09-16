@@ -85,3 +85,54 @@ struct OpenOnGitHubButton: View {
         }
     }
 }
+
+/// Circular GitHub avatar, falling back to the login's initial on a color
+/// derived from the login itself. The fallback is what's on screen for the
+/// first frame of every comment, so it has to look deliberate rather than
+/// like a missing image.
+struct AvatarView: View {
+    let url: String?
+    let login: String
+    var size: CGFloat = 16
+
+    @ObservedObject private var loader = AvatarLoader.shared
+
+    var body: some View {
+        Group {
+            if let url, let image = loader.image(for: url) {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFill()
+            } else {
+                fallback
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        // Bots and light-on-white avatars need an edge to read as a disc.
+        .overlay(Circle().stroke(Color.primary.opacity(0.12), lineWidth: 0.5))
+    }
+
+    private var fallback: some View {
+        Circle()
+            .fill(Self.tint(for: login))
+            .overlay(
+                Text(initial)
+                    .font(.system(size: size * 0.55, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white)
+            )
+    }
+
+    private var initial: String {
+        login.first.map { String($0).uppercased() } ?? "?"
+    }
+
+    /// Stable per login so the same person keeps the same color across
+    /// launches — `hashValue` is seeded per process and would not.
+    private static func tint(for login: String) -> Color {
+        var hash: UInt64 = 5381
+        for byte in login.utf8 { hash = hash &* 33 &+ UInt64(byte) }
+        return Color(hue: Double(hash % 360) / 360, saturation: 0.45, brightness: 0.65)
+    }
+}

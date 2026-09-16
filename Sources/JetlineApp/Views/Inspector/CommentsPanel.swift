@@ -211,6 +211,7 @@ struct CommentCard: View {
         VStack(alignment: .leading, spacing: 6) {
             CommentHeader(
                 author: comment.author,
+                avatarURL: comment.avatarURL,
                 date: comment.createdAt,
                 trailing: role == .description ? "description" : nil,
                 url: comment.url
@@ -245,9 +246,18 @@ private struct ReviewCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                Image(systemName: symbol)
-                    .font(.caption)
-                    .foregroundStyle(color)
+                AvatarView(url: review.avatarURL, login: review.author)
+                    .overlay(alignment: .bottomTrailing) {
+                        // The verdict badge rides the avatar rather than
+                        // sitting beside it: the row is already tight, and
+                        // this reads as "who decided what" in one glance.
+                        Image(systemName: symbol)
+                            .font(.system(size: 8))
+                            .foregroundStyle(color)
+                            .frame(width: 10, height: 10)
+                            .background(Circle().fill(Color(nsColor: .windowBackgroundColor)))
+                            .offset(x: 3, y: 3)
+                    }
                 Text("\(review.author) \(review.verdict.label)")
                     .font(.caption.weight(.medium))
                 Text(RelativeTime.string(for: review.submittedAt))
@@ -291,12 +301,14 @@ private struct ReviewCard: View {
 
 struct CommentHeader: View {
     let author: String
+    var avatarURL: String?
     let date: Date
     var trailing: String?
     var url: String?
 
     var body: some View {
         HStack(spacing: 6) {
+            AvatarView(url: avatarURL, login: author)
             Text(author)
                 .font(.caption.weight(.semibold))
             Text(RelativeTime.string(for: date))

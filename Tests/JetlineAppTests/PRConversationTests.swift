@@ -14,11 +14,11 @@ final class PRConversationTests: XCTestCase {
     {"data":{"repository":{"pullRequest":{
       "id":"PR_1","number":7,"url":"https://github.com/acme/widget/pull/7",
       "body":"## Summary\\n\\nDoes a thing.","createdAt":"2026-01-01T09:00:00Z",
-      "author":{"login":"alice"},
+      "author":{"login":"alice","avatarUrl":"https://avatars.example/alice?s=48"},
       "comments":{"nodes":[
         {"id":"IC_1","body":"looks good","createdAt":"2026-01-01T12:00:00Z",
          "url":"https://example.com/ic1","isMinimized":false,"minimizedReason":"",
-         "author":{"login":"bob"}}
+         "author":{"login":"bob","avatarUrl":"https://avatars.example/bob?s=48"}}
       ],"pageInfo":{"hasNextPage":false}},
       "reviews":{"nodes":[
         {"id":"PRR_1","body":"Nice work","state":"APPROVED",
@@ -58,6 +58,7 @@ final class PRConversationTests: XCTestCase {
         XCTAssertEqual(conversation.pullRequestId, "PR_1")
         XCTAssertEqual(conversation.number, 7)
         XCTAssertEqual(conversation.description?.author, "alice")
+        XCTAssertEqual(conversation.description?.avatarURL, "https://avatars.example/alice?s=48")
         XCTAssertEqual(conversation.description?.blocks.first, .heading(level: 2, text: "Summary"))
         XCTAssertFalse(conversation.truncated)
     }
@@ -97,6 +98,7 @@ final class PRConversationTests: XCTestCase {
             return XCTFail("expected the issue comment")
         }
         XCTAssertNil(comment.minimizedReason)
+        XCTAssertEqual(comment.avatarURL, "https://avatars.example/bob?s=48")
     }
 
     func testTruncationIsReported() throws {
@@ -105,6 +107,30 @@ final class PRConversationTests: XCTestCase {
             with: "\"reviewThreads\":{\"pageInfo\":{\"hasNextPage\":true},\"nodes\":["
         )
         XCTAssertTrue(try XCTUnwrap(decode(truncated)).truncated)
+    }
+
+    /// A deleted account comes back as a null `author`, so both the login
+    /// and the avatar have to degrade rather than crash the decode.
+    func testDeletedAuthorFallsBackWithNoAvatar() throws {
+        let json = """
+        {"data":{"repository":{"pullRequest":{
+          "id":"PR_2","number":9,"url":"https://example.com/pr9",
+          "body":"","createdAt":"2026-01-01T09:00:00Z","author":null,
+          "comments":{"nodes":[
+            {"id":"IC_9","body":"orphaned","createdAt":"2026-01-01T12:00:00Z",
+             "url":"https://example.com/ic9","isMinimized":false,
+             "minimizedReason":"","author":null}
+          ],"pageInfo":{"hasNextPage":false}},
+          "reviews":{"nodes":[],"pageInfo":{"hasNextPage":false}},
+          "reviewThreads":{"nodes":[],"pageInfo":{"hasNextPage":false}}
+        }}}}
+        """
+        let conversation = try XCTUnwrap(decode(json))
+        guard case let .comment(comment)? = conversation.items.first else {
+            return XCTFail("expected the orphaned comment")
+        }
+        XCTAssertEqual(comment.author, "ghost")
+        XCTAssertNil(comment.avatarURL)
     }
 
     func testMissingPullRequestDecodesToNil() throws {
