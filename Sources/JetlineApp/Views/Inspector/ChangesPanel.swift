@@ -74,7 +74,7 @@ private struct ChangesPanelContent: View {
                 .foregroundStyle(.secondary)
             Spacer()
             Text("+\(snap.totalAdditions)")
-                .foregroundStyle(.green)
+                .foregroundStyle(Color.readableGreen)
             Text("−\(snap.totalDeletions)")
                 .foregroundStyle(.red)
         }

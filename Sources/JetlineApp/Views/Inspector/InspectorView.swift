@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Top-level so `AppState` can drive selection from outside the view (e.g.
 /// switch to `.run` when a fresh workspace's setup script kicks off).
-enum InspectorTab: Hashable { case changes, pr, run }
+enum InspectorTab: Hashable { case changes, pr, comments, run }
 
 struct InspectorView: View {
     @EnvironmentObject private var state: AppState
@@ -22,10 +22,10 @@ struct InspectorView: View {
                 Hairline()
                 CapsuleTabs(
                     selection: $state.inspectorTab,
-                    tabs: [.changes, .pr, .run],
+                    tabs: [.changes, .pr, .comments, .run],
                     help: { Self.tooltip(for: $0) }
                 ) { tab, _ in
-                    Self.icon(for: tab)
+                    icon(for: tab)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 5)
@@ -84,6 +84,10 @@ struct InspectorView: View {
         case .pr:
             ScrollView { PRPanel().padding(.vertical, 8) }
                 .scrollIndicators(.visible)
+        case .comments:
+            // Owns its own scrolling: the filter bar and the composer are
+            // pinned above and below the timeline.
+            CommentsPanel()
         case .run:
             RunOutputPanel()
         }
@@ -93,22 +97,42 @@ struct InspectorView: View {
         switch tab {
         case .changes: return "Changes"
         case .pr: return "Pull request"
+        case .comments: return "Comments"
         case .run: return "Run output"
         }
     }
 
     @ViewBuilder
-    private static func icon(for tab: InspectorTab) -> some View {
+    private func icon(for tab: InspectorTab) -> some View {
         switch tab {
         case .changes:
             Image(systemName: "plusminus")
         case .pr:
-            if let nsImage = assetCache["PRStateNone"] {
+            if let nsImage = Self.assetCache["PRStateNone"] {
                 Image(nsImage: nsImage).resizable().scaledToFit().frame(width: 13, height: 13)
+            }
+        case .comments:
+            // The count rides alongside the icon rather than as a corner
+            // badge: `CapsuleTabs` segments are equal-width capsules, and an
+            // overlaid badge clips against the selected segment's fill.
+            HStack(spacing: 2) {
+                Image(systemName: "bubble.left.and.bubble.right")
+                if unresolvedCommentCount > 0 {
+                    Text("\(unresolvedCommentCount)")
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                }
             }
         case .run:
             Image(systemName: "apple.terminal.fill")
         }
+    }
+
+    /// Unresolved review threads on the inspected workspace's PR. Already
+    /// carried by every `PRTracker` poll, so surfacing it costs nothing.
+    private var unresolvedCommentCount: Int {
+        guard let id = state.inspectorWorkspaceId,
+              case let .loaded(pr, _) = state.workspaceState(for: id).pr else { return 0 }
+        return pr.unresolvedThreadCount
     }
 
     private static let assetCache: [String: NSImage] = {

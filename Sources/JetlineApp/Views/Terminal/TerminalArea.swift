@@ -411,7 +411,7 @@ private struct ChangesPill: View {
     var body: some View {
         HStack(spacing: 4) {
             if adds > 0 {
-                Text("+\(adds)").foregroundStyle(.green)
+                Text("+\(adds)").foregroundStyle(Color.readableGreen)
             }
             if dels > 0 {
                 Text("−\(dels)").foregroundStyle(.red)
@@ -527,7 +527,7 @@ private struct RunStatusButton: View {
                 .offset(x: 3, y: -3)
         case .running:
             Circle()
-                .fill(.green)
+                .fill(Color.readableGreen)
                 .frame(width: 6, height: 6)
                 .offset(x: 3, y: -3)
         }

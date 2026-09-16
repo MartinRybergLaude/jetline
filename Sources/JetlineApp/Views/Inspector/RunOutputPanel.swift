@@ -148,7 +148,7 @@ private struct SetupOutputContent: View {
                 .frame(width: 10, height: 10)
         } else {
             Image(systemName: controller.didSucceed ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                .foregroundStyle(controller.didSucceed ? .green : .orange)
+                .foregroundStyle(controller.didSucceed ? Color.readableGreen : .orange)
                 .font(.system(size: 10))
         }
     }
@@ -171,7 +171,7 @@ private struct RunOutputContent: View {
             copyAction: controller.copyOutputToPasteboard
         ) {
             Image(systemName: controller.isRunning ? "circle.fill" : "circle")
-                .foregroundStyle(controller.isRunning ? .green : .secondary)
+                .foregroundStyle(controller.isRunning ? AnyShapeStyle(Color.readableGreen) : AnyShapeStyle(.secondary))
                 .font(.system(size: 8))
             Text(controller.isRunning ? "Running" : exitDescription)
                 .font(.caption)

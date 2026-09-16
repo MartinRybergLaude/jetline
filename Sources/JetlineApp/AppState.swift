@@ -93,6 +93,7 @@ final class AppState: ObservableObject {
     private var diffRefreshTasks: [String: Task<Void, Never>] = [:]
     private var diffRefreshQueued: Set<String> = []
     private(set) lazy var prTracker: PRTracker = PRTracker(state: self)
+    private(set) lazy var conversationStore: PRConversationStore = PRConversationStore(state: self)
     /// In-memory debug log of background activity (poll, fetch, FF, user
     /// git actions). Surfaced through the hidden Activity Log window;
     /// nothing in the normal UI surface reads it.
@@ -1321,6 +1322,16 @@ final class AppState: ObservableObject {
         Task.detached(priority: .utility) {
             try? PRSnapshots.save(snapshot, for: workspaceId)
         }
+    }
+
+    /// Single write path for PR conversations. In-memory only: unlike PR
+    /// snapshots these aren't persisted, because a stale comment stream is
+    /// worth less than the disk churn of storing every body, and the panel
+    /// refetches the moment it opens.
+    func applyConversation(_ snapshot: PRConversationSnapshot, for workspaceId: String) {
+        let ws = workspaceState(for: workspaceId)
+        guard ws.conversation != snapshot else { return }
+        ws.conversation = snapshot
     }
 
     /// Correct stale workspace branch metadata when the underlying worktree or

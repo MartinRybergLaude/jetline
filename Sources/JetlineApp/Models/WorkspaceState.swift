@@ -29,6 +29,11 @@ final class WorkspaceState {
     /// also flags untracked files, which `git diff` ignores.
     var hasUncommitted: Bool = false
     var pr: PRSnapshot = .loading
+    /// PR comment stream. Loaded on demand by `PRConversationStore` while
+    /// the Comments tab is open — never by `PRTracker`, whose batched poll
+    /// covers every workspace in every repo and would carry every comment
+    /// body on every tick.
+    var conversation: PRConversationSnapshot = .idle
     /// Local ahead/behind state, refreshed by `PRTracker` on each poll.
     /// Drives availability of `Pull updates` and `Rebase`.
     var branchPosition: BranchPosition = BranchPosition()
