@@ -20,13 +20,11 @@ struct PRConversation: Sendable, Hashable {
     /// True when GitHub had more comments/threads than one page could hold.
     /// Surfaced in the UI so a capped list doesn't look like the whole story.
     var truncated: Bool
-
-    var threads: [PRReviewThread] {
-        items.compactMap { if case let .thread(thread) = $0 { return thread } else { return nil } }
-    }
-
-    var unresolvedCount: Int { threads.count { !$0.isResolved } }
-    var resolvedCount: Int { threads.count { $0.isResolved } }
+    /// Stored rather than derived: the toolbar reads them five times per
+    /// render, and re-deriving would walk `items` and copy every thread
+    /// (bodies, diff hunks, comment arrays) each time.
+    var unresolvedCount: Int
+    var resolvedCount: Int
 
     var isEmpty: Bool { description == nil && items.isEmpty }
 }
@@ -39,7 +37,6 @@ struct PRComment: Sendable, Hashable, Identifiable {
     var body: String
     var createdAt: Date
     var url: String
-    var viewerDidAuthor: Bool
     /// GitHub-hidden comment (spam, off-topic, resolved). Rendered collapsed.
     var isMinimized: Bool
     var minimizedReason: String?
@@ -53,7 +50,6 @@ struct PRComment: Sendable, Hashable, Identifiable {
         body: String,
         createdAt: Date,
         url: String,
-        viewerDidAuthor: Bool = false,
         isMinimized: Bool = false,
         minimizedReason: String? = nil
     ) {
@@ -62,7 +58,6 @@ struct PRComment: Sendable, Hashable, Identifiable {
         self.body = body
         self.createdAt = createdAt
         self.url = url
-        self.viewerDidAuthor = viewerDidAuthor
         self.isMinimized = isMinimized
         self.minimizedReason = minimizedReason
         self.blocks = MarkdownParser.parse(body)
@@ -99,7 +94,6 @@ struct PRReview: Sendable, Hashable, Identifiable {
 
     var id: String
     var author: String
-    var body: String
     var verdict: Verdict
     var submittedAt: Date
     var url: String
@@ -108,7 +102,6 @@ struct PRReview: Sendable, Hashable, Identifiable {
     init(id: String, author: String, body: String, verdict: Verdict, submittedAt: Date, url: String) {
         self.id = id
         self.author = author
-        self.body = body
         self.verdict = verdict
         self.submittedAt = submittedAt
         self.url = url
@@ -125,8 +118,10 @@ struct PRReviewThread: Sendable, Hashable, Identifiable {
     var isOutdated: Bool
     var path: String
     var line: Int?
-    /// Unified diff context GitHub returns with the thread's first comment.
-    var diffHunk: String
+    /// Unified diff context GitHub returns with the thread's first comment,
+    /// pre-split. The card re-evaluates its body on every keystroke in the
+    /// reply editor, and splitting there would redo the work each time.
+    var diffHunkLines: [String]
     var comments: [PRComment]
     var viewerCanReply: Bool
     var viewerCanResolve: Bool
@@ -140,10 +135,6 @@ struct PRReviewThread: Sendable, Hashable, Identifiable {
     var location: String {
         guard let line else { return path }
         return "\(path):\(line)"
-    }
-
-    var fileName: String {
-        path.split(separator: "/").last.map(String.init) ?? path
     }
 }
 
@@ -200,7 +191,7 @@ extension GitHubRunner {
           author { login }
           comments(first: 100) {
             nodes {
-              id body createdAt url isMinimized minimizedReason viewerDidAuthor
+              id body createdAt url isMinimized minimizedReason
               author { login }
             }
             pageInfo { hasNextPage }
@@ -219,7 +210,7 @@ extension GitHubRunner {
               resolvedBy { login }
               comments(first: 100) {
                 nodes {
-                  id body createdAt url diffHunk isMinimized minimizedReason viewerDidAuthor
+                  id body createdAt url diffHunk isMinimized minimizedReason
                   author { login }
                 }
                 pageInfo { hasNextPage }
@@ -377,7 +368,6 @@ private struct ConversationNode: Decodable {
         let url: String?
         let isMinimized: Bool?
         let minimizedReason: String?
-        let viewerDidAuthor: Bool?
         let author: Login?
     }
 
@@ -412,14 +402,7 @@ private struct ConversationNode: Decodable {
         let diffHunk: String?
         let isMinimized: Bool?
         let minimizedReason: String?
-        let viewerDidAuthor: Bool?
         let author: Login?
-    }
-
-    nonisolated(unsafe) private static let timestampParser = ISO8601DateFormatter()
-
-    private static func date(_ raw: String?) -> Date? {
-        raw.flatMap { timestampParser.date(from: $0) }
     }
 
     func toConversation(repo: RepoIdentifier) -> PRConversation {
@@ -430,9 +413,8 @@ private struct ConversationNode: Decodable {
                 id: node.id,
                 author: node.author?.login ?? "ghost",
                 body: node.body ?? "",
-                createdAt: Self.date(node.createdAt) ?? .distantPast,
+                createdAt: GitHubTimestamp.date(node.createdAt) ?? .distantPast,
                 url: node.url ?? url,
-                viewerDidAuthor: node.viewerDidAuthor ?? false,
                 isMinimized: node.isMinimized ?? false,
                 minimizedReason: node.minimizedReason?.nonBlank
             )))
@@ -450,7 +432,7 @@ private struct ConversationNode: Decodable {
                 author: node.author?.login ?? "ghost",
                 body: body,
                 verdict: verdict,
-                submittedAt: Self.date(node.submittedAt) ?? .distantPast,
+                submittedAt: GitHubTimestamp.date(node.submittedAt) ?? .distantPast,
                 url: node.url ?? url
             )))
         }
@@ -461,9 +443,8 @@ private struct ConversationNode: Decodable {
                     id: comment.id,
                     author: comment.author?.login ?? "ghost",
                     body: comment.body ?? "",
-                    createdAt: Self.date(comment.createdAt) ?? .distantPast,
+                    createdAt: GitHubTimestamp.date(comment.createdAt) ?? .distantPast,
                     url: comment.url ?? url,
-                    viewerDidAuthor: comment.viewerDidAuthor ?? false,
                     isMinimized: comment.isMinimized ?? false,
                     minimizedReason: comment.minimizedReason?.nonBlank
                 )
@@ -478,7 +459,9 @@ private struct ConversationNode: Decodable {
                 // current diff; `originalLine` still points at the code the
                 // reviewer was looking at.
                 line: node.line ?? node.originalLine,
-                diffHunk: node.comments?.nodes?.first?.diffHunk ?? "",
+                diffHunkLines: (node.comments?.nodes?.first?.diffHunk).map {
+                    $0.components(separatedBy: "\n")
+                } ?? [],
                 comments: comments,
                 viewerCanReply: node.viewerCanReply ?? false,
                 viewerCanResolve: node.viewerCanResolve ?? false,
@@ -498,7 +481,7 @@ private struct ConversationNode: Decodable {
                 id: "pr-body-\(id)",
                 author: author?.login ?? "ghost",
                 body: $0,
-                createdAt: Self.date(createdAt) ?? .distantPast,
+                createdAt: GitHubTimestamp.date(createdAt) ?? .distantPast,
                 url: url
             )
         }
@@ -512,12 +495,20 @@ private struct ConversationNode: Decodable {
             print("fetchConversation: PR #\(number) in \(repo.owner)/\(repo.name) has more than 100 comments/reviews/threads; tail truncated.")
         }
 
+        var unresolved = 0
+        var resolved = 0
+        for case let .thread(thread) in items {
+            if thread.isResolved { resolved += 1 } else { unresolved += 1 }
+        }
+
         return PRConversation(
             pullRequestId: id,
             number: number,
             description: description,
             items: items,
-            truncated: truncated
+            truncated: truncated,
+            unresolvedCount: unresolved,
+            resolvedCount: resolved
         )
     }
 }

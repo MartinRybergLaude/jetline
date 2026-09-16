@@ -32,8 +32,8 @@ struct ReviewThreadCard: View {
         VStack(alignment: .leading, spacing: 8) {
             header
             if expanded {
-                if !thread.diffHunk.isEmpty {
-                    ThreadDiffHunk(hunk: thread.diffHunk)
+                if !thread.diffHunkLines.isEmpty {
+                    ThreadDiffHunk(lines: thread.diffHunkLines)
                 }
                 VStack(alignment: .leading, spacing: 10) {
                     ForEach(thread.comments) { comment in
@@ -53,13 +53,9 @@ struct ReviewThreadCard: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.secondary.opacity(thread.isResolved ? 0.04 : 0.07))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(borderColor, lineWidth: 0.5)
-                )
+        .cardSurface(
+            fill: Color.secondary.opacity(thread.isResolved ? 0.04 : 0.07),
+            stroke: borderColor
         )
         .opacity(thread.isOutdated && !expanded ? 0.75 : 1)
     }
@@ -184,22 +180,12 @@ struct ReviewThreadCard: View {
     @ViewBuilder
     private var resolveButton: some View {
         if thread.isResolved ? thread.viewerCanUnresolve : thread.viewerCanResolve {
-            Button {
-                setResolved(!thread.isResolved)
-            } label: {
-                HStack(spacing: 4) {
-                    if isResolving {
-                        ProgressView()
-                            .controlSize(.small)
-                            .scaleEffect(0.6)
-                            .frame(width: 10, height: 10)
-                    }
-                    Text(thread.isResolved ? "Unresolve" : "Resolve")
-                }
-                .font(.caption)
-            }
-            .controlSize(.small)
-            .disabled(isResolving || isSubmitting)
+            SubmitButton(
+                title: thread.isResolved ? "Unresolve" : "Resolve",
+                isSubmitting: isResolving,
+                isEnabled: !isSubmitting,
+                action: { setResolved(!thread.isResolved) }
+            )
         } else if let resolvedBy = thread.resolvedBy {
             Text("Resolved by \(resolvedBy)")
                 .font(.caption2)
@@ -215,7 +201,11 @@ struct ReviewThreadCard: View {
             var failure = await state.conversationStore.reply(
                 workspaceId: workspaceId,
                 threadId: thread.id,
-                body: body
+                body: body,
+                // The resolve's own refresh covers both mutations; refreshing
+                // here too would spend a second `gh` round trip on a view of
+                // the thread that's stale the moment the resolve lands.
+                refreshAfter: !thenResolve
             )
             // The reply is the part that can't be redone by hand from here,
             // so a failed follow-up resolve must not look like a total
@@ -261,13 +251,14 @@ struct ReviewThreadCard: View {
 /// matters; earlier context is available but folded away, because these
 /// hunks routinely run 30+ lines and would bury the comments.
 private struct ThreadDiffHunk: View {
-    let hunk: String
+    /// Pre-split by the decoder: this body re-evaluates on every keystroke in
+    /// the enclosing card's reply editor.
+    let lines: [String]
     @State private var showAll = false
 
     private static let tailLines = 8
 
     var body: some View {
-        let lines = hunk.components(separatedBy: "\n")
         let hidden = max(0, lines.count - Self.tailLines)
         let shown = showAll ? lines : Array(lines.suffix(Self.tailLines))
 
@@ -302,36 +293,16 @@ private struct ThreadDiffHunk: View {
         )
     }
 
+    /// `nil` kind = the `@@ … @@` header, which reads as a caption rather
+    /// than as diff content.
     private func line(_ text: String) -> some View {
-        let style = Style(text)
+        let kind = DiffLineTint.kind(ofRawLine: text)
         return Text(text.isEmpty ? " " : text)
             .font(.system(size: 10.5, design: .monospaced))
-            .foregroundStyle(style.foreground)
+            .foregroundStyle(kind == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
             .padding(.horizontal, 6)
             .padding(.vertical, 1)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(style.background)
-    }
-
-    private struct Style {
-        var foreground: Color
-        var background: Color
-
-        init(_ line: String) {
-            switch line.first {
-            case "+":
-                foreground = .primary
-                background = Color.green.opacity(0.12)
-            case "-":
-                foreground = .primary
-                background = Color.red.opacity(0.12)
-            case "@":
-                foreground = .secondary
-                background = Color.secondary.opacity(0.10)
-            default:
-                foreground = .primary
-                background = .clear
-            }
-        }
+            .background(kind.map(DiffLineTint.background) ?? DiffLineTint.headerBackground)
     }
 }

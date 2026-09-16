@@ -18,11 +18,20 @@ enum MarkdownParser {
     /// Tabs are expanded up front so every indentation comparison in the
     /// parser can count plain spaces. Inside code blocks this is a cosmetic
     /// change, and 4-wide reads better than a terminal's 8 in a narrow panel.
+    ///
+    /// Each rewrite is guarded: GitHub bodies are almost always already
+    /// LF-only and tab-free, and an unguarded `replacingOccurrences` copies
+    /// the whole body to change nothing.
     private static func normalize(_ source: String) -> String {
-        source
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\r", with: "\n")
-            .replacingOccurrences(of: "\t", with: "    ")
+        var out = source
+        if out.contains("\r") {
+            out = out.replacingOccurrences(of: "\r\n", with: "\n")
+                .replacingOccurrences(of: "\r", with: "\n")
+        }
+        if out.contains("\t") {
+            out = out.replacingOccurrences(of: "\t", with: "    ")
+        }
+        return out
     }
 
     // MARK: - Block loop
@@ -33,13 +42,18 @@ enum MarkdownParser {
         while i < lines.count {
             if isBlank(lines[i]) { i += 1; continue }
 
+            // Trimmed once here and threaded through: every `take*` below
+            // needs it, and re-trimming in each one allocated half a dozen
+            // throwaway strings per line before any block was recognised.
+            let trimmed = lines[i].trimmingCharacters(in: .whitespaces)
+
             // Fences come first: a ``` block can contain anything, including
             // text that would otherwise read as a heading or a list.
             if let block = takeFence(lines, &i) { out.append(block); continue }
-            if let block = takeDetails(lines, &i) { out.append(block); continue }
-            if let block = takeHeading(lines, &i) { out.append(block); continue }
-            if let block = takeRule(lines, &i) { out.append(block); continue }
-            if let block = takeQuote(lines, &i) { out.append(block); continue }
+            if let block = takeDetails(lines, &i, trimmed: trimmed) { out.append(block); continue }
+            if let block = takeHeading(&i, trimmed: trimmed) { out.append(block); continue }
+            if let block = takeRule(&i, trimmed: trimmed) { out.append(block); continue }
+            if let block = takeQuote(lines, &i, trimmed: trimmed) { out.append(block); continue }
             if let block = takeList(lines, &i) { out.append(block); continue }
             if let block = takeTable(lines, &i) { out.append(block); continue }
             out.append(contentsOf: takeParagraph(lines, &i))
@@ -51,7 +65,10 @@ enum MarkdownParser {
     /// and tables are handled by their own callers because they need more
     /// context (a table needs its delimiter row) or are allowed to interrupt.
     private static func startsNewBlock(_ line: String) -> Bool {
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        startsNewBlock(line, trimmed: line.trimmingCharacters(in: .whitespaces))
+    }
+
+    private static func startsNewBlock(_ line: String, trimmed: String) -> Bool {
         if fenceInfo(line) != nil { return true }
         if trimmed.hasPrefix(">") { return true }
         if trimmed.lowercased().hasPrefix("<details") { return true }
@@ -96,7 +113,7 @@ enum MarkdownParser {
             body.removeLast()
         }
         let language = info.split(separator: " ").first.map { $0.lowercased() }
-        return .code(language: language?.nonBlank, text: body.joined(separator: "\n"))
+        return .code(language: language, text: body.joined(separator: "\n"))
     }
 
     // MARK: - Headings
@@ -109,8 +126,7 @@ enum MarkdownParser {
         return hashes
     }
 
-    private static func takeHeading(_ lines: [String], _ i: inout Int) -> MarkdownBlock? {
-        let trimmed = lines[i].trimmingCharacters(in: .whitespaces)
+    private static func takeHeading(_ i: inout Int, trimmed: String) -> MarkdownBlock? {
         guard let level = headingLevel(trimmed) else { return nil }
         var text = String(trimmed.dropFirst(level)).trimmingCharacters(in: .whitespaces)
         // Closing sequence: `## Title ##`.
@@ -130,16 +146,20 @@ enum MarkdownParser {
         return count >= 3
     }
 
-    private static func takeRule(_ lines: [String], _ i: inout Int) -> MarkdownBlock? {
-        guard isRule(lines[i].trimmingCharacters(in: .whitespaces)) else { return nil }
+    private static func takeRule(_ i: inout Int, trimmed: String) -> MarkdownBlock? {
+        guard isRule(trimmed) else { return nil }
         i += 1
         return .rule
     }
 
     // MARK: - Block quote
 
-    private static func takeQuote(_ lines: [String], _ i: inout Int) -> MarkdownBlock? {
-        guard lines[i].trimmingCharacters(in: .whitespaces).hasPrefix(">") else { return nil }
+    private static func takeQuote(
+        _ lines: [String],
+        _ i: inout Int,
+        trimmed firstTrimmed: String
+    ) -> MarkdownBlock? {
+        guard firstTrimmed.hasPrefix(">") else { return nil }
         var inner: [String] = []
         while i < lines.count {
             let trimmed = lines[i].trimmingCharacters(in: .whitespaces)
@@ -349,10 +369,12 @@ enum MarkdownParser {
 
     // MARK: - Disclosure (`<details>`)
 
-    private static func takeDetails(_ lines: [String], _ i: inout Int) -> MarkdownBlock? {
-        guard lines[i].trimmingCharacters(in: .whitespaces).lowercased().hasPrefix("<details") else {
-            return nil
-        }
+    private static func takeDetails(
+        _ lines: [String],
+        _ i: inout Int,
+        trimmed: String
+    ) -> MarkdownBlock? {
+        guard trimmed.lowercased().hasPrefix("<details") else { return nil }
         var depth = 0
         var collected: [String] = []
         while i < lines.count {
@@ -388,7 +410,6 @@ enum MarkdownParser {
     }
 
     private static func occurrences(of needle: String, in haystack: String) -> Int {
-        guard !needle.isEmpty else { return 0 }
         var count = 0
         var search = haystack.startIndex..<haystack.endIndex
         while let found = haystack.range(of: needle, range: search) {

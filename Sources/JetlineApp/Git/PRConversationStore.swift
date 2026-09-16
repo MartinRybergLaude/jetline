@@ -19,11 +19,6 @@ final class PRConversationStore {
     private weak var state: AppState?
     private var inFlight: [String: Task<Void, Never>] = [:]
     private var lastLoaded: [String: Date] = [:]
-    /// Owner/name resolved here when `PRTracker` hasn't cached it yet — on a
-    /// cold launch the Comments tab can open before the first GitHub poll
-    /// completes, and waiting a full poll interval to show anything is worse
-    /// than one extra `gh repo view`.
-    private var fallbackIdentifiers: [String: RepoIdentifier] = [:]
 
     init(state: AppState) {
         self.state = state
@@ -53,19 +48,13 @@ final class PRConversationStore {
         inFlight[workspaceId] = nil
     }
 
-    /// Drop cached freshness so the next `refresh` definitely hits the
-    /// network. Used when the workspace's PR snapshot reports new activity.
-    func invalidate(workspaceId: String) {
-        lastLoaded.removeValue(forKey: workspaceId)
-    }
-
     private func load(workspaceId: String) async {
         guard let state,
               let workspace = state.workspaceById(workspaceId),
               let repo = state.repositories.first(where: { $0.id == workspace.repositoryId })
         else { return }
 
-        guard let number = prNumber(for: workspaceId, workspace: workspace, state: state) else {
+        guard let number = prNumber(for: workspaceId, workspace: workspace) else {
             state.applyConversation(.idle, for: workspaceId)
             return
         }
@@ -77,7 +66,7 @@ final class PRConversationStore {
             state.applyConversation(.loading, for: workspaceId)
         }
 
-        guard let identifier = await resolveIdentifier(repo: repo, state: state) else {
+        guard let identifier = await resolveIdentifier(repo: repo) else {
             state.applyConversation(.error("Repository has no GitHub remote."), for: workspaceId)
             return
         }
@@ -115,17 +104,20 @@ final class PRConversationStore {
     /// Durable PR identity first; fall back to whatever the current PR
     /// snapshot discovered, which covers the window between a PR appearing
     /// and the identity being persisted.
-    private func prNumber(for workspaceId: String, workspace: Workspace, state: AppState) -> Int? {
+    private func prNumber(for workspaceId: String, workspace: Workspace) -> Int? {
         if let number = workspace.pullRequestNumber { return number }
-        if case let .loaded(pr, _) = state.workspaceState(for: workspaceId).pr { return pr.number }
+        if case let .loaded(pr, _) = state?.workspaceState(for: workspaceId).pr { return pr.number }
         return nil
     }
 
-    private func resolveIdentifier(repo: Repository, state: AppState) async -> RepoIdentifier? {
+    /// `PRTracker` owns this lookup and caches it in `repoMetadataByRepo`, but
+    /// on a cold launch the Comments tab can open before the first GitHub poll
+    /// lands. Resolving once here beats waiting out a poll interval; the result
+    /// goes into the shared cache, so this runs at most once per repo.
+    private func resolveIdentifier(repo: Repository) async -> RepoIdentifier? {
+        guard let state else { return nil }
         if let cached = state.repoMetadataByRepo[repo.id] { return cached }
-        if let cached = fallbackIdentifiers[repo.id] { return cached }
         guard let resolved = try? await GitHubRunner.repoIdentifier(cwd: repo.path) else { return nil }
-        fallbackIdentifiers[repo.id] = resolved
         state.applyRepoMetadata(resolved, for: repo.id)
         return resolved
     }
@@ -144,8 +136,20 @@ final class PRConversationStore {
         }
     }
 
-    func reply(workspaceId: String, threadId: String, body: String) async -> String? {
-        await mutate(workspaceId: workspaceId, describedAs: "Replied to review thread") { context in
+    /// `refreshAfter: false` lets "Reply & resolve" pay for a single refetch
+    /// and a single tracker kick instead of one per mutation — the reply's
+    /// refresh would be stale the moment the resolve lands anyway.
+    func reply(
+        workspaceId: String,
+        threadId: String,
+        body: String,
+        refreshAfter: Bool = true
+    ) async -> String? {
+        await mutate(
+            workspaceId: workspaceId,
+            describedAs: "Replied to review thread",
+            refreshAfter: refreshAfter
+        ) { context in
             try await GitHubRunner.replyToReviewThread(
                 threadId: threadId,
                 body: body,
@@ -167,7 +171,6 @@ final class PRConversationStore {
 
     private struct MutationContext {
         let repoPath: String
-        let repoId: String
         let conversation: PRConversation
     }
 
@@ -178,6 +181,7 @@ final class PRConversationStore {
     private func mutate(
         workspaceId: String,
         describedAs description: String,
+        refreshAfter: Bool = true,
         _ body: @escaping (MutationContext) async throws -> Void
     ) async -> String? {
         guard let state,
@@ -189,11 +193,7 @@ final class PRConversationStore {
         }
 
         do {
-            try await body(MutationContext(
-                repoPath: repo.path,
-                repoId: repo.id,
-                conversation: conversation
-            ))
+            try await body(MutationContext(repoPath: repo.path, conversation: conversation))
         } catch {
             state.activityLog.record(
                 .error,
@@ -210,7 +210,7 @@ final class PRConversationStore {
             repoId: repo.id,
             workspaceId: workspaceId
         )
-        invalidate(workspaceId: workspaceId)
+        guard refreshAfter else { return nil }
         await refresh(workspaceId: workspaceId, force: true)
         // Unresolved-thread and comment counts feed the sidebar badge and
         // the PR panel, and they're owned by the tracker.

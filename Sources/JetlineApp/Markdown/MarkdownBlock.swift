@@ -39,7 +39,9 @@ struct MarkdownList: Hashable, Sendable {
 }
 
 struct MarkdownTable: Hashable, Sendable {
-    enum Align: Hashable, Sendable { case leading, center, trailing }
+    enum Align: Hashable, Sendable {
+        case leading, center, trailing
+    }
 
     var header: [String]
     /// One entry per column, derived from the delimiter row's colons.

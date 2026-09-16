@@ -27,27 +27,16 @@ struct PRPanel: View {
 }
 
 private struct PRPanelContent: View {
+    @EnvironmentObject private var state: AppState
     let workspace: Workspace
     let workspaceState: WorkspaceState
 
     var body: some View {
         switch workspaceState.pr {
-        case .loading:
-            InspectorPlaceholder(
-                systemImage: "arrow.triangle.2.circlepath",
-                title: "Loading PR…"
-            )
-        case let .error(msg):
-            InspectorPlaceholder(
-                systemImage: "exclamationmark.triangle",
-                title: "Couldn't load PR",
-                subtitle: msg
-            )
-        case .absent:
-            InspectorPlaceholder(
-                systemImage: "tray",
-                title: "No pull request",
-                subtitle: "Branch \(workspace.branchName) has no PR on the remote."
+        case .loading, .error, .absent:
+            PRSnapshotPlaceholder(
+                snapshot: workspaceState.pr,
+                branchName: workspace.branchName
             )
         case let .loaded(pr, checks):
             VStack(alignment: .leading, spacing: 12) {
@@ -56,7 +45,12 @@ private struct PRPanelContent: View {
                 ChecksSection(checks: checks)
                 HStack {
                     Spacer()
-                    RefreshButton(workspaceState: workspaceState)
+                    RefreshButton(
+                        isRefreshing: workspaceState.isRefreshingPR,
+                        title: "Refresh"
+                    ) {
+                        state.requestPRRefresh(workspaceId: workspaceState.id)
+                    }
                 }
             }
             .padding(.horizontal, 12)
@@ -101,11 +95,9 @@ private struct PRHeaderCard: View {
             }
         }
         .padding(10)
-        .background(Color.secondary.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.secondary.opacity(0.18), lineWidth: 0.5)
+        .cardSurface(
+            fill: Color.secondary.opacity(0.08),
+            stroke: Color.secondary.opacity(0.18)
         )
     }
 
@@ -126,33 +118,6 @@ private struct PRHeaderCard: View {
             .padding(.vertical, 2)
             .background(color)
             .clipShape(RoundedRectangle(cornerRadius: 4))
-    }
-}
-
-private struct RefreshButton: View {
-    @EnvironmentObject private var state: AppState
-    let workspaceState: WorkspaceState
-
-    var body: some View {
-        let isRefreshing = workspaceState.isRefreshingPR
-        Button {
-            state.requestPRRefresh(workspaceId: workspaceState.id)
-        } label: {
-            HStack(spacing: 4) {
-                if isRefreshing {
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.7)
-                        .frame(width: 12, height: 12)
-                } else {
-                    Image(systemName: "arrow.clockwise")
-                }
-                Text("Refresh")
-            }
-            .font(.caption)
-        }
-        .buttonStyle(.borderless)
-        .disabled(isRefreshing)
     }
 }
 
@@ -311,16 +276,8 @@ private struct CheckRow: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer()
-            if let link = run.link.flatMap(URL.init(string:)) {
-                Button {
-                    NSWorkspace.shared.open(link)
-                } label: {
-                    Image(systemName: "arrow.up.right.square")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Open check on GitHub")
+            if let link = run.link {
+                OpenOnGitHubButton(url: link, help: "Open check on GitHub")
             }
         }
         .padding(.vertical, 3)

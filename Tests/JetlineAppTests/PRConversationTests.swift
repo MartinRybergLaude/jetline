@@ -18,7 +18,7 @@ final class PRConversationTests: XCTestCase {
       "comments":{"nodes":[
         {"id":"IC_1","body":"looks good","createdAt":"2026-01-01T12:00:00Z",
          "url":"https://example.com/ic1","isMinimized":false,"minimizedReason":"",
-         "viewerDidAuthor":true,"author":{"login":"bob"}}
+         "author":{"login":"bob"}}
       ],"pageInfo":{"hasNextPage":false}},
       "reviews":{"nodes":[
         {"id":"PRR_1","body":"Nice work","state":"APPROVED",
@@ -38,7 +38,7 @@ final class PRConversationTests: XCTestCase {
          "comments":{"nodes":[
            {"id":"RC_1","body":"this traps","createdAt":"2026-01-01T11:00:00Z",
             "url":"https://example.com/rc1","diffHunk":"@@ -1 +1 @@\\n+let x = 1",
-            "isMinimized":false,"minimizedReason":"","viewerDidAuthor":false,
+            "isMinimized":false,"minimizedReason":"",
             "author":{"login":"carol"}}
          ],"pageInfo":{"hasNextPage":false}}},
         {"id":"T_2","isResolved":true,"isOutdated":true,"path":"Sources/B.swift",
@@ -47,7 +47,7 @@ final class PRConversationTests: XCTestCase {
          "comments":{"nodes":[
            {"id":"RC_2","body":"nit","createdAt":"2026-01-01T14:00:00Z",
             "url":"https://example.com/rc2","diffHunk":"","isMinimized":false,
-            "minimizedReason":"","viewerDidAuthor":false,"author":{"login":"dave"}}
+            "minimizedReason":"","author":{"login":"dave"}}
          ],"pageInfo":{"hasNextPage":false}}}
       ],"pageInfo":{"hasNextPage":false}}
     }}}}
@@ -80,8 +80,11 @@ final class PRConversationTests: XCTestCase {
         XCTAssertEqual(conversation.unresolvedCount, 1)
         XCTAssertEqual(conversation.resolvedCount, 1)
 
-        let threads = conversation.threads
+        let threads: [PRReviewThread] = conversation.items.compactMap {
+            if case let .thread(thread) = $0 { return thread } else { return nil }
+        }
         XCTAssertEqual(threads[0].location, "Sources/A.swift:42")
+        XCTAssertEqual(threads[0].diffHunkLines, ["@@ -1 +1 @@", "+let x = 1"])
         // `line` is null once the anchor falls out of the current diff.
         XCTAssertEqual(threads[1].line, 8)
         XCTAssertEqual(threads[1].resolvedBy, "alice")
@@ -94,7 +97,6 @@ final class PRConversationTests: XCTestCase {
             return XCTFail("expected the issue comment")
         }
         XCTAssertNil(comment.minimizedReason)
-        XCTAssertTrue(comment.viewerDidAuthor)
     }
 
     func testTruncationIsReported() throws {

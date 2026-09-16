@@ -651,6 +651,19 @@ struct GraphQLResponse<T: Decodable>: Decodable {
 
 struct GQLError: Decodable { let message: String }
 
+/// GitHub GraphQL timestamps are ISO-8601 strings (`…Z`). One parser for the
+/// whole `gh` surface: `ISO8601DateFormatter` is non-trivial to construct
+/// (locale + calendar + tz wiring) and the batched queries decode up to a
+/// hundred rows at a time. `nonisolated(unsafe)` because Foundation documents
+/// it as thread-safe once built — its public API is purely immutable parsing.
+enum GitHubTimestamp {
+    nonisolated(unsafe) private static let parser = ISO8601DateFormatter()
+
+    static func date(_ raw: String?) -> Date? {
+        raw.flatMap { parser.date(from: $0) }
+    }
+}
+
 /// Wrapper around `repository(...)` whose only purpose is to forward the
 /// dynamic alias keys (`b0`, `b1`, …) into a `[String: PRBatchEntry]`.
 private struct RepoBatch: Decodable {
@@ -734,15 +747,6 @@ private struct PRNode: Decodable {
     struct ReviewThread: Decodable { let isResolved: Bool }
     struct CommentsConnection: Decodable { let totalCount: Int }
 
-    /// GitHub GraphQL timestamps are ISO-8601 strings (`...Z`). Keep them
-    /// as strings on the transport node so persisted PR snapshots can still
-    /// use `JSONEncoder.dateEncodingStrategy` on the app model.
-    nonisolated(unsafe) private static let timestampParser = ISO8601DateFormatter()
-
-    private static func parseTimestamp(_ raw: String?) -> Date? {
-        raw.flatMap { timestampParser.date(from: $0) }
-    }
-
     /// Either a CheckRun (Actions / GitHub App) or a StatusContext (legacy
     /// commit status). `__typename` discriminates; the other branch's fields
     /// are nil and the converter picks the right path.
@@ -777,8 +781,8 @@ private struct PRNode: Decodable {
             headRefName: headRefName,
             baseRefName: baseRefName,
             author: PullRequest.Author(login: author?.login ?? "unknown"),
-            createdAt: Self.parseTimestamp(createdAt),
-            mergedAt: Self.parseTimestamp(mergedAt),
+            createdAt: GitHubTimestamp.date(createdAt),
+            mergedAt: GitHubTimestamp.date(mergedAt),
             mergeable: mergeable,
             mergeStateStatus: mergeStateStatus,
             unresolvedThreadCount: unresolved,
@@ -886,15 +890,8 @@ private struct PRSummaryNode: Decodable {
         struct Rollup: Decodable { let state: String }
     }
 
-    /// Hoisted: `ISO8601DateFormatter()` is non-trivial to construct
-    /// (locale + calendar + tz wiring), and `listOpenPRs` decodes up to
-    /// 100 rows at once. `nonisolated(unsafe)` because Foundation
-    /// documents `ISO8601DateFormatter` as thread-safe — its public API
-    /// is purely immutable parsing once constructed.
-    nonisolated(unsafe) private static let updatedAtParser = ISO8601DateFormatter()
-
     func toSummary() -> PRSummary? {
-        guard let date = Self.updatedAtParser.date(from: updatedAt) else { return nil }
+        guard let date = GitHubTimestamp.date(updatedAt) else { return nil }
         let rollupState = commits?.nodes.first?.commit.statusCheckRollup?.state.uppercased()
         let bucket: CheckBucket? = {
             switch rollupState {

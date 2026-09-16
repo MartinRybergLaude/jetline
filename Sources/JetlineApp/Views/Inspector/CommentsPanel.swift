@@ -1,5 +1,4 @@
 import SwiftUI
-import AppKit
 
 /// The PR's whole comment stream — description, issue comments, review
 /// summaries and inline threads — in one scrollable timeline, with a
@@ -31,9 +30,7 @@ private struct CommentsPanelContent: View {
     @State private var hideResolved = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            content(for: workspaceState.pr)
-        }
+        content
         // Re-entered whenever the panel appears or the workspace changes, and
         // cancelled when either goes away — so the poll only runs while
         // someone is actually reading the tab. `refresh` collapses requests
@@ -46,27 +43,14 @@ private struct CommentsPanelContent: View {
         }
     }
 
-    /// Gate on the PR snapshot first: with no PR there is nothing to fetch,
-    /// and the placeholders should read the same as the PR tab's.
+    /// Gate on the PR snapshot first: with no PR there is nothing to fetch.
     @ViewBuilder
-    private func content(for snapshot: PRSnapshot) -> some View {
-        switch snapshot {
-        case .loading:
-            InspectorPlaceholder(
-                systemImage: "arrow.triangle.2.circlepath",
-                title: "Loading PR…"
-            )
-        case let .error(message):
-            InspectorPlaceholder(
-                systemImage: "exclamationmark.triangle",
-                title: "Couldn't load PR",
-                subtitle: message
-            )
-        case .absent:
-            InspectorPlaceholder(
-                systemImage: "tray",
-                title: "No pull request",
-                subtitle: "Branch \(workspace.branchName) has no PR on the remote."
+    private var content: some View {
+        switch workspaceState.pr {
+        case .loading, .error, .absent:
+            PRSnapshotPlaceholder(
+                snapshot: workspaceState.pr,
+                branchName: workspace.branchName
             )
         case .loaded:
             conversationBody
@@ -177,25 +161,13 @@ private struct CommentsToolbar: View {
                 .font(.caption)
             }
 
-            Button {
+            RefreshButton(isRefreshing: isRefreshing, help: "Refresh comments") {
                 isRefreshing = true
                 Task {
                     await state.conversationStore.refresh(workspaceId: workspaceId, force: true)
                     isRefreshing = false
                 }
-            } label: {
-                if isRefreshing {
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.7)
-                        .frame(width: 12, height: 12)
-                } else {
-                    Image(systemName: "arrow.clockwise").font(.caption)
-                }
             }
-            .buttonStyle(.borderless)
-            .disabled(isRefreshing)
-            .help("Refresh comments")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -260,16 +232,10 @@ struct CommentCard: View {
         }
         .padding(role.showsBorder ? 10 : 0)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background {
-            if role.showsBorder {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.secondary.opacity(0.06))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.secondary.opacity(0.15), lineWidth: 0.5)
-                    )
-            }
-        }
+        .cardSurface(
+            fill: role.showsBorder ? Color.secondary.opacity(0.06) : .clear,
+            stroke: role.showsBorder ? Color.secondary.opacity(0.15) : .clear
+        )
     }
 }
 
@@ -296,14 +262,7 @@ private struct ReviewCard: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(color.opacity(0.07))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(color.opacity(0.25), lineWidth: 0.5)
-                )
-        )
+        .cardSurface(fill: color.opacity(0.07), stroke: color.opacity(0.25))
     }
 
     private var symbol: String {
@@ -358,31 +317,30 @@ struct CommentHeader: View {
     }
 }
 
-struct OpenOnGitHubButton: View {
-    let url: String
-
-    var body: some View {
-        if let link = URL(string: url) {
-            Button {
-                NSWorkspace.shared.open(link)
-            } label: {
-                Image(systemName: "arrow.up.right.square")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Open on GitHub")
-        }
-    }
-}
-
+@MainActor
 enum RelativeTime {
+    /// Memoized per (timestamp, current minute): the formatter is ICU-backed
+    /// and costs ~5µs a call, and every visible comment header re-renders it
+    /// on each pass over the timeline for a value that changes once a minute.
+    private static var cache: [Date: String] = [:]
+    private static var cachedMinute: Int = .min
+
     /// `.distantPast` stands in for a timestamp GitHub didn't return (an
     /// unsubmitted review, a malformed date); rendering "56 years ago" for
     /// it would be worse than rendering nothing.
     static func string(for date: Date) -> String {
         guard date > Date(timeIntervalSince1970: 0) else { return "" }
-        return date.formatted(.relative(presentation: .numeric))
+
+        let minute = Int(Date().timeIntervalSinceReferenceDate / 60)
+        if minute != cachedMinute {
+            cachedMinute = minute
+            cache.removeAll(keepingCapacity: true)
+        }
+        if let hit = cache[date] { return hit }
+
+        let formatted = date.formatted(.relative(presentation: .numeric))
+        cache[date] = formatted
+        return formatted
     }
 }
 

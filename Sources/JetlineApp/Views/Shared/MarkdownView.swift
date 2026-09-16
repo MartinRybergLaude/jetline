@@ -1,5 +1,4 @@
 import SwiftUI
-import AppKit
 
 /// Type sizes for rendered markdown. Kept as explicit point sizes rather
 /// than semantic `Font`s because headings need to scale relative to the
@@ -27,8 +26,8 @@ struct MarkdownView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: style.blockSpacing) {
-            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-                MarkdownBlockView(block: block, style: style)
+            ForEach(blocks.indices, id: \.self) { index in
+                MarkdownBlockView(block: blocks[index], style: style)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -145,11 +144,11 @@ private struct MarkdownListView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            ForEach(Array(list.items.enumerated()), id: \.offset) { index, item in
+            ForEach(list.items.indices, id: \.self) { index in
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    marker(for: item, at: index)
+                    marker(for: list.items[index], at: index)
                         .frame(minWidth: list.ordered ? 16 : 10, alignment: .trailing)
-                    MarkdownView(blocks: item.blocks, style: style)
+                    MarkdownView(blocks: list.items[index].blocks, style: style)
                 }
             }
         }
@@ -184,15 +183,15 @@ private struct MarkdownTableView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             Grid(alignment: .topLeading, horizontalSpacing: 12, verticalSpacing: 5) {
                 GridRow {
-                    ForEach(Array(table.header.enumerated()), id: \.offset) { index, cell in
-                        cellText(cell, column: index, bold: true)
+                    ForEach(table.header.indices, id: \.self) { index in
+                        cellText(table.header[index], column: index, bold: true)
                     }
                 }
                 Divider().gridCellColumns(max(table.columnCount, 1))
-                ForEach(Array(table.rows.enumerated()), id: \.offset) { _, row in
+                ForEach(table.rows.indices, id: \.self) { row in
                     GridRow {
-                        ForEach(Array(row.enumerated()), id: \.offset) { index, cell in
-                            cellText(cell, column: index, bold: false)
+                        ForEach(table.rows[row].indices, id: \.self) { index in
+                            cellText(table.rows[row][index], column: index, bold: false)
                         }
                     }
                 }
@@ -205,31 +204,18 @@ private struct MarkdownTableView: View {
     }
 
     private func cellText(_ source: String, column: Int, bold: Bool) -> some View {
-        Text(MarkdownInlineCache.attributed(
+        // `takeTable` pads every row to the header width, so the column index
+        // is always in range.
+        let align = table.alignments[column]
+        return Text(MarkdownInlineCache.attributed(
             source,
             style: style,
             size: style.bodySize,
             weight: bold ? .semibold : nil
         ))
-        .multilineTextAlignment(alignment(column))
-        .frame(maxWidth: 280, alignment: frameAlignment(column))
+        .multilineTextAlignment(align.textAlignment)
+        .frame(maxWidth: 280, alignment: align.frameAlignment)
         .fixedSize(horizontal: false, vertical: true)
-    }
-
-    private func alignment(_ column: Int) -> TextAlignment {
-        switch table.alignments.indices.contains(column) ? table.alignments[column] : .leading {
-        case .leading:  return .leading
-        case .center:   return .center
-        case .trailing: return .trailing
-        }
-    }
-
-    private func frameAlignment(_ column: Int) -> Alignment {
-        switch table.alignments.indices.contains(column) ? table.alignments[column] : .leading {
-        case .leading:  return .leading
-        case .center:   return .center
-        case .trailing: return .trailing
-        }
     }
 }
 
@@ -289,6 +275,10 @@ enum MarkdownInlineCache {
     private static let cache: NSCache<NSString, Box> = {
         let cache = NSCache<NSString, Box>()
         cache.countLimit = 2000
+        // Also bound by bytes: bot reviews dump tens of KB of `<details>`
+        // content, and a count-only limit would let the cache park that
+        // indefinitely in a process-lifetime static.
+        cache.totalCostLimit = 4 << 20
         return cache
     }()
 
@@ -298,10 +288,13 @@ enum MarkdownInlineCache {
         size: CGFloat,
         weight: Font.Weight?
     ) -> AttributedString {
-        let key = "\(size)|\(style.codeSize)|\(weight.map(String.init(describing:)) ?? "-")|\(source)" as NSString
+        // `weight` is tagged by hand rather than interpolated: `Font.Weight`
+        // isn't `CustomStringConvertible`, so `String(describing:)` falls back
+        // to reflection and dominates the cost of a cache hit.
+        let key = "\(size)|\(style.codeSize)|\(weight == nil ? 0 : 1)|\(source)" as NSString
         if let hit = cache.object(forKey: key) { return hit.value }
         let value = render(source, style: style, size: size, weight: weight)
-        cache.setObject(Box(value), forKey: key)
+        cache.setObject(Box(value), forKey: key, cost: source.utf8.count)
         return value
     }
 
@@ -341,5 +334,23 @@ enum MarkdownInlineCache {
             }
         }
         return attributed
+    }
+}
+
+extension MarkdownTable.Align {
+    var textAlignment: TextAlignment {
+        switch self {
+        case .leading:  return .leading
+        case .center:   return .center
+        case .trailing: return .trailing
+        }
+    }
+
+    var frameAlignment: Alignment {
+        switch self {
+        case .leading:  return .leading
+        case .center:   return .center
+        case .trailing: return .trailing
+        }
     }
 }
