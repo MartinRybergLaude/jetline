@@ -147,7 +147,7 @@ private struct CommentsToolbar: View {
             } else if conversation.resolvedCount > 0 {
                 Label("All resolved", systemImage: "checkmark.circle.fill")
                     .font(.caption)
-                    .foregroundStyle(.green)
+                    .foregroundStyle(Color.readableGreen)
             }
 
             Spacer(minLength: 0)
