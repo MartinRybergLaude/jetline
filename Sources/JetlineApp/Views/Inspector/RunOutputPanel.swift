@@ -61,6 +61,7 @@ private extension RunController {
 /// strings, so everything else lives here.
 private struct OutputShell<Status: View>: View {
     let emulator: TerminalEmulatorView?
+    let emptyLabel: String
     let copyHelp: String
     let copyAction: () -> Bool
     @ViewBuilder var status: () -> Status
@@ -97,22 +98,22 @@ private struct OutputShell<Status: View>: View {
         .padding(.vertical, 6)
     }
 
-    @ViewBuilder
+    /// The host stays mounted even with no emulator to show, so handing it
+    /// `nil` is what clears the panel. Swapping it out for a plain
+    /// placeholder instead left the previous workspace's terminal on screen
+    /// until SwiftUI got round to dismantling the host — invisible when the
+    /// next run spawned in the same frame, obvious once a run could sit
+    /// queued behind a peer for a couple of seconds.
     private var outputArea: some View {
-        if let emulator {
-            RunTerminalHost(emulator: emulator)
-                .background(Color(nsColor: .textBackgroundColor))
-        } else {
-            VStack {
-                Spacer()
-                Text("(no output yet)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-            }
-            .frame(maxWidth: .infinity)
+        RunTerminalHost(emulator: emulator)
             .background(Color(nsColor: .textBackgroundColor))
-        }
+            .overlay {
+                if emulator == nil {
+                    Text(emptyLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
     }
 
     private func showCopyFeedback() {
@@ -129,6 +130,7 @@ private struct SetupOutputContent: View {
     var body: some View {
         OutputShell(
             emulator: controller.emulator,
+            emptyLabel: "(no output yet)",
             copyHelp: "Copy setup output",
             copyAction: controller.copyOutputToPasteboard
         ) {
@@ -167,21 +169,38 @@ private struct RunOutputContent: View {
     var body: some View {
         OutputShell(
             emulator: controller.emulator,
+            emptyLabel: controller.phase == .queued
+                ? "Waiting for the other run to stop…"
+                : "(no output yet)",
             copyHelp: "Copy run output",
             copyAction: controller.copyOutputToPasteboard
         ) {
-            Image(systemName: controller.isRunning ? "circle.fill" : "circle")
-                .foregroundStyle(controller.isRunning ? AnyShapeStyle(Color.readableGreen) : AnyShapeStyle(.secondary))
+            Image(systemName: isLive ? "circle.fill" : "circle")
+                .foregroundStyle(isLive ? AnyShapeStyle(Color.readableGreen) : AnyShapeStyle(.secondary))
                 .font(.system(size: 8))
-            Text(controller.isRunning ? "Running" : exitDescription)
+            Text(statusLabel)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
     }
 
-    private var exitDescription: String {
-        if let s = controller.exitStatus { return "Exited (\(s))" }
-        return "Idle"
+    /// Queued runs read as not-yet-live: the peer they are replacing still
+    /// owns the port, so a green "Running" would be a lie.
+    private var isLive: Bool {
+        switch controller.phase {
+        case .idle, .queued: return false
+        case .starting, .running: return true
+        }
+    }
+
+    private var statusLabel: String {
+        switch controller.phase {
+        case .queued: return "Waiting"
+        case .starting, .running: return "Running"
+        case .idle:
+            if let status = controller.exitStatus { return "Exited (\(status))" }
+            return "Idle"
+        }
     }
 }
 
@@ -192,7 +211,9 @@ private struct RunOutputContent: View {
 /// be silently dropped. On mount we adopt the view into the panel; on
 /// dismount we hand it back to the incubator.
 private struct RunTerminalHost: NSViewRepresentable {
-    let emulator: TerminalEmulatorView
+    /// `nil` means there is nothing to show — never run, or queued behind a
+    /// peer — and is the panel's way of clearing the container.
+    let emulator: TerminalEmulatorView?
 
     final class Coordinator {
         weak var emulator: AnyObject?
@@ -202,15 +223,30 @@ private struct RunTerminalHost: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSView {
         let container = NSView()
-        context.coordinator.emulator = emulator as AnyObject
-        attach(emulator.nsView, to: container)
-        emulator.setActive(true)
+        mount(in: container, coordinator: context.coordinator)
         return container
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
+        mount(in: nsView, coordinator: context.coordinator)
+    }
+
+    private func mount(in container: NSView, coordinator: Coordinator) {
+        let previous = coordinator.emulator as? TerminalEmulatorView
+
+        guard let emulator else {
+            // Hand back whatever is mounted so the panel empties on this
+            // update rather than whenever SwiftUI dismantles the host.
+            previous?.setActive(false)
+            for sub in container.subviews {
+                TerminalIncubator.park(sub)
+            }
+            coordinator.emulator = nil
+            return
+        }
+
         let term = emulator.nsView
-        if term.superview !== nsView {
+        if term.superview !== container {
             // The container can already hold a *different* emulator from a
             // prior workspace: deactivate it first so its renderer stops
             // doing Metal work offscreen, then park it back in the incubator
@@ -218,16 +254,15 @@ private struct RunTerminalHost: NSViewRepresentable {
             // workspaces while both have running RunControllers leaves the
             // old workspace's surface in `setSurfaceVisible(true)` state
             // and it keeps rendering frames no one sees.
-            if let previous = context.coordinator.emulator as? TerminalEmulatorView,
-               previous !== emulator {
+            if let previous, previous !== emulator {
                 previous.setActive(false)
             }
-            for sub in nsView.subviews where sub !== term {
+            for sub in container.subviews where sub !== term {
                 TerminalIncubator.park(sub)
             }
-            attach(term, to: nsView)
+            attach(term, to: container)
         }
-        context.coordinator.emulator = emulator as AnyObject
+        coordinator.emulator = emulator as AnyObject
         emulator.setActive(true)
     }
 

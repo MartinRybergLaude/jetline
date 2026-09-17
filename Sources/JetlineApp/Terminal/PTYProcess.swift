@@ -195,18 +195,125 @@ final class PTYProcess: @unchecked Sendable {
         _ = kill(-childPid, SIGINT)
     }
 
-    /// SIGHUP the child group so shells save history and agents clean up,
-    /// mirroring a real terminal close. The read source's cancel handler
-    /// reaps the exit status, escalating to SIGKILL if the child lingers,
-    /// and closes the master fd once the source is fully cancelled.
-    func terminate() {
-        if childPid > 0 {
-            _ = kill(-childPid, SIGHUP)
+    /// SIGHUP the child's process group and the slave's foreground group so
+    /// shells save history and agents clean up, mirroring a real terminal
+    /// close, then SIGKILL whatever is still alive after `forceKillGrace`.
+    /// The read source's cancel handler reaps the exit status and closes the
+    /// master fd once the source is fully cancelled.
+    ///
+    /// Runs on the io queue so the `tcgetpgrp` read below is serialised
+    /// against `reapChildIfNeeded` closing `masterFd` — reading a closed
+    /// (and possibly recycled) descriptor could otherwise report another
+    /// terminal's foreground group and kill an unrelated workspace's run.
+    ///
+    /// `completion` fires once every signalled group is gone, off the io
+    /// queue. That is later than `exitHandler`, which reports the child's
+    /// own exit: a shell hands back its status the moment it takes the
+    /// SIGHUP, while the job it started can hold a port until the SIGKILL
+    /// lands. Callers that need the port free — an exclusive run replacing
+    /// a peer — have to wait for this, not for the exit.
+    func terminate(completion: (@Sendable () -> Void)? = nil) {
+        queue.async {
+            let groups = self.signalTargets()
+            for group in groups {
+                _ = kill(-group, SIGHUP)
+            }
+            Self.settleTermination(
+                of: groups,
+                on: self.queue,
+                forceKillAfter: .now() + Self.forceKillGrace,
+                completion: completion
+            )
+            self.procSource?.cancel()
+            self.procSource = nil
+            self.readSource?.cancel()
+            self.readSource = nil
         }
-        procSource?.cancel()
-        procSource = nil
-        readSource?.cancel()
-        readSource = nil
+    }
+
+    /// Every process group worth signalling: the child's own, plus the
+    /// slave's foreground group when they differ.
+    ///
+    /// They differ whenever the child turns on job control — `zsh -i` on a
+    /// tty does, which is how repository scripts run — because each job then
+    /// gets a process group of its own. Signalling `-childPid` alone reaches
+    /// the shell and nothing it started, so a `npm run dev` outlived Stop
+    /// and kept its port. `tcgetpgrp` on the master reports the slave's
+    /// foreground group on Darwin even though we are outside its session,
+    /// which is the same group the kernel would signal for a ⌃C typed into
+    /// a real terminal.
+    private func signalTargets() -> [pid_t] {
+        guard childPid > 0 else { return [] }
+        var groups = [childPid]
+        if masterFd >= 0 {
+            let foreground = tcgetpgrp(masterFd)
+            if foreground > 0, foreground != childPid {
+                groups.append(foreground)
+            }
+        }
+        return groups
+    }
+
+    /// Grace between the SIGHUP and the SIGKILL that backs it up. Long
+    /// enough for a dev server to close its listener, short enough that the
+    /// port is free before the user retries.
+    private static let forceKillGrace: DispatchTimeInterval = .seconds(2)
+
+    /// How often the poll below re-checks whether the signalled groups have
+    /// gone away.
+    private static let terminationPollInterval: DispatchTimeInterval = .milliseconds(50)
+
+    /// Poll the signalled groups until they are gone, SIGKILLing whatever
+    /// outlives `forceKillAfter`, then report back.
+    ///
+    /// The escalation is unconditional by design: SIGHUP is advisory, and a
+    /// script that traps or ignores it keeps running — and keeps holding its
+    /// port — while the shell that spawned it exits on cue, so gating the
+    /// escalation on the child's own exit (as `reapChildIfNeeded` does for a
+    /// wedged child) never fires for the case that actually leaks. Polling
+    /// rather than sleeping out the full grace means the common case, where
+    /// the SIGHUP is honoured, settles in a poll interval instead of seconds.
+    ///
+    /// Takes plain pids rather than `self` so a `PTYProcess` released
+    /// mid-teardown doesn't cancel the escalation. The `kill(_:0)` probe
+    /// skips groups that are already gone; a pid recycled into a new group
+    /// leader inside the grace window would be signalled in their place,
+    /// which is the same exposure the unconditional SIGKILL here had before
+    /// it became a SIGHUP.
+    private static func settleTermination(
+        of groups: [pid_t],
+        on queue: DispatchQueue,
+        forceKillAfter deadline: DispatchTime,
+        forceKilled: Bool = false,
+        completion: (@Sendable () -> Void)?
+    ) {
+        let remaining = groups.filter { kill(-$0, 0) == 0 }
+        guard !remaining.isEmpty else {
+            completion?()
+            return
+        }
+        // SIGKILL can't be caught, so a group that survives it is down to
+        // zombies awaiting a parent we don't own. Nothing left to wait for.
+        guard !forceKilled else {
+            completion?()
+            return
+        }
+
+        let escalating = DispatchTime.now() >= deadline
+        if escalating {
+            for group in remaining {
+                _ = kill(-group, SIGKILL)
+            }
+        }
+        queue.asyncAfter(deadline: .now() + terminationPollInterval) {
+            settleTermination(
+                of: remaining,
+                on: queue,
+                forceKillAfter: deadline,
+                forceKilled: escalating,
+                completion: completion
+            )
+        }
     }
 
     private func startReadSource() {
@@ -289,7 +396,7 @@ final class PTYProcess: @unchecked Sendable {
 
         // Poll with WNOHANG so a child that hasn't fully exited (rare —
         // master EOF usually means the kernel already collected it) can't
-        // wedge the io queue. After ~1s we SIGKILL the group and wait one
+        // wedge the io queue. After ~1s we SIGKILL its groups and wait one
         // more pass; after ~2s we give up and report exit anyway.
         let deadline = DispatchTime.now() + .seconds(2)
         var waited: pid_t = 0
@@ -302,7 +409,9 @@ final class PTYProcess: @unchecked Sendable {
                 break
             }
             if !killed && DispatchTime.now() > deadline - .seconds(1) {
-                _ = kill(-pid, SIGKILL)
+                for group in signalTargets() {
+                    _ = kill(-group, SIGKILL)
+                }
                 killed = true
             }
             usleep(20_000)

@@ -11,6 +11,10 @@ import AppKit
 final class RunController: ObservableObject, Identifiable {
     enum Phase {
         case idle
+        /// Started, but held behind the exclusive peers it is displacing.
+        /// No process yet — and no surface, so the panel can't show the run
+        /// this one is replacing.
+        case queued
         case starting
         case running
     }
@@ -29,6 +33,12 @@ final class RunController: ObservableObject, Identifiable {
 
     private var warmupItem: DispatchWorkItem?
 
+    /// Set while a start is queued behind something else — an exclusive run
+    /// waiting out the peers it displaces. The phase is already `.starting`,
+    /// so the toolbar shows the queued run and Stop cancels it before
+    /// anything spawns.
+    private var pendingStart: Task<Void, Never>?
+
     /// Raw PTY bytes kept around for the copy button. Capped so a chatty
     /// `npm run dev` doesn't unbounded-grow memory; trim drops to 75% so we
     /// don't re-trim on every chunk.
@@ -45,7 +55,44 @@ final class RunController: ObservableObject, Identifiable {
     }
 
     func start(script: String, cwd: String, env: [String: String]) {
-        guard phase == .idle, let trimmed = script.nonBlank else { return }
+        guard phase == .idle, script.nonBlank != nil else { return }
+        spawn(script: script, cwd: cwd, env: env)
+    }
+
+    /// Start once `clearance` resolves. Used by the exclusive-run path to
+    /// wait until the peers it is displacing are really gone — a peer that
+    /// ignores SIGHUP reports its exit immediately but can hold the port
+    /// this run is about to bind until the force-kill lands.
+    ///
+    /// Goes to `.starting` up front so the queued run is visible and a
+    /// second click stops it rather than starting a second copy.
+    func start(
+        script: String,
+        cwd: String,
+        env: [String: String],
+        after clearance: @escaping @MainActor () async -> Void
+    ) {
+        guard phase == .idle, script.nonBlank != nil else { return }
+        phase = .queued
+        // Retire the previous run's surface now rather than when the new one
+        // spawns. The panel renders whatever emulator this controller holds,
+        // so leaving the old one in place shows a dead transcript — or, right
+        // after a workspace switch, the terminal of the very run being
+        // displaced — for as long as the queue takes.
+        emulator?.nsView.removeFromSuperview()
+        emulator = nil
+        exitStatus = nil
+        capturedBytes.removeAll(keepingCapacity: true)
+        pendingStart = Task { @MainActor [weak self] in
+            await clearance()
+            guard let self, !Task.isCancelled else { return }
+            self.pendingStart = nil
+            self.spawn(script: script, cwd: cwd, env: env)
+        }
+    }
+
+    private func spawn(script: String, cwd: String, env: [String: String]) {
+        guard let trimmed = script.nonBlank else { return }
 
         let term = GhosttyEmulator(
             fontSize: GhosttyEmulator.outputPanelFontSize,
@@ -91,17 +138,46 @@ final class RunController: ObservableObject, Identifiable {
     }
 
     /// Stop the run. SIGHUP via PTYProcess.terminate(), escalating to
-    /// SIGKILL if the child lingers — the run script trampoline (`zsh -lc`)
-    /// puts the script in its own process group, so signalling the group
-    /// catches every descendant.
+    /// SIGKILL for anything still alive a moment later — the run script
+    /// trampoline (`zsh -lic`) runs the script in a process group of its
+    /// own, so terminate() signals that group alongside the shell's to
+    /// catch every descendant.
     func stop() {
+        if cancelPendingStart() { return }
         emulator?.terminate()
+    }
+
+    /// Stop, and wait until every process the run started is gone — not
+    /// merely until the shell reported its exit. What the caller is usually
+    /// waiting for is the port, and that outlives the exit when the job
+    /// ignores SIGHUP.
+    func stopAndWait() async {
+        if cancelPendingStart() { return }
+        guard let emulator else { return }
+        await withCheckedContinuation { continuation in
+            emulator.terminate { continuation.resume() }
+        }
+    }
+
+    /// Drop a queued start and fall back to idle. Returns whether there was
+    /// one, which is also "nothing has spawned, so there is nothing to
+    /// signal".
+    @discardableResult
+    private func cancelPendingStart() -> Bool {
+        guard let pending = pendingStart else { return false }
+        pending.cancel()
+        pendingStart = nil
+        phase = .idle
+        return true
     }
 
     /// Detach the emulator from the incubator and tear down its PTY. Used
     /// when the workspace is going away so the parked NSView doesn't
     /// outlive the controller.
     func discard() {
+        // A queued start has to go too, or the workspace's teardown races a
+        // process that hasn't spawned yet.
+        cancelPendingStart()
         emulator?.terminate()
         emulator?.nsView.removeFromSuperview()
         emulator = nil

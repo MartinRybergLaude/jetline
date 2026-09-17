@@ -513,7 +513,7 @@ private struct RunStatusButton: View {
         switch runner.phase {
         case .idle:
             EmptyView()
-        case .starting:
+        case .queued, .starting:
             Circle()
                 .fill(.yellow)
                 .frame(width: 6, height: 6)
@@ -536,6 +536,7 @@ private struct RunStatusButton: View {
     private var accessibilityTitle: String {
         switch runner.phase {
         case .idle: return "Run"
+        case .queued: return "Waiting"
         case .starting: return "Starting"
         case .running: return "Running"
         }
@@ -544,6 +545,7 @@ private struct RunStatusButton: View {
     private var helpText: String {
         switch runner.phase {
         case .idle: return "Run the configured run script"
+        case .queued: return "Waiting for the other run to stop… click to cancel"
         case .starting: return "Starting… click to stop"
         case .running: return "Running — click to stop"
         }

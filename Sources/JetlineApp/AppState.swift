@@ -1162,16 +1162,9 @@ final class AppState: ObservableObject {
         guard let repo = repositories.first(where: { $0.id == workspace.repositoryId }),
               let script = repo.trimmedRunScript else { return }
 
-        if repo.runExclusive {
-            var peerIds = Set(workspacesByRepo[repo.id]?.map(\.id) ?? [])
-            peerIds.insert(repositoryBaseWorkspaceId(for: repo))
-            for (otherId, peer) in workspaceStates
-            where otherId != workspace.id && peerIds.contains(otherId) {
-                if let runner = peer.runController, runner.isRunning {
-                    runner.stop()
-                }
-            }
-        }
+        let peers = repo.runExclusive
+            ? activeRunners(in: repo, excluding: workspace.id)
+            : []
 
         // Drop the setup transcript so that when the run eventually exits
         // the panel falls back to the placeholder, not to "Setup complete".
@@ -1182,11 +1175,35 @@ final class AppState: ObservableObject {
 
         let runner = ws.runController ?? RunController(workspaceId: workspace.id)
         ws.runController = runner
-        runner.start(
-            script: script,
-            cwd: workspace.worktreePath,
-            env: ScriptRunner.defaultEnv(repoPath: repo.path)
-        )
+        let cwd = workspace.worktreePath
+        let env = ScriptRunner.defaultEnv(repoPath: repo.path)
+        guard !peers.isEmpty else {
+            runner.start(script: script, cwd: cwd, env: env)
+            return
+        }
+        // Exclusive run: hold the new run until the displaced ones are
+        // actually gone. Signalling them and spawning straight away left the
+        // old dev server holding the port the new one was about to bind.
+        runner.start(script: script, cwd: cwd, env: env) {
+            await withTaskGroup(of: Void.self) { group in
+                for peer in peers {
+                    group.addTask { await peer.stopAndWait() }
+                }
+            }
+        }
+    }
+
+    /// Runners currently going in `repo`, other than `workspaceId`'s — the
+    /// set an exclusive run has to displace. Covers the repo's worktree
+    /// workspaces plus its base checkout.
+    private func activeRunners(in repo: Repository, excluding workspaceId: String) -> [RunController] {
+        var peerIds = Set(workspacesByRepo[repo.id]?.map(\.id) ?? [])
+        peerIds.insert(repositoryBaseWorkspaceId(for: repo))
+        return workspaceStates.compactMap { otherId, peer in
+            guard otherId != workspaceId, peerIds.contains(otherId),
+                  let runner = peer.runController, runner.isRunning else { return nil }
+            return runner
+        }
     }
 
     func runController(for workspaceId: String) -> RunController? {

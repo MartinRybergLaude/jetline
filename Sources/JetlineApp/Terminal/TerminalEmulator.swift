@@ -39,8 +39,11 @@ protocol TerminalEmulatorView: AnyObject {
     /// Adopt new font/size at runtime.
     func updateFont(family: String, size: CGFloat)
 
-    /// Stop the process and tear down the PTY.
-    func terminate()
+    /// Stop the process and tear down the PTY. `completion` fires once every
+    /// process the terminal was hosting is gone — later than the exit
+    /// handler, which reports only the direct child. Callers that need the
+    /// resources it held (a bound port, say) released must wait for this.
+    func terminate(completion: (@Sendable () -> Void)?)
 
     /// Toggle Metal rendering when the tab is hidden / shown. Inactive
     /// surfaces should pause display-link work to keep the GPU idle.
@@ -55,6 +58,10 @@ protocol TerminalEmulatorView: AnyObject {
 
 extension TerminalEmulatorView {
     func setActive(_ active: Bool) {}
+
+    func terminate() {
+        terminate(completion: nil)
+    }
 
     func spawn(executable: String, args: [String], cwd: String, env: [String: String]) {
         spawn(executable: executable, args: args, cwd: cwd, env: env, outputTap: nil)

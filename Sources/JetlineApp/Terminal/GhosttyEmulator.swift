@@ -303,9 +303,14 @@ final class GhosttyEmulator: TerminalEmulatorView {
         }
     )
 
-    func terminate() {
+    func terminate(completion: (@Sendable () -> Void)? = nil) {
         // The `pty = nil` cleanup is deferred to the exit closure — see spawn.
-        pty?.terminate()
+        guard let pty else {
+            // Never spawned, or the child is already gone and reported.
+            completion?()
+            return
+        }
+        pty.terminate(completion: completion)
     }
 
     /// Drive Metal rendering only when the tab is active; an inactive tab's
