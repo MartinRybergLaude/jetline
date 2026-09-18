@@ -53,9 +53,10 @@ struct InspectorView: View {
         Hairline(orientation: .vertical)
     }
 
-    /// Run output owns its own ScrollView (autoscroll-to-tail), so it sits
-    /// directly in the layout; the diff/PR panels are static content and get
-    /// wrapped in a scroll view here.
+    /// Only the changes panel is scrolled from here — the others own their
+    /// scrolling because they pin something to an edge (run output
+    /// autoscrolls to the tail, comments pin a filter bar and composer, the
+    /// PR panel pins the merge footer).
     @ViewBuilder
     private var content: some View {
         switch state.inspectorTab {
@@ -82,8 +83,9 @@ struct InspectorView: View {
                 }
             }
         case .pr:
-            ScrollView { PRPanel().padding(.vertical, 8) }
-                .scrollIndicators(.visible)
+            // Owns its own scrolling: the merge button is pinned in a footer
+            // the rest of the panel scrolls under.
+            PRPanel()
         case .comments:
             // Owns its own scrolling: the filter bar and the composer are
             // pinned above and below the timeline.

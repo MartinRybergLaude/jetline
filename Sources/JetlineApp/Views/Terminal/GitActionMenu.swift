@@ -45,36 +45,7 @@ private struct GitActionMenuContent: View {
                     .help(helpText(for: actionState))
             }
         }
-        .confirmationDialog(
-            mergeConfirmTitle,
-            isPresented: $pendingMerge,
-            titleVisibility: .visible
-        ) {
-            mergeDialogButtons
-        } message: {
-            Text("Merges PR for `\(workspace.branchName)` into `\(workspace.baseBranch)` immediately and pushes the result to the remote.")
-        }
-    }
-
-    /// One button per allowed merge method, in GitHub's display order. The
-    /// last-used method (if known) gets `.defaultAction` so Return triggers
-    /// it. Falls back to showing all three when the repo metadata hasn't
-    /// loaded yet — we'd rather offer too many options than block the merge
-    /// behind a freshly-launched app.
-    @ViewBuilder
-    private var mergeDialogButtons: some View {
-        let allowed = state.repoMetadataByRepo[workspace.repositoryId]?.allowedMergeMethods
-            ?? Set(MergeMethod.allCases)
-        let lastUsed = state.lastMergeMethod(for: workspace)
-        let methods = MergeMethod.displayOrder.filter { allowed.contains($0) }
-
-        ForEach(methods, id: \.self) { method in
-            Button(method.displayName) {
-                Task { await state.performMerge(for: workspace, method: method) }
-            }
-            .keyboardShortcut(method == lastUsed ? .defaultAction : nil)
-        }
-        Button("Cancel", role: .cancel) {}
+        .mergeConfirmation(workspace: workspace, isPresented: $pendingMerge)
     }
 
     @ViewBuilder
@@ -192,13 +163,6 @@ private struct GitActionMenuContent: View {
         case .mergePR:      return "Merging the pull request…"
         default:            return "\(action.displayName)…"
         }
-    }
-
-    private var mergeConfirmTitle: String {
-        if case let .loaded(pr, _) = workspaceState.pr {
-            return "Merge PR #\(pr.number)?"
-        }
-        return "Merge pull request?"
     }
 
     private func helpText(for s: GitActionState) -> String {

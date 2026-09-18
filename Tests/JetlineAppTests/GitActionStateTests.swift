@@ -180,7 +180,75 @@ final class GitActionStateTests: XCTestCase {
         XCTAssertTrue(state.isAvailable(.fixCI))  // still in the dropdown
     }
 
+    // MARK: - gitHubAllowsMerge (shared toolbar + PR panel merge gate)
+
+    func testAllowsMergeWhenOpenAndUnblocked() {
+        let pr = makePR(state: "OPEN", mergeStateStatus: "CLEAN", reviewDecision: "APPROVED")
+        XCTAssertTrue(GitActionState.gitHubAllowsMerge(pr))
+    }
+
+    func testAllowsMergeWithoutAnyReviewRequirement() {
+        // `nil` reviewDecision = no branch protection. GitHub's own button
+        // is live here, so ours is too.
+        let pr = makePR(state: "OPEN", mergeStateStatus: "CLEAN")
+        XCTAssertTrue(GitActionState.gitHubAllowsMerge(pr))
+    }
+
+    func testAllowsMergeWhenBehindBase() {
+        // Being behind the base doesn't stop GitHub merging unless the repo
+        // requires up-to-date branches — in which case it reports BLOCKED
+        // through the review gate instead.
+        let pr = makePR(state: "OPEN", mergeStateStatus: "BEHIND", reviewDecision: "APPROVED")
+        XCTAssertTrue(GitActionState.gitHubAllowsMerge(pr))
+    }
+
+    func testAllowsMergeWithFailingNonRequiredChecks() {
+        // UNSTABLE = something red that isn't a required check. Mergeable.
+        let pr = makePR(state: "OPEN", mergeStateStatus: "UNSTABLE", reviewDecision: "APPROVED")
+        XCTAssertTrue(GitActionState.gitHubAllowsMerge(pr))
+    }
+
+    func testBlocksMergeWhenReviewRequiredOrChangesRequested() {
+        for decision in ["REVIEW_REQUIRED", "CHANGES_REQUESTED"] {
+            let pr = makePR(state: "OPEN", mergeStateStatus: "BLOCKED", reviewDecision: decision)
+            XCTAssertFalse(GitActionState.gitHubAllowsMerge(pr), "\(decision) should block merge")
+        }
+    }
+
+    func testBlocksMergeWhenConflictingDraftOrClosed() {
+        let conflicting = makePR(
+            state: "OPEN", mergeStateStatus: "DIRTY", mergeable: "CONFLICTING", reviewDecision: "APPROVED"
+        )
+        XCTAssertFalse(GitActionState.gitHubAllowsMerge(conflicting))
+
+        let draft = makePR(
+            state: "OPEN", mergeStateStatus: "CLEAN", isDraft: true, reviewDecision: "APPROVED"
+        )
+        XCTAssertFalse(GitActionState.gitHubAllowsMerge(draft))
+
+        let merged = makePR(state: "MERGED", mergeStateStatus: nil, reviewDecision: "APPROVED")
+        XCTAssertFalse(GitActionState.gitHubAllowsMerge(merged))
+    }
+
+    func testAvailabilityMatchesTheSharedGate() {
+        let pr = makePR(state: "OPEN", mergeStateStatus: "CLEAN", reviewDecision: "APPROVED")
+        let state = GitActionState.derive(
+            diff: .empty, pr: .loaded(pr, [check(.fail)]), hasUncommitted: false, branchPosition: nil
+        )
+        XCTAssertEqual(state.isAvailable(.mergePR), GitActionState.gitHubAllowsMerge(pr))
+    }
+
     // MARK: - Helpers
+
+    private func check(_ bucket: CheckBucket) -> CheckRun {
+        CheckRun(
+            name: bucket == .fail ? "lint" : "build",
+            status: .completed,
+            conclusion: bucket == .fail ? .failure : .success,
+            bucket: bucket
+        )
+    }
+
 
     private func nonEmptyDiff() -> DiffSnapshot {
         DiffSnapshot(
@@ -195,7 +263,9 @@ final class GitActionStateTests: XCTestCase {
         mergeStateStatus: String?,
         isDraft: Bool = false,
         unresolved: Int = 0,
-        issueComments: Int = 0
+        issueComments: Int = 0,
+        mergeable: String? = nil,
+        reviewDecision: String? = nil
     ) -> PullRequest {
         PullRequest(
             number: 42,
@@ -206,10 +276,11 @@ final class GitActionStateTests: XCTestCase {
             headRefName: "feature/x",
             baseRefName: "main",
             author: PullRequest.Author(login: "tester"),
-            mergeable: nil,
+            mergeable: mergeable,
             mergeStateStatus: mergeStateStatus,
             unresolvedThreadCount: unresolved,
-            issueCommentCount: issueComments
+            issueCommentCount: issueComments,
+            reviewDecision: reviewDecision
         )
     }
 }

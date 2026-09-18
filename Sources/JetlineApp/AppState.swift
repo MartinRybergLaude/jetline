@@ -1083,6 +1083,24 @@ final class AppState: ObservableObject {
         await refreshDiff(for: workspace)
     }
 
+    /// Merge methods this workspace's repo allows, in GitHub's display
+    /// order. Falls back to all three when the repo metadata hasn't loaded
+    /// yet — better to offer a method `gh` will reject with a clear message
+    /// than to hide the merge affordance behind a cold start.
+    func allowedMergeMethods(for workspace: Workspace) -> [MergeMethod] {
+        let allowed = repoMetadataByRepo[workspace.repositoryId]?.allowedMergeMethods
+            ?? Set(MergeMethod.allCases)
+        return MergeMethod.displayOrder.filter { allowed.contains($0) }
+    }
+
+    /// The method a one-click merge should use: what the user picked last
+    /// time in this repo, else the first one the repo allows.
+    func defaultMergeMethod(for workspace: Workspace) -> MergeMethod? {
+        let methods = allowedMergeMethods(for: workspace)
+        if let last = lastMergeMethod(for: workspace), methods.contains(last) { return last }
+        return methods.first
+    }
+
     /// Last merge method the user chose for this workspace's repo. `nil`
     /// when the user has never merged here.
     func lastMergeMethod(for workspace: Workspace) -> MergeMethod? {
