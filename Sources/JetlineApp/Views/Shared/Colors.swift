@@ -11,11 +11,15 @@ extension Color {
     /// (#1E1E1E) the system color is the more legible of the two, and this
     /// darker one would sink into them.
     ///
-    /// Use it for green *foregrounds* — text, glyphs, badge dots. Fills that
-    /// carry white text (the `OPEN` state pill, the `A` file-status badge)
-    /// and low-opacity washes (added-line diff backgrounds) keep the system
-    /// color: they're already high-contrast, and darkening them just muddies
-    /// the tint.
+    /// Use it for green foregrounds — text, glyphs, badge dots — and for the
+    /// fills that sit next to them: the PR panel's `Open` and `Approved`
+    /// chips and its merge button all take this green, because system green
+    /// beside a `readableGreen` check mark reads as a second, brighter green
+    /// rather than the same status.
+    ///
+    /// Low-opacity washes (added-line diff backgrounds) and the small
+    /// `A` file-status badge keep the system color: they carry no
+    /// `readableGreen` neighbor, and darkening a wash just muddies it.
     static let readableGreen = Color(nsColor: NSColor(name: "readableGreen") { appearance in
         appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
             ? .systemGreen

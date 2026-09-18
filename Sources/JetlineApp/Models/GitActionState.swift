@@ -35,6 +35,14 @@ struct GitActionState: Equatable {
         .review
     ]
 
+    /// Whether GitHub itself would let you press Merge. Thin wrapper over
+    /// `MergeReadiness`, which owns the rules (and the explanation the PR
+    /// panel shows when the answer is no) — the toolbar menu only needs the
+    /// yes/no.
+    static func gitHubAllowsMerge(_ pr: PullRequest) -> Bool {
+        MergeReadiness.evaluate(pr: pr).isReady
+    }
+
     static func derive(
         diff: DiffSnapshot?,
         pr: PRSnapshot?,
@@ -61,19 +69,10 @@ struct GitActionState: Equatable {
 
             let hasFailing = checks.contains { $0.bucket == .fail }
             let hasComments = pull.hasOpenComments
-            let conflicting = pull.mergeable?.uppercased() == "CONFLICTING"
 
             avail[.fixCI] = hasFailing
             avail[.fixComments] = hasComments
-            // Merge gate: open + not draft + no conflicts + review not
-            // blocking. `reviewDecision` is `nil` when the repo doesn't
-            // require review, `APPROVED` once the required reviewers have
-            // signed off, and `REVIEW_REQUIRED`/`CHANGES_REQUESTED` while
-            // protection rules still block the merge — match what GitHub's
-            // own merge button does. We stay permissive on `mergeStateStatus`
-            // (UNSTABLE for non-required failing checks, UNKNOWN while it's
-            // recomputing after a force-push) since those still mergeable.
-            avail[.mergePR] = !conflicting && !pull.isDraft && !pull.reviewState.blocksMerge
+            avail[.mergePR] = gitHubAllowsMerge(pull)
 
         case .absent:
             avail[.createPR] = hasDiffVsBase

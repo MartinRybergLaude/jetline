@@ -24,7 +24,12 @@ struct AppShell: View {
             }
             .inspector(isPresented: inspectorBinding) {
                 InspectorView()
-                    .inspectorColumnWidth(min: 240, ideal: 320, max: 480)
+                    // Wider than it looks like it needs: every panel here is
+                    // monospaced content that truncates badly — diff lines,
+                    // branch refs, check names — so 320 spent most of its
+                    // time showing ellipses. 240 stays the floor for people
+                    // who want the terminal back.
+                    .inspectorColumnWidth(min: 240, ideal: 420, max: 600)
             }
         }
         .background(WindowChromeSetup())

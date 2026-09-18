@@ -40,6 +40,11 @@ final class WorkspaceState {
     /// Pure-git action currently in flight (rebase, pull, merge). The
     /// toolbar reads this to swap the git action button for a spinner.
     var runningGitAction: GitAction?
+    /// True while an auto-merge enable/cancel is in flight. Separate from
+    /// `runningGitAction`, which the toolbar reads to swap the git action
+    /// button — queueing an auto-merge isn't a git action, it's a state
+    /// change on the PR.
+    var isTogglingAutoMerge: Bool = false
     /// True while a user-initiated PR refresh is awaiting the next poll.
     /// Drives the inspector's spinner.
     var isRefreshingPR: Bool = false
