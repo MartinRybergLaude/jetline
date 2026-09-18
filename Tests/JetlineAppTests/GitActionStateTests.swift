@@ -194,12 +194,36 @@ final class GitActionStateTests: XCTestCase {
         XCTAssertTrue(GitActionState.gitHubAllowsMerge(pr))
     }
 
-    func testAllowsMergeWhenBehindBase() {
-        // Being behind the base doesn't stop GitHub merging unless the repo
-        // requires up-to-date branches — in which case it reports BLOCKED
-        // through the review gate instead.
+    func testBlocksMergeWhenGitHubReportsBehind() {
+        // BEHIND is only reported when the base branch requires up-to-date
+        // branches — GitHub swaps its merge button for "Update branch", so
+        // ours can't be live either.
         let pr = makePR(state: "OPEN", mergeStateStatus: "BEHIND", reviewDecision: "APPROVED")
-        XCTAssertTrue(GitActionState.gitHubAllowsMerge(pr))
+        XCTAssertFalse(GitActionState.gitHubAllowsMerge(pr))
+    }
+
+    func testBlocksMergeWhenBranchProtectionSaysBlocked() {
+        // The bug this gate exists for: "all conversations must be resolved"
+        // shows up only as BLOCKED — review is approved and the PR is
+        // mergeable, so every other signal says go.
+        let pr = makePR(
+            state: "OPEN",
+            mergeStateStatus: "BLOCKED",
+            unresolved: 3,
+            mergeable: "MERGEABLE",
+            reviewDecision: "APPROVED"
+        )
+        XCTAssertFalse(GitActionState.gitHubAllowsMerge(pr))
+    }
+
+    func testBlocksMergeWhileMergeabilityIsStillUnknown() {
+        // UNKNOWN is what GitHub says before it has computed anything, not
+        // a green light — see MergeReadinessTests.
+        let pr = makePR(state: "OPEN", mergeStateStatus: "UNKNOWN", reviewDecision: "APPROVED")
+        XCTAssertFalse(GitActionState.gitHubAllowsMerge(pr))
+        XCTAssertFalse(GitActionState.gitHubAllowsMerge(
+            makePR(state: "OPEN", mergeStateStatus: nil, reviewDecision: "APPROVED")
+        ))
     }
 
     func testAllowsMergeWithFailingNonRequiredChecks() {

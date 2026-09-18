@@ -33,6 +33,12 @@ struct PullRequest: Codable, Sendable, Hashable {
     /// the repo doesn't require review (no branch protection configured).
     /// Drives the merge gate so the toolbar matches GitHub's UI.
     var reviewDecision: String?
+    /// Set while GitHub is holding an auto-merge for this PR — it lands on
+    /// its own once every protection rule is satisfied.
+    var autoMergeEnabled: Bool = false
+    /// Strategy the queued auto-merge will use. `nil` when auto-merge is
+    /// off, or when GitHub reports a method we don't model.
+    var autoMergeMethod: MergeMethod?
 
     /// Normalized `reviewDecision`. `.unreviewed` covers the `nil` case —
     /// no branch protection and nobody has signed off yet.
@@ -75,7 +81,9 @@ struct PullRequest: Codable, Sendable, Hashable {
         mergeStateStatus: String? = nil,
         unresolvedThreadCount: Int = 0,
         issueCommentCount: Int = 0,
-        reviewDecision: String? = nil
+        reviewDecision: String? = nil,
+        autoMergeEnabled: Bool = false,
+        autoMergeMethod: MergeMethod? = nil
     ) {
         self.number = number
         self.title = title
@@ -92,13 +100,15 @@ struct PullRequest: Codable, Sendable, Hashable {
         self.unresolvedThreadCount = unresolvedThreadCount
         self.issueCommentCount = issueCommentCount
         self.reviewDecision = reviewDecision
+        self.autoMergeEnabled = autoMergeEnabled
+        self.autoMergeMethod = autoMergeMethod
     }
 
     enum CodingKeys: String, CodingKey {
         case number, title, url, state, isDraft, headRefName, baseRefName, author
         case createdAt, mergedAt
         case mergeable, mergeStateStatus, unresolvedThreadCount, issueCommentCount
-        case reviewDecision
+        case reviewDecision, autoMergeEnabled, autoMergeMethod
     }
 
     /// Custom decode so PR snapshots persisted before the comment-tracking
@@ -123,6 +133,8 @@ struct PullRequest: Codable, Sendable, Hashable {
         unresolvedThreadCount = try c.decodeIfPresent(Int.self, forKey: .unresolvedThreadCount) ?? 0
         issueCommentCount = try c.decodeIfPresent(Int.self, forKey: .issueCommentCount) ?? 0
         reviewDecision = try c.decodeIfPresent(String.self, forKey: .reviewDecision)
+        autoMergeEnabled = try c.decodeIfPresent(Bool.self, forKey: .autoMergeEnabled) ?? false
+        autoMergeMethod = try c.decodeIfPresent(MergeMethod.self, forKey: .autoMergeMethod)
     }
 }
 
@@ -290,19 +302,23 @@ enum PRSnapshot: Equatable, Sendable {
     case loaded(PullRequest, [CheckRun])
 }
 
-/// Owner/name pair identifying a GitHub repository, plus the merge methods
-/// the repo's settings allow. Cached per-repo by `PRTracker` and surfaced
-/// to the UI via `AppState.repoMetadataByRepo` so the merge confirmation
-/// dialog can show only the buttons that will actually work.
+/// Owner/name pair identifying a GitHub repository, plus the merge settings
+/// the repo allows. Cached per-repo by `PRTracker` and surfaced to the UI
+/// via `AppState.repoMetadataByRepo` so the merge controls only offer what
+/// will actually work.
 struct RepoIdentifier: Sendable, Hashable {
     let owner: String
     let name: String
     let allowedMergeMethods: Set<MergeMethod>
+    /// Repo setting: Settings → General → "Allow auto-merge". `gh pr merge
+    /// --auto` fails outright when it's off, so the PR panel hides the
+    /// affordance rather than offering a button that can't work.
+    var allowsAutoMerge: Bool = false
 }
 
 /// One of the three merge strategies GitHub offers. The repo admin picks
 /// which subset is enabled in Settings → General → Pull Requests.
-enum MergeMethod: String, CaseIterable, Hashable, Sendable {
+enum MergeMethod: String, CaseIterable, Hashable, Sendable, Codable {
     case merge
     case squash
     case rebase
@@ -334,6 +350,7 @@ enum GitHubRunner {
     fragment PR on PullRequest {
       number title url state isDraft headRefName baseRefName createdAt mergedAt
       mergeable mergeStateStatus reviewDecision
+      autoMergeRequest { mergeMethod }
       reviewThreads(first: 50) {
         nodes { isResolved }
         pageInfo { hasNextPage }
@@ -406,11 +423,44 @@ enum GitHubRunner {
             return RepoIdentifier(
                 owner: parsed.owner.login,
                 name: parsed.name,
-                allowedMergeMethods: methods
+                allowedMergeMethods: methods,
+                allowsAutoMerge: await autoMergeAllowed(
+                    owner: parsed.owner.login, name: parsed.name, cwd: cwd
+                )
             )
         } catch Error.other(let msg) where msg.lowercased().contains("no github") || msg.lowercased().contains("could not determine") {
             return nil
         }
+    }
+
+    /// Repo setting: Settings → General → "Allow auto-merge". A separate
+    /// call because `gh repo view --json` doesn't expose it — only GraphQL
+    /// does — and it needs the owner/name that `gh repo view` just resolved
+    /// from the checkout's remote.
+    ///
+    /// Non-throwing: a repo we can't ask about is treated as not allowing
+    /// auto-merge, which hides the affordance. Better than offering a button
+    /// that fails on click. Runs once per repo — `PRTracker` caches the
+    /// identifier this belongs to.
+    private static func autoMergeAllowed(owner: String, name: String, cwd: String) async -> Bool {
+        let query = """
+        query($owner: String!, $name: String!) {
+          repository(owner: $owner, name: $name) { autoMergeAllowed }
+        }
+        """
+        guard let stdout = try? await runGH(
+            ["api", "graphql", "-F", "owner=\(owner)", "-F", "name=\(name)", "-f", "query=\(query)"],
+            cwd: cwd
+        ) else { return false }
+
+        struct Settings: Decodable {
+            struct Repository: Decodable { let autoMergeAllowed: Bool? }
+            let repository: Repository?
+        }
+        let response = try? JSONDecoder().decode(
+            GraphQLResponse<Settings>.self, from: Data(stdout.utf8)
+        )
+        return response?.data?.repository?.autoMergeAllowed ?? false
     }
 
     /// Fetch latest PR + check rollup for each branch in a single GraphQL
@@ -542,6 +592,18 @@ enum GitHubRunner {
     /// the rest of the gh surface.
     static func mergePR(_ number: Int, method: MergeMethod, cwd: String) async throws {
         _ = try await runGH(["pr", "merge", String(number), method.ghFlag], cwd: cwd)
+    }
+
+    /// Queue the merge instead of performing it: GitHub lands the PR itself
+    /// once every protection rule is satisfied. The strategy is fixed at
+    /// enable time, which is why this takes one.
+    static func enableAutoMerge(_ number: Int, method: MergeMethod, cwd: String) async throws {
+        _ = try await runGH(["pr", "merge", String(number), "--auto", method.ghFlag], cwd: cwd)
+    }
+
+    /// Cancel a queued auto-merge. The PR itself is untouched.
+    static func disableAutoMerge(_ number: Int, cwd: String) async throws {
+        _ = try await runGH(["pr", "merge", String(number), "--disable-auto"], cwd: cwd)
     }
 
     /// Ask `gh` which PR is associated with the checkout's current branch.
@@ -726,12 +788,16 @@ private struct PRNode: Decodable {
     let mergeable: String?
     let mergeStateStatus: String?
     let reviewDecision: String?
+    let autoMergeRequest: AutoMergeRequest?
     let reviewThreads: ReviewThreadsConnection?
     let comments: CommentsConnection?
     let author: AuthorNode?
     let commits: CommitsConnection?
 
     struct AuthorNode: Decodable { let login: String }
+    /// Present exactly when auto-merge is queued; `mergeMethod` is GitHub's
+    /// SCREAMING_SNAKE enum, which our lowercase raw values don't match.
+    struct AutoMergeRequest: Decodable { let mergeMethod: String? }
     struct CommitsConnection: Decodable { let nodes: [CommitNode] }
     struct CommitNode: Decodable { let commit: CommitDetail }
     struct CommitDetail: Decodable { let statusCheckRollup: Rollup? }
@@ -787,7 +853,10 @@ private struct PRNode: Decodable {
             mergeStateStatus: mergeStateStatus,
             unresolvedThreadCount: unresolved,
             issueCommentCount: comments?.totalCount ?? 0,
-            reviewDecision: reviewDecision
+            reviewDecision: reviewDecision,
+            autoMergeEnabled: autoMergeRequest != nil,
+            autoMergeMethod: autoMergeRequest?.mergeMethod
+                .flatMap { MergeMethod(rawValue: $0.lowercased()) }
         )
     }
 

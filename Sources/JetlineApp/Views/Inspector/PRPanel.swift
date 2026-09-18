@@ -41,6 +41,22 @@ private struct PRPanelContent: View {
         }
         .scrollIndicators(.visible)
         .safeAreaInset(edge: .bottom, spacing: 0) { mergeFooter }
+        // Asking is what makes GitHub compute mergeability: a PR nobody has
+        // touched for a while answers `UNKNOWN` first and its real state on
+        // the next query. Keyed on the state itself, so it re-asks once and
+        // then stops — a still-`UNKNOWN` answer doesn't change the key, and
+        // the tracker's own poll covers the rest.
+        .task(id: mergeStateKey) {
+            guard mergeStateKey == .unknown else { return }
+            try? await Task.sleep(for: .seconds(1.5))
+            guard !Task.isCancelled else { return }
+            state.requestPRRefresh(workspaceId: workspaceState.id)
+        }
+    }
+
+    private var mergeStateKey: PullRequest.MergeState? {
+        if case let .loaded(pr, _) = workspaceState.pr { return pr.mergeState }
+        return nil
     }
 
     @ViewBuilder
@@ -67,43 +83,48 @@ private struct PRPanelContent: View {
         }
     }
 
+    /// Present for every open PR, not just mergeable ones: "the button is
+    /// missing" is a worse answer to "why can't I merge?" than a disabled
+    /// button that names the blocker.
     @ViewBuilder
     private var mergeFooter: some View {
-        if case let .loaded(pr, _) = workspaceState.pr,
-           GitActionState.gitHubAllowsMerge(pr) {
+        if case let .loaded(pr, checks) = workspaceState.pr,
+           pr.state.uppercased() == "OPEN" {
             MergeSection(
                 workspace: workspace,
-                isMerging: workspaceState.runningGitAction == .mergePR
+                pr: pr,
+                readiness: MergeReadiness.evaluate(pr: pr, checks: checks),
+                isMerging: workspaceState.runningGitAction == .mergePR,
+                isTogglingAutoMerge: workspaceState.isTogglingAutoMerge
             )
         }
     }
 }
 
-/// Shown whenever GitHub would let you press Merge (see
-/// `GitActionState.gitHubAllowsMerge`) — the same gate the toolbar's action
-/// menu uses. Not a stricter one: if github.com offers the button, so do we,
-/// and the checks list right above says whether that's a good idea.
+/// The panel's footer for any open PR, in one of four moods:
 ///
-/// Lives in the panel's bottom safe area as an opaque bar with a hairline
-/// on top: the checks list scrolls *behind* it, so the merge affordance is
-/// never something you have to scroll to find.
+/// - **merge** — GitHub would let you press Merge (see `MergeReadiness`), so
+///   the wide half does, in the repo's default strategy, and the chevron
+///   offers the others.
+/// - **enable auto-merge** — something unmet can clear on its own (a review,
+///   a green check, a resolved conversation), so offer to queue the merge
+///   instead. Same split button, different verb.
+/// - **cancel auto-merge** — one is already queued; say so and offer to call
+///   it off.
+/// - **blocked** — nothing to wait for (draft, conflicts). The button sits
+///   disabled under a line naming the blocker, because "the button is
+///   missing" is a worse answer to "why can't I merge?" than a dead one.
 ///
-/// Split button, like GitHub's own: the wide half merges with the repo's
-/// default strategy (last one used here, else the first it allows) and the
-/// chevron offers the others. Repos that allow only one strategy get the
-/// wide half alone. Both halves are plain Buttons — `Menu`, with or without
-/// `primaryAction:`, renders as a system pull-down that ignores the glass
-/// style, the tint and the height it's given — so the alternates come from a
-/// popover the chevron opens.
-///
-/// Green rather than the accent tint the copy button uses: it's the
-/// terminal, irreversible action in this panel, and shouldn't read as the
-/// same weight of click as copying a link. The confirmation sheet is shared
-/// with the toolbar's git action menu.
+/// Green is reserved for merging *now*: the auto-merge verbs take the plain
+/// accent tint, since queueing something is not the same weight of click as
+/// landing it.
 private struct MergeSection: View {
     @EnvironmentObject private var state: AppState
     let workspace: Workspace
+    let pr: PullRequest
+    let readiness: MergeReadiness
     let isMerging: Bool
+    let isTogglingAutoMerge: Bool
 
     /// Set to the strategy the user picked, which both opens the
     /// confirmation and tells it what to confirm.
@@ -111,17 +132,38 @@ private struct MergeSection: View {
     @State private var isConfirming = false
     @State private var showingAlternates = false
 
+    private enum Mode { case merge, enableAuto, cancelAuto, blocked }
+
+    private var mode: Mode {
+        if pr.autoMergeEnabled { return .cancelAuto }
+        if readiness.isReady { return .merge }
+        if let blocker = readiness.blocker,
+           blocker.allowsAutoMerge,
+           state.allowsAutoMerge(for: workspace) {
+            return .enableAuto
+        }
+        return .blocked
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             Hairline()
+            if let caption {
+                Label(caption.text, systemImage: caption.symbol)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 10)
+            }
             GlassEffectContainer(spacing: 6) {
                 HStack(spacing: 6) {
-                    Button { confirm(defaultMethod) } label: { label }
+                    Button { primaryAction() } label: { label }
                         .buttonStyle(.glassProminent)
-                        .tint(.readableGreen)
-                        .disabled(isMerging || defaultMethod == nil)
+                        .tint(mode == .merge ? .readableGreen : .accentColor)
+                        .disabled(isBusy || defaultMethod == nil)
 
-                    if !isMerging, !alternates.isEmpty {
+                    if offersStrategyChoice {
                         Button { showingAlternates.toggle() } label: {
                             Image(systemName: "chevron.down")
                                 .frame(width: 12)
@@ -132,7 +174,7 @@ private struct MergeSection: View {
                                 .frame(maxHeight: .infinity)
                         }
                         // Untinted: the chevron only *picks* a strategy, and
-                        // a second green button beside the first would read
+                        // a second tinted button beside the first would read
                         // as two ways to merge rather than one.
                         .buttonStyle(.glass)
                         .frame(maxHeight: .infinity)
@@ -142,7 +184,7 @@ private struct MergeSection: View {
                                 ForEach(alternates, id: \.self) { method in
                                     MergeMethodRow(method: method) {
                                         showingAlternates = false
-                                        confirm(method)
+                                        run(method)
                                     }
                                 }
                             }
@@ -153,7 +195,8 @@ private struct MergeSection: View {
                 }
                 .controlSize(.regular)
                 .fixedSize(horizontal: false, vertical: true)
-                .help("Merge into \(workspace.baseBranch)")
+                .disabled(mode == .blocked)
+                .help(helpText)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
@@ -175,25 +218,90 @@ private struct MergeSection: View {
     /// things is about to happen to the history.
     private var label: some View {
         Label {
-            Text(isMerging ? "Merging…" : (defaultMethod?.displayName ?? "Merge pull request"))
+            Text(title)
         } icon: {
-            if isMerging {
+            if isBusy {
                 ProgressView().controlSize(.small)
             } else {
-                Image(systemName: "arrow.triangle.merge")
+                Image(systemName: symbol)
             }
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private var title: String {
+        if isMerging { return "Merging…" }
+        if isTogglingAutoMerge { return mode == .cancelAuto ? "Cancelling…" : "Enabling…" }
+        switch mode {
+        case .merge, .blocked: return defaultMethod?.displayName ?? "Merge pull request"
+        case .enableAuto:      return "Enable auto-merge"
+        case .cancelAuto:      return "Cancel auto-merge"
+        }
+    }
+
+    private var symbol: String {
+        switch mode {
+        case .merge, .blocked: return "arrow.triangle.merge"
+        case .enableAuto:      return "clock"
+        case .cancelAuto:      return "xmark.circle"
+        }
+    }
+
+    /// Caption above the row: what's queued, or what's in the way.
+    private var caption: (text: String, symbol: String)? {
+        if pr.autoMergeEnabled {
+            let strategy = (pr.autoMergeMethod ?? defaultMethod)?.displayName.lowercased()
+            let suffix = strategy.map { " · \($0)" } ?? ""
+            return ("Merges automatically once ready\(suffix)", "clock")
+        }
+        if let blocker = readiness.blocker {
+            return (blocker.message, blocker.symbol)
+        }
+        return nil
+    }
+
+    private var helpText: String {
+        switch mode {
+        case .merge:      return "Merge into \(workspace.baseBranch)"
+        case .enableAuto: return "Let GitHub merge this into \(workspace.baseBranch) once every requirement is met"
+        case .cancelAuto: return "Stop GitHub merging this automatically"
+        case .blocked:    return readiness.reason ?? "Can't merge yet"
+        }
+    }
+
+    private var isBusy: Bool { isMerging || isTogglingAutoMerge }
+
+    /// Picking a strategy only makes sense when one is about to be used.
+    private var offersStrategyChoice: Bool {
+        !isBusy && !alternates.isEmpty && (mode == .merge || mode == .enableAuto)
     }
 
     private var methods: [MergeMethod] { state.allowedMergeMethods(for: workspace) }
     private var defaultMethod: MergeMethod? { state.defaultMergeMethod(for: workspace) }
     private var alternates: [MergeMethod] { methods.filter { $0 != defaultMethod } }
 
-    private func confirm(_ method: MergeMethod?) {
+    private func primaryAction() {
+        if mode == .cancelAuto {
+            Task { await state.disableAutoMerge(for: workspace) }
+            return
+        }
+        run(defaultMethod)
+    }
+
+    /// Merging asks first — it's immediate and irreversible. Queueing an
+    /// auto-merge doesn't: nothing lands until GitHub's own conditions are
+    /// met, and the next click calls it off.
+    private func run(_ method: MergeMethod?) {
         guard let method else { return }
-        pendingMethod = method
-        isConfirming = true
+        switch mode {
+        case .merge, .blocked:
+            pendingMethod = method
+            isConfirming = true
+        case .enableAuto:
+            Task { await state.enableAutoMerge(for: workspace, method: method) }
+        case .cancelAuto:
+            break
+        }
     }
 }
 
@@ -379,11 +487,10 @@ private struct PRHeaderCard: View {
         return parts.joined(separator: " · ")
     }
 
-    /// `mergeable` is the authoritative field; `mergeStateStatus` catches the
-    /// `DIRTY` case gh reports while it recomputes mergeability.
+    /// `mergeable` is the authoritative field; the `DIRTY` merge state
+    /// catches the window where gh reports the conflict there first.
     private var hasConflicts: Bool {
-        pr.mergeable?.uppercased() == "CONFLICTING"
-            || pr.mergeStateStatus?.uppercased() == "DIRTY"
+        pr.mergeable?.uppercased() == "CONFLICTING" || pr.mergeState == .dirty
     }
 
     private func copyURL() {

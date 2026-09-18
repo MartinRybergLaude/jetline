@@ -35,28 +35,12 @@ struct GitActionState: Equatable {
         .review
     ]
 
-    /// Whether GitHub itself would let you press Merge: the PR is open,
-    /// not a draft, has no conflicts, and branch protection isn't holding
-    /// the review gate shut. `reviewDecision` is `nil` when the repo
-    /// requires no review at all, `APPROVED` once the required reviewers
-    /// have signed off, and `REVIEW_REQUIRED`/`CHANGES_REQUESTED` while
-    /// protection still blocks.
-    ///
-    /// Deliberately permissive on `mergeStateStatus`: `UNSTABLE` (a
-    /// non-required check failed), `BEHIND` (base has moved on — GitHub
-    /// merges it anyway unless the repo requires up-to-date branches) and
-    /// `UNKNOWN` (still recomputing after a push) are all mergeable. The
-    /// one this doesn't catch is `BLOCKED` from *required* checks failing
-    /// with no review requirement — `gh pr merge` refuses it with a legible
-    /// error rather than doing something surprising.
-    ///
-    /// Shared by the toolbar's action menu and the PR panel's merge button
-    /// so there's one notion of "mergeable" in the app.
+    /// Whether GitHub itself would let you press Merge. Thin wrapper over
+    /// `MergeReadiness`, which owns the rules (and the explanation the PR
+    /// panel shows when the answer is no) — the toolbar menu only needs the
+    /// yes/no.
     static func gitHubAllowsMerge(_ pr: PullRequest) -> Bool {
-        pr.state.uppercased() == "OPEN"
-            && !pr.isDraft
-            && pr.mergeable?.uppercased() != "CONFLICTING"
-            && !pr.reviewState.blocksMerge
+        MergeReadiness.evaluate(pr: pr).isReady
     }
 
     static func derive(

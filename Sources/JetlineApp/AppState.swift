@@ -954,6 +954,70 @@ final class AppState: ObservableObject {
         prTracker.kick(workspaceId: workspace.id)
     }
 
+    /// Queue an auto-merge: GitHub lands the PR itself once every
+    /// protection rule is satisfied. Unlike `performMerge` this needs no
+    /// confirmation — nothing lands now, and cancelling is one click away.
+    /// The chosen strategy sticks as the repo's default, same as a manual
+    /// merge, since it's the same decision.
+    func enableAutoMerge(for workspace: Workspace, method: MergeMethod) async {
+        await toggleAutoMerge(for: workspace, enabling: true, method: method)
+    }
+
+    /// Cancel a queued auto-merge. The PR is left exactly as it was.
+    func disableAutoMerge(for workspace: Workspace) async {
+        await toggleAutoMerge(for: workspace, enabling: false, method: nil)
+    }
+
+    private func toggleAutoMerge(
+        for workspace: Workspace,
+        enabling: Bool,
+        method: MergeMethod?
+    ) async {
+        let ws = workspaceState(for: workspace.id)
+        guard case let .loaded(pr, _) = ws.pr, !ws.isTogglingAutoMerge else { return }
+        ws.isTogglingAutoMerge = true
+        defer { ws.isTogglingAutoMerge = false }
+
+        let verb = enabling ? "Enabling" : "Cancelling"
+        activityLog.record(
+            .gitAction,
+            "\(verb) auto-merge on PR #\(pr.number)",
+            repoId: workspace.repositoryId,
+            workspaceId: workspace.id
+        )
+        do {
+            if enabling, let method {
+                try await GitHubRunner.enableAutoMerge(
+                    pr.number, method: method, cwd: workspace.worktreePath
+                )
+            } else {
+                try await GitHubRunner.disableAutoMerge(pr.number, cwd: workspace.worktreePath)
+            }
+        } catch {
+            activityLog.record(
+                .error,
+                "Auto-merge \(enabling ? "enable" : "cancel") failed for PR #\(pr.number): \(error.localizedDescription)",
+                repoId: workspace.repositoryId,
+                workspaceId: workspace.id
+            )
+            await presentError(error.localizedDescription)
+            return
+        }
+        activityLog.record(
+            .gitAction,
+            enabling ? "Auto-merge enabled on PR #\(pr.number)" : "Auto-merge cancelled on PR #\(pr.number)",
+            repoId: workspace.repositoryId,
+            workspaceId: workspace.id
+        )
+        if enabling, let method,
+           var repo = repositories.first(where: { $0.id == workspace.repositoryId }),
+           repo.lastMergeMethod != method.rawValue {
+            repo.lastMergeMethod = method.rawValue
+            updateRepository(repo)
+        }
+        prTracker.kick(workspaceId: workspace.id)
+    }
+
     /// Fast path for `Rebase`. Tries `git fetch` + `git rebase --autostash`
     /// directly so the common no-conflict case completes without spending
     /// agent tokens; `--autostash` lets a dirty working tree go through
@@ -1091,6 +1155,13 @@ final class AppState: ObservableObject {
         let allowed = repoMetadataByRepo[workspace.repositoryId]?.allowedMergeMethods
             ?? Set(MergeMethod.allCases)
         return MergeMethod.displayOrder.filter { allowed.contains($0) }
+    }
+
+    /// Whether the repo has "Allow auto-merge" turned on. False until the
+    /// metadata lands, so the affordance appears rather than disappears as
+    /// a cold start warms up.
+    func allowsAutoMerge(for workspace: Workspace) -> Bool {
+        repoMetadataByRepo[workspace.repositoryId]?.allowsAutoMerge ?? false
     }
 
     /// The method a one-click merge should use: what the user picked last
