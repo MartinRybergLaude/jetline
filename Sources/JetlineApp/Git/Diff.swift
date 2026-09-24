@@ -297,6 +297,48 @@ enum DiffComputer {
 
     private static let maxUntrackedPreviewBytes = 4 << 20
 
+    /// `path`'s diff with the whole file as context, for the full-file diff
+    /// tab: one hunk spanning every line, changes inline. Untracked files come
+    /// back as all-additions, like in `compute`. Returns nil when the file has
+    /// no changes against `mode`'s base. `status` is carried through from the
+    /// changes-panel snapshot — the patch alone doesn't say.
+    static func fullFileDiff(
+        path: String,
+        status: FileDiff.Status,
+        worktreePath: String,
+        baseBranch: String,
+        mode: DiffMode
+    ) async throws -> FileDiff? {
+        async let untrackedTask = GitRunner.run(
+            ["ls-files", "--others", "--exclude-standard", "--", path],
+            cwd: worktreePath
+        )
+        let mergeBase = mode.needsMergeBase
+            ? try await Self.mergeBase(worktreePath: worktreePath, baseBranch: baseBranch)
+            : nil
+        let patch = try await GitRunner.runChecked(
+            ["diff", "--no-color", "--unified=\(Int32.max)",
+             mode.revspec(mergeBase: mergeBase), "--", path],
+            cwd: worktreePath
+        )
+        if let parsed = PatchParser.parse(patch).first(where: { $0.path == path }) {
+            let lines = parsed.hunks.flatMap(\.lines)
+            return FileDiff(
+                path: path,
+                status: status,
+                additions: lines.count { $0.kind == .addition },
+                deletions: lines.count { $0.kind == .deletion },
+                hunks: parsed.hunks,
+                isBinary: parsed.isBinary
+            )
+        }
+        if let untracked = try? await untrackedTask, untracked.success,
+           untracked.stdout.nonBlank != nil {
+            return untrackedFileDiff(path: path, worktreePath: worktreePath)
+        }
+        return nil
+    }
+
     /// Per-entry result of `git diff --raw`. The blob SHAs are git's content
     /// hash for each side; we use them as the cache key.
     fileprivate struct RawEntry {

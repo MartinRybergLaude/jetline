@@ -14,7 +14,7 @@ struct TerminalArea: View {
 
     /// Live drag-reorder preview state. While set, the named tab is offset to
     /// follow the cursor and neighbours slide aside; the underlying array is
-    /// not mutated until the drag ends, so the observable `sessions` array
+    /// not mutated until the drag ends, so the observable `tabOrder` array
     /// only kicks once instead of on every tab-boundary crossing.
     @State private var dragState: TabDragState?
     /// Slot the dragged tab will land in given the current cursor position.
@@ -40,7 +40,7 @@ struct TerminalArea: View {
     private static let settleDelay: Duration = .milliseconds(120)
 
     private struct TabDragState: Equatable {
-        let sessionId: String
+        let tabId: String
         var translation: CGFloat
         /// Tab frames captured at drag-start. Stable: `geo.frame(in:)` inside
         /// `.background` sits under the per-tab `.offset` modifier, so live
@@ -52,7 +52,12 @@ struct TerminalArea: View {
     var body: some View {
         VStack(spacing: 0) {
             sessionTabStrip
-            terminalSurface
+            if let tab = activeDiffTab {
+                FileDiffView(workspace: workspace, workspaceState: workspaceState, tab: tab)
+                    .id(tab.id)
+            } else {
+                terminalSurface
+            }
         }
         .background(Color(nsColor: .textBackgroundColor))
         .onChange(of: workspaceState.activeSessionId, initial: true) {
@@ -109,33 +114,36 @@ struct TerminalArea: View {
         .help("Toggle inspector")
     }
 
+    private var activeDiffTab: DiffTab? {
+        workspaceState.activeDiffTabId.flatMap { id in
+            workspaceState.diffTabs.first { $0.id == id }
+        }
+    }
+
+    /// Sessions and diff tabs share one strip, one order and one drag
+    /// reorder; only the tab's content differs.
     @ViewBuilder
     private var sessionTabStrip: some View {
-        let sessions = workspaceState.sessions
-        let activeId = workspaceState.activeSessionId
-        let sessionIds = sessions.map(\.id)
+        let tabs = workspaceState.orderedTabs
+        let activeId = workspaceState.activeTab?.id
+        let tabIds = tabs.map(\.id)
         ScrollViewReader { proxy in
             ScrollView(.horizontal) {
                 HStack(spacing: 0) {
-                    ForEach(Array(sessions.enumerated()), id: \.element.id) { idx, session in
-                        BorderedTab(
-                            session: session,
-                            isActive: session.id == activeId,
-                            onSelect: { state.selectSession(session.id, in: workspace.id) },
-                            onClose: { state.closeSession(session.id, in: workspace.id) }
-                        )
-                        .background(
-                            GeometryReader { geo in
-                                Color.clear.preference(
-                                    key: TabFramesKey.self,
-                                    value: [session.id: geo.frame(in: .named("tabstrip"))]
-                                )
-                            }
-                        )
-                        .offset(x: dragOffset(for: session.id, index: idx, in: sessions))
-                        .zIndex(dragState?.sessionId == session.id ? 1 : 0)
-                        .gesture(reorderGesture(for: session.id, in: sessions))
-                        .id(session.id)
+                    ForEach(Array(tabs.enumerated()), id: \.element.id) { idx, tab in
+                        stripTab(tab, isActive: tab.id == activeId)
+                            .background(
+                                GeometryReader { geo in
+                                    Color.clear.preference(
+                                        key: TabFramesKey.self,
+                                        value: [tab.id: geo.frame(in: .named("tabstrip"))]
+                                    )
+                                }
+                            )
+                            .offset(x: dragOffset(for: tab.id, index: idx, in: tabs))
+                            .zIndex(dragState?.tabId == tab.id ? 1 : 0)
+                            .gesture(reorderGesture(for: tab, in: tabs))
+                            .id(tab.id)
                     }
                     NewSessionMenu(
                         defaultAgent: state.settings.defaultAgent,
@@ -165,7 +173,7 @@ struct TerminalArea: View {
                 guard let newId else { return }
                 proxy.scrollTo(newId, anchor: .center)
             }
-            .onChange(of: sessionIds) { oldIds, newIds in
+            .onChange(of: tabIds) { oldIds, newIds in
                 guard newIds.count > oldIds.count,
                       let added = newIds.first(where: { !oldIds.contains($0) }) else { return }
                 proxy.scrollTo(added, anchor: .trailing)
@@ -175,29 +183,53 @@ struct TerminalArea: View {
         .overlay(alignment: .bottom) { Divider() }
     }
 
+    @ViewBuilder
+    private func stripTab(_ tab: TabRef, isActive: Bool) -> some View {
+        switch tab {
+        case .session(let id):
+            if let session = workspaceState.sessions.first(where: { $0.id == id }) {
+                BorderedTab(
+                    session: session,
+                    isActive: isActive,
+                    onSelect: { state.selectTab(tab, in: workspace.id) },
+                    onClose: { state.closeTab(tab, in: workspace.id) }
+                )
+            }
+        case .diff(let id):
+            if let diffTab = workspaceState.diffTabs.first(where: { $0.id == id }) {
+                DiffTabButton(
+                    tab: diffTab,
+                    isActive: isActive,
+                    onSelect: { state.selectTab(tab, in: workspace.id) },
+                    onClose: { state.closeTab(tab, in: workspace.id) }
+                )
+            }
+        }
+    }
+
     /// Custom drag handler — sidesteps SwiftUI's `.onDrag`/`.onDrop`, which
     /// engage the macOS OS drag service (NSItemProvider serialization, drop
     /// pasteboard read) and stall ~2s on drop. Pure SwiftUI gesture means
     /// no system drag session at all.
-    private func reorderGesture(for sessionId: String, in sessions: [PTYSession]) -> some Gesture {
+    private func reorderGesture(for tab: TabRef, in tabs: [TabRef]) -> some Gesture {
         DragGesture(minimumDistance: 4)
             .onChanged { value in
                 if dragState == nil {
                     dragState = TabDragState(
-                        sessionId: sessionId,
+                        tabId: tab.id,
                         translation: 0,
                         startFrames: tabFrames
                     )
-                    visibleTargetIndex = sessions.firstIndex(where: { $0.id == sessionId })
+                    visibleTargetIndex = tabs.firstIndex(of: tab)
                 }
-                guard let ds = dragState, ds.sessionId == sessionId else { return }
+                guard let ds = dragState, ds.tabId == tab.id else { return }
                 dragState?.translation = value.translation.width
 
                 let newTarget = computeTarget(
                     translation: value.translation.width,
-                    sessionId: sessionId,
+                    tabId: tab.id,
                     frames: ds.startFrames,
-                    in: sessions
+                    in: tabs
                 )
                 if newTarget != visibleTargetIndex {
                     withAnimation(.easeOut(duration: 0.16)) {
@@ -206,24 +238,24 @@ struct TerminalArea: View {
                 }
             }
             .onEnded { _ in
-                let dragId = dragState?.sessionId
+                let dragged = dragState.flatMap { ds in tabs.first { $0.id == ds.tabId } }
                 let to = visibleTargetIndex
                 dragState = nil
                 visibleTargetIndex = nil
-                guard let dragId,
+                guard let dragged,
                       let to,
-                      let from = sessions.firstIndex(where: { $0.id == dragId }),
+                      let from = tabs.firstIndex(of: dragged),
                       from != to else { return }
-                state.moveSession(dragId, toIndex: to, in: workspace.id)
+                state.moveTab(dragged, toIndex: to, in: workspace.id)
             }
     }
 
-    private func dragOffset(for sessionId: String, index: Int, in sessions: [PTYSession]) -> CGFloat {
+    private func dragOffset(for tabId: String, index: Int, in tabs: [TabRef]) -> CGFloat {
         guard let ds = dragState else { return 0 }
-        if sessionId == ds.sessionId { return ds.translation }
+        if tabId == ds.tabId { return ds.translation }
         guard let target = visibleTargetIndex,
-              let dragIdx = sessions.firstIndex(where: { $0.id == ds.sessionId }),
-              let dragWidth = ds.startFrames[ds.sessionId]?.width else { return 0 }
+              let dragIdx = tabs.firstIndex(where: { $0.id == ds.tabId }),
+              let dragWidth = ds.startFrames[ds.tabId]?.width else { return 0 }
         if target > dragIdx, index > dragIdx, index <= target { return -dragWidth }
         if target < dragIdx, index < dragIdx, index >= target { return dragWidth }
         return 0
@@ -237,16 +269,16 @@ struct TerminalArea: View {
     /// and feels eager.
     private func computeTarget(
         translation: CGFloat,
-        sessionId: String,
+        tabId: String,
         frames: [String: CGRect],
-        in sessions: [PTYSession]
+        in tabs: [TabRef]
     ) -> Int {
-        let fallback = sessions.firstIndex(where: { $0.id == sessionId }) ?? 0
-        guard let dragFrame = frames[sessionId] else { return fallback }
+        let fallback = tabs.firstIndex(where: { $0.id == tabId }) ?? 0
+        guard let dragFrame = frames[tabId] else { return fallback }
         let visualMid = dragFrame.midX + translation
         var leftCount = 0
-        for s in sessions where s.id != sessionId {
-            guard let frame = frames[s.id] else { continue }
+        for t in tabs where t.id != tabId {
+            guard let frame = frames[t.id] else { continue }
             if frame.midX < visualMid { leftCount += 1 }
         }
         return leftCount
@@ -609,25 +641,62 @@ private struct ErrorOverlay: View {
     }
 }
 
-/// Tab styled after Apple HIG: the active tab is lifted out of the recessed
-/// strip with the system text background, an accent indicator across the top
-/// edge, and bolder text. Inactive tabs gain a soft hover tint and show a
-/// hairline separator only between adjacent inactive siblings — same trick
-/// Safari uses to keep the strip from looking like a row of buttons.
+/// Session tab: agent mark and name over the shared `StripTab` chrome.
 private struct BorderedTab: View {
     @ObservedObject var session: PTYSession
     let isActive: Bool
     let onSelect: () -> Void
     let onClose: () -> Void
 
+    var body: some View {
+        StripTab(isActive: isActive, onSelect: onSelect, onClose: onClose) {
+            AgentMark(agent: session.agent, size: 14)
+                .opacity(isActive ? 1 : 0.75)
+        } title: {
+            Text(session.agent.displayName)
+        }
+    }
+}
+
+/// Full-file diff tab, opened from the inspector's changes panel.
+private struct DiffTabButton: View {
+    let tab: DiffTab
+    let isActive: Bool
+    let onSelect: () -> Void
+    let onClose: () -> Void
+
+    var body: some View {
+        StripTab(isActive: isActive, onSelect: onSelect, onClose: onClose) {
+            Image(systemName: "plus.forwardslash.minus")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .frame(width: 14, height: 14)
+        } title: {
+            Text((tab.path as NSString).lastPathComponent)
+        }
+        .help(tab.path)
+    }
+}
+
+/// Tab styled after Apple HIG: the active tab is lifted out of the recessed
+/// strip with the system text background, an accent indicator across the top
+/// edge, and bolder text. Inactive tabs gain a soft hover tint and show a
+/// hairline separator only between adjacent inactive siblings — same trick
+/// Safari uses to keep the strip from looking like a row of buttons.
+private struct StripTab<Icon: View, Title: View>: View {
+    let isActive: Bool
+    let onSelect: () -> Void
+    let onClose: () -> Void
+    @ViewBuilder let icon: Icon
+    @ViewBuilder let title: Title
+
     @State private var hovering = false
     @State private var closeHovering = false
 
     var body: some View {
         HStack(spacing: 7) {
-            AgentMark(agent: session.agent, size: 14)
-                .opacity(isActive ? 1 : 0.75)
-            Text(session.agent.displayName)
+            icon
+            title
                 .lineLimit(1)
                 .font(.system(size: 13))
                 .foregroundStyle(isActive ? .primary : .secondary)

@@ -50,6 +50,16 @@ final class WorkspaceState {
     var isRefreshingPR: Bool = false
     var sessions: [PTYSession] = []
     var activeSessionId: String?
+    /// Full-file diff tabs opened from the inspector's changes panel. They
+    /// share the tab strip with the sessions but live apart from them —
+    /// a diff tab has no process behind it.
+    var diffTabs: [DiffTab] = []
+    /// When set, the main area shows this diff tab instead of the active
+    /// session. Selecting any session clears it.
+    var activeDiffTabId: String?
+    /// Strip order across sessions and diff tabs, which the strip shows as
+    /// one list. Read through `orderedTabs`.
+    var tabOrder: [TabRef] = []
     /// Setup-script controller. Created when a fresh workspace spins up;
     /// lingers after exit so the user can scroll back through the log
     /// until they trigger a real run.
@@ -61,4 +71,48 @@ final class WorkspaceState {
     init(id: String) {
         self.id = id
     }
+
+    /// The tab the main area is showing.
+    var activeTab: TabRef? {
+        activeDiffTabId.map(TabRef.diff) ?? activeSessionId.map(TabRef.session)
+    }
+
+    /// Every open tab in strip order: `tabOrder` minus anything already
+    /// closed, plus anything it somehow missed, so the strip can never drop
+    /// or duplicate a tab.
+    var orderedTabs: [TabRef] {
+        let live = Set(sessions.map { TabRef.session($0.id) } + diffTabs.map { TabRef.diff($0.id) })
+        var seen = Set<TabRef>()
+        var result = tabOrder.filter { live.contains($0) && seen.insert($0).inserted }
+        for ref in sessions.map({ TabRef.session($0.id) }) + diffTabs.map({ TabRef.diff($0.id) })
+        where !seen.contains(ref) {
+            result.append(ref)
+        }
+        return result
+    }
+}
+
+/// A tab in the main-area strip: an agent/shell session or a diff tab.
+enum TabRef: Hashable, Identifiable {
+    case session(String)
+    case diff(String)
+
+    var id: String {
+        switch self {
+        case .session(let id): return "session:" + id
+        case .diff(let id):    return "diff:" + id
+        }
+    }
+}
+
+/// One file's full diff, opened as a tab in the main area.
+struct DiffTab: Identifiable, Hashable {
+    var path: String
+    /// Which comparison the tab shows — whatever the changes panel was set
+    /// to when the file was opened.
+    var mode: DiffMode
+
+    /// One tab per file: reopening a file re-targets its tab instead of
+    /// stacking a second one.
+    var id: String { path }
 }

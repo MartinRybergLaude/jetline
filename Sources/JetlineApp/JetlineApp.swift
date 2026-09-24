@@ -46,9 +46,9 @@ struct JetlineApp: App {
                 .disabled(state.selectedWorkspaceId == nil)
 
                 Button("Close Tab") {
-                    if let wsId = state.selectedWorkspaceId,
-                       let active = state.workspaceState(for: wsId).activeSessionId {
-                        state.closeSession(active, in: wsId)
+                    guard let wsId = state.selectedWorkspaceId else { return }
+                    if let active = state.workspaceState(for: wsId).activeTab {
+                        state.closeTab(active, in: wsId)
                     }
                 }
                 .keyboardShortcut("w", modifiers: [.command])
@@ -72,18 +72,18 @@ struct JetlineApp: App {
             CommandGroup(after: .windowArrangement) {
                 Divider()
 
-                Button("Next Tab") { state.cycleSession(forward: true) }
+                Button("Next Tab") { state.cycleTab(forward: true) }
                     .keyboardShortcut("\t", modifiers: [.control])
-                Button("Previous Tab") { state.cycleSession(forward: false) }
+                Button("Previous Tab") { state.cycleTab(forward: false) }
                     .keyboardShortcut("\t", modifiers: [.control, .shift])
                 // The ⌘⇧ arrow/HJKL group disables itself while a settings
                 // surface is being edited — disabled key equivalents fall
                 // through to the field editor, restoring the standard
                 // select-to-line-start/-end text behavior there.
                 Group {
-                    Button("Next Terminal Tab") { state.cycleSession(forward: true) }
+                    Button("Next Terminal Tab") { state.cycleTab(forward: true) }
                         .keyboardShortcut(.rightArrow, modifiers: [.command, .shift])
-                    Button("Previous Terminal Tab") { state.cycleSession(forward: false) }
+                    Button("Previous Terminal Tab") { state.cycleTab(forward: false) }
                         .keyboardShortcut(.leftArrow, modifiers: [.command, .shift])
 
                     Divider()
@@ -97,13 +97,13 @@ struct JetlineApp: App {
                     // submenu so the Window menu doesn't list every action twice;
                     // key equivalents fire regardless of nesting.
                     Menu("Vim Navigation") {
-                        Button("Previous Terminal Tab") { state.cycleSession(forward: false) }
+                        Button("Previous Terminal Tab") { state.cycleTab(forward: false) }
                             .keyboardShortcut("h", modifiers: [.command, .shift])
                         Button("Next Workspace") { state.cycleWorkspaceSelection(forward: true) }
                             .keyboardShortcut("j", modifiers: [.command, .shift])
                         Button("Previous Workspace") { state.cycleWorkspaceSelection(forward: false) }
                             .keyboardShortcut("k", modifiers: [.command, .shift])
-                        Button("Next Terminal Tab") { state.cycleSession(forward: true) }
+                        Button("Next Terminal Tab") { state.cycleTab(forward: true) }
                             .keyboardShortcut("l", modifiers: [.command, .shift])
                     }
                 }
@@ -112,7 +112,7 @@ struct JetlineApp: App {
                 Divider()
 
                 ForEach(1...9, id: \.self) { n in
-                    Button("Show Tab \(n)") { state.selectSessionByIndex(n) }
+                    Button("Show Tab \(n)") { state.selectTabByIndex(n) }
                         .keyboardShortcut(KeyEquivalent(Character("\(n)")), modifiers: [.command])
                 }
             }

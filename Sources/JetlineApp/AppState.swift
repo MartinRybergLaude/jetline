@@ -856,12 +856,75 @@ final class AppState: ObservableObject {
         )
         let ws = workspaceState(for: workspace.id)
         ws.sessions.append(session)
+        ws.tabOrder.append(.session(session.id))
         ws.activeSessionId = session.id
+        ws.activeDiffTabId = nil
         Task { await session.startIfNeeded() }
     }
 
     func selectSession(_ sessionId: String, in workspaceId: String) {
-        workspaceState(for: workspaceId).activeSessionId = sessionId
+        let ws = workspaceState(for: workspaceId)
+        ws.activeSessionId = sessionId
+        ws.activeDiffTabId = nil
+    }
+
+    // MARK: - Diff tabs
+
+    /// Show `path`'s full diff in the main area, reusing the file's tab if
+    /// it's already open.
+    func openDiffTab(path: String, mode: DiffMode, in workspaceId: String) {
+        let ws = workspaceState(for: workspaceId)
+        let tab = DiffTab(path: path, mode: mode)
+        if let idx = ws.diffTabs.firstIndex(where: { $0.id == tab.id }) {
+            if ws.diffTabs[idx] != tab { ws.diffTabs[idx] = tab }
+        } else {
+            ws.diffTabs.append(tab)
+            ws.tabOrder.append(.diff(tab.id))
+        }
+        ws.activeDiffTabId = tab.id
+    }
+
+    func selectDiffTab(_ tabId: String, in workspaceId: String) {
+        workspaceState(for: workspaceId).activeDiffTabId = tabId
+    }
+
+    /// Close a diff tab. An active one hands over to its strip neighbour.
+    func closeDiffTab(_ tabId: String, in workspaceId: String) {
+        let ws = workspaceState(for: workspaceId)
+        guard let idx = ws.diffTabs.firstIndex(where: { $0.id == tabId }) else { return }
+        let order = ws.orderedTabs
+        ws.diffTabs.remove(at: idx)
+        ws.tabOrder.removeAll { $0 == .diff(tabId) }
+        if ws.activeDiffTabId == tabId {
+            ws.activeDiffTabId = nil
+            if let next = Self.neighbour(of: .diff(tabId), in: order) {
+                selectTab(next, in: workspaceId)
+            }
+        }
+    }
+
+    // MARK: - Tab strip
+
+    func selectTab(_ tab: TabRef, in workspaceId: String) {
+        switch tab {
+        case .session(let id): selectSession(id, in: workspaceId)
+        case .diff(let id):    selectDiffTab(id, in: workspaceId)
+        }
+    }
+
+    func closeTab(_ tab: TabRef, in workspaceId: String) {
+        switch tab {
+        case .session(let id): closeSession(id, in: workspaceId)
+        case .diff(let id):    closeDiffTab(id, in: workspaceId)
+        }
+    }
+
+    /// The tab that takes over when `tab` closes: the one after it in
+    /// `order`, else the one before.
+    private static func neighbour(of tab: TabRef, in order: [TabRef]) -> TabRef? {
+        guard let idx = order.firstIndex(of: tab) else { return nil }
+        let rest = order.filter { $0 != tab }
+        return idx < rest.count ? rest[idx] : rest.last
     }
 
     // MARK: - Git actions
@@ -897,7 +960,9 @@ final class AppState: ObservableObject {
         )
         let ws = workspaceState(for: workspace.id)
         ws.sessions.append(session)
+        ws.tabOrder.append(.session(session.id))
         ws.activeSessionId = session.id
+        ws.activeDiffTabId = nil
         Task { await session.startIfNeeded() }
     }
 
@@ -1194,13 +1259,16 @@ final class AppState: ObservableObject {
         workspaceStates.values.contains { !$0.sessions.isEmpty }
     }
 
-    /// Close one tab. Picks a neighbour to activate; if it was the last tab,
-    /// spawns a fresh one with the default agent so the workspace is never
-    /// empty (the surface would otherwise show only a spinner).
+    /// Close one session tab, handing the strip over to its neighbour when it
+    /// was showing. Closing the last session closes the workspace, diff tabs
+    /// and all — they have nothing to show without a live worktree session.
     func closeSession(_ sessionId: String, in workspaceId: String) {
         let ws = workspaceState(for: workspaceId)
         guard let idx = ws.sessions.firstIndex(where: { $0.id == sessionId }) else { return }
+        let order = ws.orderedTabs
+        let wasShowing = ws.activeTab == .session(sessionId)
         let session = ws.sessions.remove(at: idx)
+        ws.tabOrder.removeAll { $0 == .session(sessionId) }
         session.terminate()
         // Detach from the incubator (or whichever container hosts it) so
         // dropping the PTYSession actually releases the AppTerminalView —
@@ -1215,26 +1283,29 @@ final class AppState: ObservableObject {
 
         if ws.sessions.isEmpty {
             closeWorkspace(workspaceId)
+        } else if wasShowing, let next = Self.neighbour(of: .session(sessionId), in: order) {
+            selectTab(next, in: workspaceId)
         }
     }
 
-    /// Move one session to a target final index. Used by the tab strip's
-    /// drag reorder; the callsite computes the destination once on drag-end
-    /// so we don't thrash observers mid-drag.
-    func moveSession(_ sourceId: String, toIndex newIndex: Int, in workspaceId: String) {
+    /// Move one tab to a target final index. Used by the tab strip's drag
+    /// reorder; the callsite computes the destination once on drag-end so we
+    /// don't thrash observers mid-drag.
+    func moveTab(_ tab: TabRef, toIndex newIndex: Int, in workspaceId: String) {
         let ws = workspaceState(for: workspaceId)
-        guard let from = ws.sessions.firstIndex(where: { $0.id == sourceId }),
-              newIndex >= 0, newIndex < ws.sessions.count, from != newIndex else { return }
-        let item = ws.sessions.remove(at: from)
-        ws.sessions.insert(item, at: newIndex)
+        var order = ws.orderedTabs
+        guard let from = order.firstIndex(of: tab),
+              newIndex >= 0, newIndex < order.count, from != newIndex else { return }
+        order.insert(order.remove(at: from), at: newIndex)
+        ws.tabOrder = order
     }
 
     /// Activate the Nth tab (1-indexed) of the active workspace. Used by ⌘1…⌘9.
-    func selectSessionByIndex(_ oneBased: Int) {
+    func selectTabByIndex(_ oneBased: Int) {
         guard let wsId = selectedWorkspaceId else { return }
-        let sessions = workspaceState(for: wsId).sessions
-        guard oneBased >= 1, oneBased <= sessions.count else { return }
-        selectSession(sessions[oneBased - 1].id, in: wsId)
+        let tabs = workspaceState(for: wsId).orderedTabs
+        guard oneBased >= 1, oneBased <= tabs.count else { return }
+        selectTab(tabs[oneBased - 1], in: wsId)
     }
 
     // MARK: - Run script
@@ -1312,14 +1383,14 @@ final class AppState: ObservableObject {
     }
 
     /// Cycle to the next or previous tab of the active workspace. Wraps.
-    func cycleSession(forward: Bool) {
+    func cycleTab(forward: Bool) {
         guard let wsId = selectedWorkspaceId else { return }
         let ws = workspaceState(for: wsId)
-        guard !ws.sessions.isEmpty,
-              let activeId = ws.activeSessionId,
-              let idx = ws.sessions.firstIndex(where: { $0.id == activeId }) else { return }
-        let next = (idx + (forward ? 1 : -1) + ws.sessions.count) % ws.sessions.count
-        selectSession(ws.sessions[next].id, in: wsId)
+        let tabs = ws.orderedTabs
+        guard let active = ws.activeTab,
+              let idx = tabs.firstIndex(of: active) else { return }
+        let next = (idx + (forward ? 1 : -1) + tabs.count) % tabs.count
+        selectTab(tabs[next], in: wsId)
     }
 
     /// Move through already-open workspaces as a vertical axis. Keyboard
@@ -1636,6 +1707,9 @@ final class AppState: ObservableObject {
         }
         ws.sessions.removeAll()
         ws.activeSessionId = nil
+        ws.diffTabs.removeAll()
+        ws.activeDiffTabId = nil
+        ws.tabOrder.removeAll()
 
         ws.setupController?.discard()
         ws.setupController = nil

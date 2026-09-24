@@ -7,13 +7,6 @@ enum InspectorTab: Hashable { case changes, pr, comments, run }
 struct InspectorView: View {
     @EnvironmentObject private var state: AppState
     @State private var diffMode: DiffMode = .combined
-    /// Programmatic scroll control for the changes panel: collapsing a file
-    /// whose content extends above the viewport re-anchors the offset so
-    /// content below it doesn't jump (see FileDiffSection).
-    @State private var changesScrollPosition = ScrollPosition()
-    /// Live offset of the changes scroll view, written every scroll frame —
-    /// a non-observed box so tracking it doesn't re-render anything.
-    @State private var changesScrollOffset = MutableBox<CGFloat>(0)
 
     var body: some View {
         HStack(spacing: 0) {
@@ -67,20 +60,10 @@ struct InspectorView: View {
                     .padding(.top, 8)
                     .padding(.bottom, 4)
                 ScrollView {
-                    ChangesPanel(
-                        mode: diffMode,
-                        scrollPosition: $changesScrollPosition,
-                        scrollOffset: changesScrollOffset
-                    )
-                    .padding(.vertical, 8)
+                    ChangesPanel(mode: diffMode)
+                        .padding(.vertical, 8)
                 }
                 .scrollIndicators(.visible)
-                .scrollPosition($changesScrollPosition)
-                .onScrollGeometryChange(for: CGFloat.self) { geo in
-                    geo.contentOffset.y
-                } action: { _, y in
-                    changesScrollOffset.value = y
-                }
             }
         case .pr:
             // Owns its own scrolling: the merge button is pinned in a footer

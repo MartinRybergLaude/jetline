@@ -3,8 +3,6 @@ import SwiftUI
 struct ChangesPanel: View {
     @EnvironmentObject private var state: AppState
     let mode: DiffMode
-    @Binding var scrollPosition: ScrollPosition
-    let scrollOffset: MutableBox<CGFloat>
 
     var body: some View {
         if let id = state.inspectorWorkspaceId,
@@ -12,9 +10,7 @@ struct ChangesPanel: View {
             ChangesPanelContent(
                 workspace: ws,
                 workspaceState: state.workspaceState(for: ws.id),
-                mode: mode,
-                scrollPosition: $scrollPosition,
-                scrollOffset: scrollOffset
+                mode: mode
             )
         } else {
             EmptyView()
@@ -23,11 +19,18 @@ struct ChangesPanel: View {
 }
 
 private struct ChangesPanelContent: View {
+    @EnvironmentObject private var state: AppState
     let workspace: Workspace
     let workspaceState: WorkspaceState
     let mode: DiffMode
-    @Binding var scrollPosition: ScrollPosition
-    let scrollOffset: MutableBox<CGFloat>
+    /// Full paths of folders the user has collapsed in the file tree.
+    @State private var collapsedFolders: Set<String> = []
+
+    /// Horizontal inset per tree level.
+    static let indentWidth: CGFloat = 12
+    /// Width reserved for a folder's disclosure chevron, so file names line
+    /// up with folder names at the same depth.
+    static let chevronWidth: CGFloat = 10
 
     var body: some View {
         let snap = snapshot
@@ -37,16 +40,17 @@ private struct ChangesPanelContent: View {
                 title: emptyTitle
             )
         } else {
-            LazyVStack(alignment: .leading,
-                       spacing: FileDiffSection.rowSpacing,
-                       pinnedViews: .sectionHeaders) {
+            LazyVStack(alignment: .leading, spacing: 2) {
                 summaryHeader(snap: snap)
-                ForEach(snap.files) { file in
-                    FileDiffSection(
-                        file: file,
-                        scrollPosition: $scrollPosition,
-                        scrollOffset: scrollOffset
-                    )
+                ForEach(DiffTree.rows(for: snap.files, collapsed: collapsedFolders)) { row in
+                    switch row {
+                    case .folder(let path, let name, let depth):
+                        folderRow(path: path, name: name)
+                            .padding(.leading, CGFloat(depth) * Self.indentWidth)
+                    case .file(let file, let depth):
+                        fileRow(file)
+                            .padding(.leading, CGFloat(depth) * Self.indentWidth)
+                    }
                 }
             }
             .padding(.horizontal, 12)
@@ -65,6 +69,62 @@ private struct ChangesPanelContent: View {
         case .combined: return "No changes vs \(workspace.baseBranch)"
         case .local:    return "No uncommitted changes"
         }
+    }
+
+    private func folderRow(path: String, name: String) -> some View {
+        let collapsed = collapsedFolders.contains(path)
+        return Button {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                if collapsed { collapsedFolders.remove(path) } else { collapsedFolders.insert(path) }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(width: Self.chevronWidth)
+                Image(systemName: "folder")
+                    .foregroundStyle(.secondary)
+                Text(name)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+            }
+            .font(.system(.caption, design: .monospaced))
+            .padding(.vertical, 3)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(path)
+    }
+
+    /// Opens the file's full diff as a tab in the main area.
+    private func fileRow(_ file: FileDiff) -> some View {
+        let isOpen = workspaceState.activeDiffTabId == file.id
+        return Button {
+            state.openDiffTab(path: file.path, mode: mode, in: workspace.id)
+        } label: {
+            HStack(spacing: 6) {
+                Color.clear.frame(width: Self.chevronWidth, height: 1)
+                FileStatusBadge(status: file.status)
+                Text((file.path as NSString).lastPathComponent)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Text("+\(file.additions)").foregroundStyle(Color.readableGreen)
+                Text("-\(file.deletions)").foregroundStyle(.red)
+            }
+            .font(.system(.caption, design: .monospaced))
+            .padding(.vertical, 3)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(
+            RoundedRectangle(cornerRadius: 4)
+                .fill(isOpen ? Color.accentColor.opacity(0.15) : .clear)
+                .padding(.horizontal, -4)
+        )
+        .help(file.path)
     }
 
     private func summaryHeader(snap: DiffSnapshot) -> some View {
