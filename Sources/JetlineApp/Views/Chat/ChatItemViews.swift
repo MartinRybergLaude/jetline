@@ -59,7 +59,7 @@ enum ChatSegment: Identifiable {
 
 extension MarkdownStyle {
     /// Chat body text: larger than the inspector's comment style.
-    static let chat = MarkdownStyle(bodySize: 13, codeSize: 12, blockSpacing: 10)
+    static let chat = MarkdownStyle(bodySize: 14, codeSize: 13, blockSpacing: 10)
 }
 
 // MARK: - Messages
@@ -79,7 +79,7 @@ struct UserMessageView: View {
                     confirmingRevert = true
                 } label: {
                     Image(systemName: "arrow.uturn.backward")
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.system(size: 12, weight: .medium))
                         .frame(width: 22, height: 22)
                         .contentShape(Rectangle())
                 }
@@ -104,11 +104,11 @@ struct UserMessageView: View {
                     }
                     if !message.text.isEmpty {
                         Text(message.text)
-                            .font(.system(size: 13))
+                            .font(.system(size: 14))
                             .textSelection(.enabled)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 8)
-                            .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+                            .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
             }
@@ -159,12 +159,12 @@ struct WorkGroupView: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(.system(size: 10, weight: .semibold))
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                     WorkGroupSummary(boxes: boxes)
                     Spacer(minLength: 0)
                 }
-                .font(.system(size: 12))
+                .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .contentShape(Rectangle())
             }
@@ -241,7 +241,7 @@ struct WorkRowView: View {
                         .truncationMode(.middle)
                     Spacer(minLength: 0)
                 }
-                .font(.system(size: 12))
+                .font(.system(size: 13))
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -275,9 +275,9 @@ struct WorkRowView: View {
         case let .command(command):
             HStack(spacing: 6) {
                 Text(command.command.split(whereSeparator: \.isNewline).first.map(String.init) ?? command.command)
-                    .font(.system(size: 12, design: .monospaced))
+                    .font(.system(size: 13, design: .monospaced))
                 if let code = command.exitCode, code != 0 {
-                    Text("exit \(code)").foregroundStyle(.red).font(.system(size: 11))
+                    Text("exit \(code)").foregroundStyle(.red).font(.system(size: 12))
                 }
             }
         case let .fileChange(change):
@@ -331,7 +331,7 @@ struct WorkRowView: View {
                     if let diff = edit.diff, !diff.isEmpty {
                         VStack(alignment: .leading, spacing: 2) {
                             if change.edits.count > 1 {
-                                Text(relative(edit.path)).font(.system(size: 11, weight: .medium))
+                                Text(relative(edit.path)).font(.system(size: 12, weight: .medium))
                             }
                             InlineDiffView(diff: diff)
                         }
@@ -350,7 +350,7 @@ struct WorkRowView: View {
         case let .subagent(agent):
             VStack(alignment: .leading, spacing: 6) {
                 if let prompt = agent.prompt {
-                    Text(prompt).font(.system(size: 12)).foregroundStyle(.secondary).textSelection(.enabled)
+                    Text(prompt).font(.system(size: 13)).foregroundStyle(.secondary).textSelection(.enabled)
                 }
                 if let result = agent.result, !result.isEmpty {
                     MarkdownView(blocks: MarkdownParser.parse(result), style: .comment)
@@ -358,7 +358,7 @@ struct WorkRowView: View {
             }
         case let .reasoning(text):
             Text(text)
-                .font(.system(size: 12))
+                .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -386,13 +386,13 @@ private struct StatusGlyph: View {
         case .inProgress:
             ProgressView().controlSize(.mini)
         case .completed:
-            Image(systemName: symbol).foregroundStyle(.secondary).font(.system(size: 10))
+            Image(systemName: symbol).foregroundStyle(.secondary).font(.system(size: 11))
         case .failed:
-            Image(systemName: "xmark.circle.fill").foregroundStyle(.red).font(.system(size: 10))
+            Image(systemName: "xmark.circle.fill").foregroundStyle(.red).font(.system(size: 11))
         case .declined:
-            Image(systemName: "hand.raised.fill").foregroundStyle(.orange).font(.system(size: 10))
+            Image(systemName: "hand.raised.fill").foregroundStyle(.orange).font(.system(size: 11))
         case .interrupted:
-            Image(systemName: "stop.circle").foregroundStyle(.secondary).font(.system(size: 10))
+            Image(systemName: "stop.circle").foregroundStyle(.secondary).font(.system(size: 11))
         }
     }
 }
@@ -407,7 +407,7 @@ struct DiffCounts: View {
             if adds > 0 { Text("+\(adds)").foregroundStyle(Color.readableGreen) }
             if dels > 0 { Text("−\(dels)").foregroundStyle(.red) }
         }
-        .font(.system(size: 11, weight: .medium, design: .monospaced))
+        .font(.system(size: 12, weight: .medium, design: .monospaced))
     }
 
     static func counts(_ diff: String?) -> (Int, Int) {
@@ -433,7 +433,7 @@ struct MonospaceBlock: View {
         VStack(alignment: .leading, spacing: 0) {
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(clipped ? lines.suffix(maxLines).joined(separator: "\n") : text)
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.system(size: 12, design: .monospaced))
                     .textSelection(.enabled)
                     .fixedSize(horizontal: true, vertical: false)
                     .padding(8)
@@ -441,7 +441,7 @@ struct MonospaceBlock: View {
             if clipped {
                 Button("Show all \(lines.count) lines") { showAll = true }
                     .buttonStyle(.link)
-                    .font(.system(size: 11))
+                    .font(.system(size: 12))
                     .padding([.horizontal, .bottom], 8)
             }
         }
@@ -464,7 +464,7 @@ struct InlineDiffView: View {
                     let raw = String(line)
                     let kind = DiffLineTint.kind(ofRawLine: raw)
                     Text(raw.isEmpty ? " " : raw)
-                        .font(.system(size: 11, design: .monospaced))
+                        .font(.system(size: 12, design: .monospaced))
                         .foregroundStyle(kind == nil ? Color.secondary : Color.primary)
                         .padding(.horizontal, 8)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -493,11 +493,11 @@ struct PlanCardView: View {
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "list.bullet.clipboard")
-                        Text("Plan").font(.system(size: 12, weight: .semibold))
+                        Text("Plan").font(.system(size: 13, weight: .semibold))
                         Spacer()
                         Image(systemName: "chevron.down")
                             .rotationEffect(.degrees(expanded ? 0 : -90))
-                            .font(.system(size: 10))
+                            .font(.system(size: 11))
                     }
                     .foregroundStyle(.secondary)
                     .contentShape(Rectangle())
@@ -527,7 +527,7 @@ struct NoticeView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
-            .font(.system(size: 12))
+            .font(.system(size: 13))
         }
     }
 
@@ -552,7 +552,7 @@ struct CompactionView: View {
     var body: some View {
         HStack(spacing: 8) {
             Rectangle().fill(Color.secondary.opacity(0.25)).frame(height: 0.5)
-            Text("Context compacted").font(.system(size: 11)).foregroundStyle(.secondary).fixedSize()
+            Text("Context compacted").font(.system(size: 12)).foregroundStyle(.secondary).fixedSize()
             Rectangle().fill(Color.secondary.opacity(0.25)).frame(height: 0.5)
         }
     }

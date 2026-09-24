@@ -20,7 +20,8 @@ struct ChatTimelineView: View {
             }
             .frame(maxWidth: 820)
             .padding(.horizontal, 24)
-            .padding(.vertical, 20)
+            .padding(.top, 52)
+            .padding(.bottom, 20)
             .frame(maxWidth: .infinity)
         }
         .scrollPosition($position)
@@ -42,7 +43,7 @@ struct ChatTimelineView: View {
                     withAnimation(.easeOut(duration: 0.2)) { position.scrollTo(edge: .bottom) }
                 } label: {
                     Image(systemName: "arrow.down")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: 13, weight: .semibold))
                         .frame(width: 28, height: 28)
                 }
                 .buttonStyle(.plain)
@@ -127,11 +128,11 @@ private struct TurnFooter: View {
             }
         case .interrupted:
             Label("Interrupted", systemImage: "stop.circle")
-                .font(.system(size: 12))
+                .font(.system(size: 13))
                 .foregroundStyle(.secondary)
         case .failed:
             Label(turn.errorMessage ?? "The turn failed.", systemImage: "exclamationmark.triangle.fill")
-                .font(.system(size: 12))
+                .font(.system(size: 13))
                 .foregroundStyle(.red)
                 .textSelection(.enabled)
         }
@@ -153,7 +154,7 @@ private struct WorkingIndicator: View {
                     Text("Working · \(Self.format(context.date.timeIntervalSince(since)))")
                 }
             }
-            .font(.system(size: 12))
+            .font(.system(size: 13))
             .foregroundStyle(.secondary)
         }
     }
@@ -187,13 +188,13 @@ private struct ChangedFilesCard: View {
                         Text("+\(stat.additions)").foregroundStyle(Color.readableGreen)
                         Text("−\(stat.deletions)").foregroundStyle(.red)
                     }
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
                     Spacer()
                     Image(systemName: "chevron.down")
                         .rotationEffect(.degrees(expanded ? 0 : -90))
-                        .font(.system(size: 10))
+                        .font(.system(size: 11))
                 }
-                .font(.system(size: 12))
+                .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
@@ -230,13 +231,13 @@ private struct ChangedFilesCard: View {
             } label: {
                 HStack(spacing: 8) {
                     FileStatusBadge(status: file.status)
-                    Text(file.path).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
+                    Text(file.path).font(.system(size: 13)).lineLimit(1).truncationMode(.middle)
                     Spacer()
                     HStack(spacing: 3) {
                         if file.additions > 0 { Text("+\(file.additions)").foregroundStyle(Color.readableGreen) }
                         if file.deletions > 0 { Text("−\(file.deletions)").foregroundStyle(.red) }
                     }
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.system(size: 12, design: .monospaced))
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
@@ -245,7 +246,7 @@ private struct ChangedFilesCard: View {
             .buttonStyle(.plain)
             if openFile == file.path {
                 if file.isBinary {
-                    Text("Binary file").font(.system(size: 11)).foregroundStyle(.secondary).padding(.horizontal, 10)
+                    Text("Binary file").font(.system(size: 12)).foregroundStyle(.secondary).padding(.horizontal, 10)
                 } else {
                     InlineDiffView(diff: file.hunks.map { hunk in
                         ([hunk.header] + hunk.lines.map { line in

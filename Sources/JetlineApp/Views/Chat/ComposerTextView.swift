@@ -37,7 +37,7 @@ struct ComposerTextView: NSViewRepresentable {
         var caret: Int
     }
 
-    static let minHeight: CGFloat = 22
+    static let minHeight: CGFloat = 24
     static let maxHeight: CGFloat = 220
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -56,7 +56,7 @@ struct ComposerTextView: NSViewRepresentable {
         textView.importsGraphics = false
         textView.allowsUndo = true
         textView.drawsBackground = false
-        textView.font = .systemFont(ofSize: 13)
+        textView.font = .systemFont(ofSize: 14)
         textView.textColor = .labelColor
         textView.textContainerInset = NSSize(width: 0, height: 3)
         textView.textContainer?.lineFragmentPadding = 0
@@ -167,7 +167,7 @@ final class ComposerNSTextView: NSTextView {
         guard string.isEmpty, !placeholder.isEmpty else { return }
         let attributes: [NSAttributedString.Key: Any] = [
             .foregroundColor: NSColor.placeholderTextColor,
-            .font: font ?? .systemFont(ofSize: 13)
+            .font: font ?? .systemFont(ofSize: 14)
         ]
         let origin = NSPoint(x: textContainerInset.width, y: textContainerInset.height)
         (placeholder as NSString).draw(at: origin, withAttributes: attributes)

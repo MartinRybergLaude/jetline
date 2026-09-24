@@ -7,45 +7,45 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
             ChatTimelineView(session: session)
+                .overlay(alignment: .topTrailing) { floatingActions }
+            Divider()
             bottom
                 .frame(maxWidth: 820)
                 .padding(.horizontal, 24)
-                .padding(.bottom, 16)
-                .padding(.top, 6)
+                .padding(.vertical, 12)
                 .frame(maxWidth: .infinity)
         }
         .background(Color(nsColor: .textBackgroundColor))
+        // A fixed floor, independent of content. Otherwise the detail
+        // column's minimum is derived from whatever the lazy timeline and
+        // composer currently lay out, which shifts as a divider drag
+        // squeezes them; NSSplitView then re-runs constraints every pass
+        // and AppKit aborts with `_postWindowNeedsUpdateConstraints`.
+        .frame(minWidth: 320, maxWidth: .infinity)
+        .clipped()
         .onAppear { session.connectIfNeeded() }
     }
 
-    // MARK: Header
+    // MARK: Floating actions
 
-    private var header: some View {
+    private var floatingActions: some View {
         HStack(spacing: 8) {
-            AgentMark(agent: session.provider.agentKind, size: 16)
-            Text(session.title)
-                .font(.system(size: 13, weight: .semibold))
-                .lineLimit(1)
-                .truncationMode(.tail)
             ConnectionBadge(connection: session.connection)
-            Spacer()
             if session.terminalResumeArgs != nil {
                 Button {
                     state.openChatInTerminal(session)
                 } label: {
                     Label("Open in Terminal", systemImage: "terminal")
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.glass)
+                .buttonBorderShape(.capsule)
                 .controlSize(.small)
                 .disabled(session.isWorking)
                 .help("Continue this conversation in \(session.provider.displayName)'s own terminal UI")
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        .padding(12)
     }
 
     // MARK: Bottom
@@ -86,12 +86,12 @@ private struct ConnectionBadge: View {
                 ProgressView().controlSize(.mini)
                 Text("Starting…")
             }
-            .font(.system(size: 11))
+            .font(.system(size: 12))
             .foregroundStyle(.secondary)
         case .failed:
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
-                .font(.system(size: 11))
+                .font(.system(size: 12))
         case .connected, .disconnected:
             EmptyView()
         }
@@ -108,7 +108,7 @@ private struct BannerView<Actions: View>: View {
             Image(systemName: level == .error ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
                 .foregroundStyle(level == .error ? Color.red : Color.orange)
             Text(text)
-                .font(.system(size: 12))
+                .font(.system(size: 13))
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
             actions.controlSize(.small)
@@ -133,15 +133,15 @@ private struct TodoStrip: View {
                 HStack(spacing: 6) {
                     Image(systemName: "checklist")
                     Text("\(done)/\(todos.count)")
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
                     Text(current?.text ?? (done == todos.count ? "All steps done" : "Plan"))
                         .lineLimit(1)
                     Spacer()
                     Image(systemName: "chevron.up")
                         .rotationEffect(.degrees(expanded ? 180 : 0))
-                        .font(.system(size: 9))
+                        .font(.system(size: 10))
                 }
-                .font(.system(size: 12))
+                .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .contentShape(Rectangle())
             }
@@ -152,12 +152,12 @@ private struct TodoStrip: View {
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
                             Image(systemName: icon(todo.status))
                                 .foregroundStyle(todo.status == .completed ? Color.readableGreen : .secondary)
-                                .font(.system(size: 11))
+                                .font(.system(size: 12))
                             Text(todo.text)
                                 .strikethrough(todo.status == .completed)
                                 .foregroundStyle(todo.status == .completed ? .secondary : .primary)
                         }
-                        .font(.system(size: 12))
+                        .font(.system(size: 13))
                     }
                 }
                 .padding(.leading, 4)

@@ -122,9 +122,6 @@ struct ChatComposer: View {
                 .frame(height: height)
                 controls
             }
-            .padding(10)
-            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.secondary.opacity(0.25), lineWidth: 0.5))
             .overlay(alignment: .topLeading) {
                 if !suggestions.isEmpty {
                     suggestionList
@@ -138,37 +135,27 @@ struct ChatComposer: View {
         if session.isWorking {
             return session.provider == .codex ? "Steer the agent…" : "Queue a follow-up…"
         }
-        return session.interactionMode == .plan ? "Describe what to plan…" : "Ask \(session.provider.displayName)…"
+        return "Ask \(session.provider.displayName)…"
     }
 
     // MARK: Controls
 
     private var controls: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             ModelMenu(session: session)
             RuntimeModeMenu(session: session)
-            Toggle(isOn: Binding(
-                get: { session.interactionMode == .plan },
-                set: { session.setInteractionMode($0 ? .plan : .normal) }
-            )) {
-                Label("Plan", systemImage: "list.bullet.clipboard")
-            }
-            .toggleStyle(.button)
-            .buttonStyle(.borderless)
-            .controlSize(.small)
-            .help("Plan mode: the agent researches and proposes a plan before changing anything")
             Spacer()
             if let usage = session.usage { ContextMeter(usage: usage) }
             if session.isWorking && session.draft.nonBlank == nil && session.draftImages.isEmpty {
                 Button(action: session.interrupt) {
-                    Image(systemName: "stop.circle.fill").font(.system(size: 22))
+                    Image(systemName: "stop.circle.fill").font(.system(size: 24))
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.primary)
                 .help("Stop (Esc)")
             } else {
                 Button(action: submit) {
-                    Image(systemName: "arrow.up.circle.fill").font(.system(size: 22))
+                    Image(systemName: "arrow.up.circle.fill").font(.system(size: 24))
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(canSend ? Color.accentColor : Color.secondary.opacity(0.5))
@@ -186,17 +173,17 @@ struct ChatComposer: View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(session.queued) { message in
                 HStack(spacing: 6) {
-                    Image(systemName: "clock").font(.system(size: 10))
+                    Image(systemName: "clock").font(.system(size: 11))
                     Text(message.text).lineLimit(1)
                     Spacer()
                     Button {
                         session.removeQueued(message)
                     } label: {
-                        Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+                        Image(systemName: "xmark").font(.system(size: 10, weight: .bold))
                     }
                     .buttonStyle(.borderless)
                 }
-                .font(.system(size: 12))
+                .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
@@ -232,11 +219,11 @@ struct ChatComposer: View {
             ForEach(Array(suggestions.enumerated()), id: \.element.id) { index, suggestion in
                 HStack(spacing: 8) {
                     Text(suggestion.title)
-                        .font(.system(size: 12, design: completion?.kind == .file ? .monospaced : .default))
+                        .font(.system(size: 13, design: completion?.kind == .file ? .monospaced : .default))
                         .lineLimit(1)
                         .truncationMode(.head)
                     if let detail = suggestion.detail {
-                        Text(detail).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                        Text(detail).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
                     }
                     Spacer(minLength: 0)
                 }
@@ -349,10 +336,9 @@ private struct ModelMenu: View {
                 }
             }
         } label: {
-            Text(title).font(.system(size: 12))
+            Text(title)
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
+        .pillMenu()
         .help(session.modelOption?.description ?? "Model")
     }
 
@@ -395,11 +381,21 @@ private struct RuntimeModeMenu: View {
             }
         } label: {
             Label(session.runtimeMode.displayName, systemImage: session.runtimeMode.symbol)
-                .font(.system(size: 12))
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
+        .pillMenu()
         .help(session.runtimeMode.summary)
+    }
+}
+
+private extension View {
+    /// Capsule dropdown button for the composer's option menus.
+    func pillMenu() -> some View {
+        menuStyle(.button)
+            .buttonStyle(.bordered)
+            .buttonBorderShape(.capsule)
+            .menuIndicator(.visible)
+            .controlSize(.small)
+            .fixedSize()
     }
 }
 
@@ -419,7 +415,7 @@ private struct ContextMeter: View {
                 }
                 .frame(width: 11, height: 11)
                 Text("\(Int((fraction * 100).rounded()))%")
-                    .font(.system(size: 10, design: .monospaced))
+                    .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
         }
