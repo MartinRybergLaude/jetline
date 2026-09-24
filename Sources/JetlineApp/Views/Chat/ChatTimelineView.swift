@@ -48,10 +48,10 @@ struct ChatTimelineView: View {
                     Image(systemName: "arrow.down")
                         .font(.system(size: 14, weight: .semibold))
                         .frame(width: 28, height: 28)
+                        .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .background(.regularMaterial, in: Circle())
-                .overlay(Circle().stroke(Color.secondary.opacity(0.2), lineWidth: 0.5))
+                .glassEffect(.regular.interactive(), in: .circle)
                 .padding(16)
                 .help("Scroll to bottom")
             }
