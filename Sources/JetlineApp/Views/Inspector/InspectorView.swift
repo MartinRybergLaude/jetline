@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Top-level so `AppState` can drive selection from outside the view (e.g.
 /// switch to `.run` when a fresh workspace's setup script kicks off).
-enum InspectorTab: Hashable { case changes, pr, comments, run }
+enum InspectorTab: Hashable { case changes, pr, run }
 
 struct InspectorView: View {
     @EnvironmentObject private var state: AppState
@@ -35,14 +35,14 @@ struct InspectorView: View {
     }
 
     /// A repository's base checkout has no branch of its own to open a PR
-    /// from, so the PR and comments tabs would only ever spin.
+    /// from, so the PR tab would only ever spin.
     private var tabs: [InspectorTab] {
         if let id = state.inspectorWorkspaceId,
            let ws = state.workspaceById(id),
            state.isRepositoryBaseWorkspace(ws) {
             return [.changes, .run]
         }
-        return [.changes, .pr, .comments, .run]
+        return [.changes, .pr, .run]
     }
 
     /// macOS 27 leaves this edge unmarked: the `NSSplitDividerView` the
@@ -62,8 +62,7 @@ struct InspectorView: View {
 
     /// Only the changes panel is scrolled from here — the others own their
     /// scrolling because they pin something to an edge (run output
-    /// autoscrolls to the tail, comments pin a filter bar and composer, the
-    /// PR panel pins the merge footer).
+    /// autoscrolls to the tail, the PR panel pins the merge footer).
     @ViewBuilder
     private var content: some View {
         switch state.inspectorTab {
@@ -83,10 +82,6 @@ struct InspectorView: View {
             // Owns its own scrolling: the merge button is pinned in a footer
             // the rest of the panel scrolls under.
             PRPanel()
-        case .comments:
-            // Owns its own scrolling: the filter bar and the composer are
-            // pinned above and below the timeline.
-            CommentsPanel()
         case .run:
             RunOutputPanel()
         }
@@ -96,7 +91,6 @@ struct InspectorView: View {
         switch tab {
         case .changes: return "Changes"
         case .pr: return "Pull request"
-        case .comments: return "Comments"
         case .run: return "Run output"
         }
     }
@@ -107,15 +101,13 @@ struct InspectorView: View {
         case .changes:
             Image(systemName: "plusminus")
         case .pr:
-            if let nsImage = Self.assetCache["PRStateNone"] {
-                Image(nsImage: nsImage).resizable().scaledToFit().frame(width: 13, height: 13)
-            }
-        case .comments:
             // The count rides alongside the icon rather than as a corner
             // badge: `CapsuleTabs` segments are equal-width capsules, and an
             // overlaid badge clips against the selected segment's fill.
             HStack(spacing: 2) {
-                Image(systemName: "bubble.left.and.bubble.right")
+                if let nsImage = Self.assetCache["PRStateNone"] {
+                    Image(nsImage: nsImage).resizable().scaledToFit().frame(width: 13, height: 13)
+                }
                 if unresolvedCommentCount > 0 {
                     Text("\(unresolvedCommentCount)")
                         .font(.system(size: 10, weight: .semibold, design: .rounded))

@@ -1,77 +1,35 @@
 import SwiftUI
 
 /// The PR's whole comment stream — description, issue comments, review
-/// summaries and inline threads — in one scrollable timeline, with a
-/// composer pinned to the bottom.
+/// summaries and inline threads — as the lower half of the PR panel, with
+/// the composer at its end the way GitHub's PR page has it.
 ///
-/// Owns its own layout (rather than being wrapped in `InspectorView`'s
-/// shared `ScrollView`) so the filter bar and the composer stay put while
-/// the timeline scrolls.
-struct CommentsPanel: View {
-    @EnvironmentObject private var state: AppState
-
-    var body: some View {
-        if let id = state.inspectorWorkspaceId,
-           let ws = state.workspaceById(id) {
-            CommentsPanelContent(
-                workspace: ws,
-                workspaceState: state.workspaceState(for: ws.id)
-            )
-        } else {
-            EmptyView()
-        }
-    }
-}
-
-private struct CommentsPanelContent: View {
+/// Emits flat rows rather than one container so the panel's `LazyVStack`
+/// still only builds the cards on screen.
+struct PRConversationSection: View {
     @EnvironmentObject private var state: AppState
     let workspace: Workspace
     let workspaceState: WorkspaceState
     @State private var hideResolved = false
 
     var body: some View {
-        content
-        // Re-entered whenever the panel appears or the workspace changes, and
-        // cancelled when either goes away — so the poll only runs while
-        // someone is actually reading the tab. `refresh` collapses requests
-        // that land inside its freshness window, so flipping tabs is free.
-        .task(id: workspace.id) {
-            while !Task.isCancelled {
-                await state.conversationStore.refresh(workspaceId: workspace.id)
-                try? await Task.sleep(for: .seconds(45))
-            }
-        }
-    }
-
-    /// Gate on the PR snapshot first: with no PR there is nothing to fetch.
-    @ViewBuilder
-    private var content: some View {
-        switch workspaceState.pr {
-        case .loading, .error, .absent:
-            PRSnapshotPlaceholder(
-                snapshot: workspaceState.pr,
-                branchName: workspace.branchName
-            )
-        case .loaded:
-            conversationBody
-        }
-    }
-
-    @ViewBuilder
-    private var conversationBody: some View {
         switch workspaceState.conversation {
         case .idle, .loading:
-            InspectorPlaceholder(
-                systemImage: "arrow.triangle.2.circlepath",
-                title: "Loading comments…"
-            )
+            header(nil)
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Loading comments…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         case let .error(message):
-            VStack(spacing: 0) {
-                InspectorPlaceholder(
-                    systemImage: "exclamationmark.triangle",
-                    title: "Couldn't load comments",
-                    subtitle: message
-                )
+            header(nil)
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Couldn't load comments", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                Text(message)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 Button("Try again") {
                     Task { await state.conversationStore.refresh(workspaceId: workspace.id, force: true) }
                 }
@@ -79,80 +37,51 @@ private struct CommentsPanelContent: View {
                 .font(.caption)
             }
         case let .loaded(conversation):
-            loaded(conversation)
-        }
-    }
-
-    private func loaded(_ conversation: PRConversation) -> some View {
-        VStack(spacing: 0) {
-            CommentsToolbar(
-                conversation: conversation,
-                hideResolved: $hideResolved,
-                workspaceId: workspace.id
-            )
-            Divider()
-
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 10) {
-                    if let description = conversation.description {
-                        CommentCard(comment: description, role: .description)
-                    }
-                    ForEach(visibleItems(conversation)) { item in
-                        TimelineItemView(item: item, workspaceId: workspace.id)
-                    }
-                    if conversation.isEmpty {
-                        InspectorPlaceholder(
-                            systemImage: "bubble.left",
-                            title: "No comments yet"
-                        )
-                    }
-                    if conversation.truncated {
-                        Text("Only the first 100 comments, reviews and threads are shown.")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
+            header(conversation)
+            if let description = conversation.description {
+                CommentCard(comment: description, role: .description)
+                    .textSelection(.enabled)
             }
-            .scrollIndicators(.visible)
-
-            Divider()
+            ForEach(visibleItems(conversation)) { item in
+                TimelineItemView(item: item, workspaceId: workspace.id)
+                    .textSelection(.enabled)
+            }
+            if conversation.isEmpty {
+                Text("No comments yet.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if conversation.truncated {
+                Text("Only the first 100 comments, reviews and threads are shown.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
             CommentComposer(workspaceId: workspace.id, number: conversation.number)
         }
-        .textSelection(.enabled)
     }
 
-    private func visibleItems(_ conversation: PRConversation) -> [PRTimelineItem] {
-        hideResolved ? conversation.items.filter { !$0.isResolvedThread } : conversation.items
-    }
-}
-
-// MARK: - Toolbar
-
-private struct CommentsToolbar: View {
-    @EnvironmentObject private var state: AppState
-    let conversation: PRConversation
-    @Binding var hideResolved: Bool
-    let workspaceId: String
-    @State private var isRefreshing = false
-
-    var body: some View {
-        HStack(spacing: 8) {
-            if conversation.unresolvedCount > 0 {
-                Label("\(conversation.unresolvedCount) unresolved", systemImage: "circle.dotted")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            } else if conversation.resolvedCount > 0 {
-                Label("All resolved", systemImage: "checkmark.circle.fill")
-                    .font(.caption)
-                    .foregroundStyle(Color.readableGreen)
+    /// Laid out like the Review and Checks headers above it, so the panel
+    /// reads as one column of sections.
+    private func header(_ conversation: PRConversation?) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text("Conversation")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                if let conversation {
+                    if conversation.unresolvedCount > 0 {
+                        Label("\(conversation.unresolvedCount) unresolved", systemImage: "circle.dotted")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    } else if conversation.resolvedCount > 0 {
+                        Label("All resolved", systemImage: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(Color.readableGreen)
+                    }
+                }
             }
-
-            Spacer(minLength: 0)
-
-            if conversation.resolvedCount > 0 {
+            if let conversation, conversation.resolvedCount > 0 {
                 Toggle(isOn: $hideResolved) {
                     Text("Hide resolved (\(conversation.resolvedCount))")
                 }
@@ -160,17 +89,12 @@ private struct CommentsToolbar: View {
                 .controlSize(.small)
                 .font(.caption)
             }
-
-            RefreshButton(isRefreshing: isRefreshing, help: "Refresh comments") {
-                isRefreshing = true
-                Task {
-                    await state.conversationStore.refresh(workspaceId: workspaceId, force: true)
-                    isRefreshing = false
-                }
-            }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .padding(.top, 4)
+    }
+
+    private func visibleItems(_ conversation: PRConversation) -> [PRTimelineItem] {
+        hideResolved ? conversation.items.filter { !$0.isResolvedThread } : conversation.items
     }
 }
 
@@ -358,7 +282,7 @@ enum RelativeTime {
 
 // MARK: - Composer
 
-/// Top-level "comment on this PR" box, pinned below the timeline.
+/// Top-level "comment on this PR" box, at the end of the timeline.
 private struct CommentComposer: View {
     @EnvironmentObject private var state: AppState
     let workspaceId: String
@@ -389,8 +313,6 @@ private struct CommentComposer: View {
                 )
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
     }
 
     private func submit() {

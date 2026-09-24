@@ -27,9 +27,7 @@ struct InspectorPlaceholder: View {
     }
 }
 
-/// The three non-`.loaded` PR states, rendered identically by the PR and
-/// Comments tabs. Shared so the two can't drift apart — in particular the
-/// "no PR on the remote" wording, which names the branch.
+/// The three non-`.loaded` PR states, as the PR tab renders them.
 struct PRSnapshotPlaceholder: View {
     let snapshot: PRSnapshot
     let branchName: String

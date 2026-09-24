@@ -41,6 +41,16 @@ private struct PRPanelContent: View {
         }
         .scrollIndicators(.visible)
         .safeAreaInset(edge: .bottom, spacing: 0) { mergeFooter }
+        // Re-entered whenever the panel appears or the workspace changes, and
+        // cancelled when either goes away — so the poll only runs while
+        // someone is actually reading the tab. `refresh` collapses requests
+        // that land inside its freshness window, so flipping tabs is free.
+        .task(id: workspace.id) {
+            while !Task.isCancelled {
+                await state.conversationStore.refresh(workspaceId: workspace.id)
+                try? await Task.sleep(for: .seconds(45))
+            }
+        }
         // Asking is what makes GitHub compute mergeability: a PR nobody has
         // touched for a while answers `UNKNOWN` first and its real state on
         // the next query. Keyed on the state itself, so it re-asks once and
@@ -68,16 +78,23 @@ private struct PRPanelContent: View {
                 branchName: workspace.branchName
             )
         case let .loaded(pr, checks):
-            VStack(alignment: .leading, spacing: 12) {
+            // Lazy for the conversation's sake: a long review can carry a
+            // hundred markdown cards, and only the visible ones should build.
+            LazyVStack(alignment: .leading, spacing: 12) {
                 PRHeaderCard(
                     pr: pr,
                     isRefreshing: workspaceState.isRefreshingPR,
                     onRefresh: {
                         state.requestPRRefresh(workspaceId: workspaceState.id)
+                        Task {
+                            await state.conversationStore.refresh(workspaceId: workspace.id, force: true)
+                        }
                     }
                 )
                 ReviewSection(pr: pr)
                 ChecksSection(checks: checks)
+                Divider()
+                PRConversationSection(workspace: workspace, workspaceState: workspaceState)
             }
             .padding(.horizontal, 12)
         }
@@ -569,29 +586,47 @@ private struct ReviewSection: View {
     }
 }
 
+/// Collapsed while every check has passed: then the list carries no news,
+/// and it would push the conversation below it off screen. Anything failing
+/// or still running opens it, until the user picks a side themselves.
 private struct ChecksSection: View {
     let checks: [CheckRun]
+    @State private var userExpanded: Bool?
+
+    private var isExpanded: Bool {
+        userExpanded ?? checks.contains { $0.bucket != .pass && $0.bucket != .skipping }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Text("Checks")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if !checks.isEmpty {
-                    Text(summary)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
+            Button {
+                userExpanded = !isExpanded
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 8, weight: .bold))
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .opacity(checks.isEmpty ? 0 : 1)
+                    Text("Checks")
+                        .font(.caption.weight(.semibold))
+                    Spacer()
+                    if !checks.isEmpty {
+                        Text(summary)
+                            .font(.system(.caption, design: .monospaced))
+                    }
                 }
+                .foregroundStyle(.secondary)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .disabled(checks.isEmpty)
 
             if checks.isEmpty {
                 Text("No checks reported.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 8)
-            } else {
+            } else if isExpanded {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(grouped, id: \.workflow) { group in
                         if !group.workflow.isEmpty {
