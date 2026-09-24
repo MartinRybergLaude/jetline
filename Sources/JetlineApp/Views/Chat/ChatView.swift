@@ -11,7 +11,7 @@ struct ChatView: View {
                 .overlay(alignment: .topTrailing) { floatingActions }
             Divider()
             bottom
-                .frame(maxWidth: 820)
+                .frame(maxWidth: 720)
                 .padding(.horizontal, 24)
                 .padding(.vertical, 12)
                 .frame(maxWidth: .infinity)
@@ -24,6 +24,7 @@ struct ChatView: View {
         // and AppKit aborts with `_postWindowNeedsUpdateConstraints`.
         .frame(minWidth: 320, maxWidth: .infinity)
         .clipped()
+        .environment(\.chatFontFamily, state.settings.chatFontFamily)
         .onAppear { session.connectIfNeeded() }
     }
 
@@ -86,12 +87,12 @@ private struct ConnectionBadge: View {
                 ProgressView().controlSize(.mini)
                 Text("Starting…")
             }
-            .font(.system(size: 12))
+            .font(.system(size: 14))
             .foregroundStyle(.secondary)
         case .failed:
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
-                .font(.system(size: 12))
+                .font(.system(size: 14))
         case .connected, .disconnected:
             EmptyView()
         }
@@ -108,7 +109,7 @@ private struct BannerView<Actions: View>: View {
             Image(systemName: level == .error ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
                 .foregroundStyle(level == .error ? Color.red : Color.orange)
             Text(text)
-                .font(.system(size: 13))
+                .font(.system(size: 15))
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
             actions.controlSize(.small)
@@ -133,15 +134,15 @@ private struct TodoStrip: View {
                 HStack(spacing: 6) {
                     Image(systemName: "checklist")
                     Text("\(done)/\(todos.count)")
-                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        .font(.system(size: 14, weight: .semibold, design: .monospaced))
                     Text(current?.text ?? (done == todos.count ? "All steps done" : "Plan"))
                         .lineLimit(1)
                     Spacer()
                     Image(systemName: "chevron.up")
                         .rotationEffect(.degrees(expanded ? 180 : 0))
-                        .font(.system(size: 10))
+                        .font(.system(size: 12))
                 }
-                .font(.system(size: 13))
+                .font(.system(size: 15))
                 .foregroundStyle(.secondary)
                 .contentShape(Rectangle())
             }
@@ -152,12 +153,12 @@ private struct TodoStrip: View {
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
                             Image(systemName: icon(todo.status))
                                 .foregroundStyle(todo.status == .completed ? Color.readableGreen : .secondary)
-                                .font(.system(size: 12))
+                                .font(.system(size: 14))
                             Text(todo.text)
                                 .strikethrough(todo.status == .completed)
                                 .foregroundStyle(todo.status == .completed ? .secondary : .primary)
                         }
-                        .font(.system(size: 13))
+                        .font(.system(size: 15))
                     }
                 }
                 .padding(.leading, 4)

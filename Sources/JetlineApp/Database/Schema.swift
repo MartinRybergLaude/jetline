@@ -333,5 +333,11 @@ enum Schema {
                 t.add(column: "codexChatEffort", .text)
             }
         }
+
+        migrator.registerMigration("v23_chat_font") { db in
+            try db.alter(table: "app_settings") { t in
+                t.add(column: "chatFontFamily", .text)
+            }
+        }
     }
 }

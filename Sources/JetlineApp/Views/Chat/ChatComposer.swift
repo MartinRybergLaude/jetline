@@ -173,17 +173,17 @@ struct ChatComposer: View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(session.queued) { message in
                 HStack(spacing: 6) {
-                    Image(systemName: "clock").font(.system(size: 11))
+                    Image(systemName: "clock").font(.system(size: 13))
                     Text(message.text).lineLimit(1)
                     Spacer()
                     Button {
                         session.removeQueued(message)
                     } label: {
-                        Image(systemName: "xmark").font(.system(size: 10, weight: .bold))
+                        Image(systemName: "xmark").font(.system(size: 12, weight: .bold))
                     }
                     .buttonStyle(.borderless)
                 }
-                .font(.system(size: 13))
+                .font(.system(size: 15))
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
@@ -219,11 +219,11 @@ struct ChatComposer: View {
             ForEach(Array(suggestions.enumerated()), id: \.element.id) { index, suggestion in
                 HStack(spacing: 8) {
                     Text(suggestion.title)
-                        .font(.system(size: 13, design: completion?.kind == .file ? .monospaced : .default))
+                        .font(.system(size: 15, design: completion?.kind == .file ? .monospaced : .default))
                         .lineLimit(1)
                         .truncationMode(.head)
                     if let detail = suggestion.detail {
-                        Text(detail).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
+                        Text(detail).font(.system(size: 14)).foregroundStyle(.secondary).lineLimit(1)
                     }
                     Spacer(minLength: 0)
                 }
@@ -415,7 +415,7 @@ private struct ContextMeter: View {
                 }
                 .frame(width: 11, height: 11)
                 Text("\(Int((fraction * 100).rounded()))%")
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.system(size: 13, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
         }

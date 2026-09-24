@@ -6,10 +6,11 @@ struct ChatTimelineView: View {
     let session: ChatSession
     @State private var position = ScrollPosition(edge: .bottom)
     @State private var isAtBottom = true
+    @State private var width: CGFloat = 0
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 18) {
+            LazyVStack(alignment: .leading, spacing: ChatTurnView.turnSpacing) {
                 if session.turns.isEmpty {
                     ChatEmptyState(provider: session.provider)
                 }
@@ -18,12 +19,14 @@ struct ChatTimelineView: View {
                         .id(turn.id)
                 }
             }
-            .frame(maxWidth: 820)
+            .frame(maxWidth: 720)
             .padding(.horizontal, 24)
             .padding(.top, 52)
             .padding(.bottom, 20)
             .frame(maxWidth: .infinity)
         }
+        .environment(\.markdownTableBreakoutWidth, max(width - 48, 0))
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .scrollPosition($position)
         .defaultScrollAnchor(.bottom, for: .initialOffset)
         .onScrollGeometryChange(for: Bool.self) { geometry in
@@ -43,7 +46,7 @@ struct ChatTimelineView: View {
                     withAnimation(.easeOut(duration: 0.2)) { position.scrollTo(edge: .bottom) }
                 } label: {
                     Image(systemName: "arrow.down")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 15, weight: .semibold))
                         .frame(width: 28, height: 28)
                 }
                 .buttonStyle(.plain)
@@ -78,8 +81,11 @@ struct ChatTurnView: View {
     let session: ChatSession
     let turn: ChatTurn
 
+    static let turnSpacing: CGFloat = 40
+    static let itemSpacing: CGFloat = 26
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Self.itemSpacing) {
             let segments = ChatSegment.segments(turn.items)
             ForEach(Array(segments.enumerated()), id: \.element.id) { index, segment in
                 switch segment {
@@ -89,6 +95,8 @@ struct ChatTurnView: View {
                         canRevert: session.canRevert && turn.status != .running && !session.isReverting,
                         onRevert: { session.revert(to: turn) }
                     )
+                    // Same space below as the turn gap above it.
+                    .padding(.bottom, Self.turnSpacing - Self.itemSpacing)
                 case let .message(box):
                     AssistantMessageView(box: box)
                 case let .work(boxes):
@@ -128,11 +136,11 @@ private struct TurnFooter: View {
             }
         case .interrupted:
             Label("Interrupted", systemImage: "stop.circle")
-                .font(.system(size: 13))
+                .font(.system(size: 15))
                 .foregroundStyle(.secondary)
         case .failed:
             Label(turn.errorMessage ?? "The turn failed.", systemImage: "exclamationmark.triangle.fill")
-                .font(.system(size: 13))
+                .font(.system(size: 15))
                 .foregroundStyle(.red)
                 .textSelection(.enabled)
         }
@@ -154,7 +162,7 @@ private struct WorkingIndicator: View {
                     Text("Working · \(Self.format(context.date.timeIntervalSince(since)))")
                 }
             }
-            .font(.system(size: 13))
+            .font(.system(size: 15))
             .foregroundStyle(.secondary)
         }
     }
@@ -188,13 +196,13 @@ private struct ChangedFilesCard: View {
                         Text("+\(stat.additions)").foregroundStyle(Color.readableGreen)
                         Text("−\(stat.deletions)").foregroundStyle(.red)
                     }
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .font(.system(size: 14, weight: .medium, design: .monospaced))
                     Spacer()
                     Image(systemName: "chevron.down")
                         .rotationEffect(.degrees(expanded ? 0 : -90))
-                        .font(.system(size: 11))
+                        .font(.system(size: 13))
                 }
-                .font(.system(size: 13))
+                .font(.system(size: 15))
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
@@ -231,13 +239,13 @@ private struct ChangedFilesCard: View {
             } label: {
                 HStack(spacing: 8) {
                     FileStatusBadge(status: file.status)
-                    Text(file.path).font(.system(size: 13)).lineLimit(1).truncationMode(.middle)
+                    Text(file.path).font(.system(size: 15)).lineLimit(1).truncationMode(.middle)
                     Spacer()
                     HStack(spacing: 3) {
                         if file.additions > 0 { Text("+\(file.additions)").foregroundStyle(Color.readableGreen) }
                         if file.deletions > 0 { Text("−\(file.deletions)").foregroundStyle(.red) }
                     }
-                    .font(.system(size: 12, design: .monospaced))
+                    .font(.system(size: 14, design: .monospaced))
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
@@ -246,7 +254,7 @@ private struct ChangedFilesCard: View {
             .buttonStyle(.plain)
             if openFile == file.path {
                 if file.isBinary {
-                    Text("Binary file").font(.system(size: 12)).foregroundStyle(.secondary).padding(.horizontal, 10)
+                    Text("Binary file").font(.system(size: 14)).foregroundStyle(.secondary).padding(.horizontal, 10)
                 } else {
                     InlineDiffView(diff: file.hunks.map { hunk in
                         ([hunk.header] + hunk.lines.map { line in

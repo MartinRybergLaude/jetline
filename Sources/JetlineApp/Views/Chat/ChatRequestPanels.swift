@@ -50,10 +50,10 @@ private struct ApprovalPanel: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: icon).foregroundStyle(.orange)
-                Text(approval.title).font(.system(size: 14, weight: .semibold))
+                Text(approval.title).font(.system(size: 16, weight: .semibold))
                 Spacer()
                 if pendingCount > 1 {
-                    Text("\(pendingCount) waiting").font(.system(size: 12)).foregroundStyle(.secondary)
+                    Text("\(pendingCount) waiting").font(.system(size: 14)).foregroundStyle(.secondary)
                 }
             }
             if let diff = proposedDiff {
@@ -66,7 +66,7 @@ private struct ApprovalPanel: View {
             if let detail = displayDetail {
                 ScrollView {
                     Text(detail)
-                        .font(.system(size: 13, design: .monospaced))
+                        .font(.system(size: 15, design: .monospaced))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(8)
@@ -76,7 +76,7 @@ private struct ApprovalPanel: View {
                 .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
             }
             if let reason = approval.reason, !reason.isEmpty, reason != approval.detail {
-                Text(reason).font(.system(size: 13)).foregroundStyle(.secondary)
+                Text(reason).font(.system(size: 15)).foregroundStyle(.secondary)
             }
             if explaining {
                 TextField("Tell the agent what to do instead (optional)", text: $denyMessage)
@@ -163,13 +163,13 @@ private struct QuestionsPanel: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: "questionmark.bubble").foregroundStyle(.orange)
-                Text(question.header ?? "Question").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+                Text(question.header ?? "Question").font(.system(size: 14, weight: .semibold)).foregroundStyle(.secondary)
                 Spacer()
                 if questions.count > 1 {
-                    Text("\(index + 1) of \(questions.count)").font(.system(size: 12)).foregroundStyle(.secondary)
+                    Text("\(index + 1) of \(questions.count)").font(.system(size: 14)).foregroundStyle(.secondary)
                 }
             }
-            Text(question.prompt).font(.system(size: 14, weight: .medium)).textSelection(.enabled)
+            Text(question.prompt).font(.system(size: 16, weight: .medium)).textSelection(.enabled)
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(Array(question.options.enumerated()), id: \.offset) { offset, option in
                     optionRow(option, number: offset + 1, question: question)
@@ -204,13 +204,13 @@ private struct QuestionsPanel: View {
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("\(number)")
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .font(.system(size: 14, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .frame(width: 16)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(option.label).font(.system(size: 14))
+                    Text(option.label).font(.system(size: 16))
                     if let description = option.description, !description.isEmpty {
-                        Text(description).font(.system(size: 12)).foregroundStyle(.secondary)
+                        Text(description).font(.system(size: 14)).foregroundStyle(.secondary)
                     }
                 }
                 Spacer()
@@ -257,7 +257,7 @@ private struct PlanApprovalPanel: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: "list.bullet.clipboard").foregroundStyle(.orange)
-                Text("The plan is ready").font(.system(size: 14, weight: .semibold))
+                Text("The plan is ready").font(.system(size: 16, weight: .semibold))
             }
             TextField("Feedback to keep planning (optional)", text: $feedback)
                 .textFieldStyle(.roundedBorder)

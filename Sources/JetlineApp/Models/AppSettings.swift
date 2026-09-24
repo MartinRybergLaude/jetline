@@ -39,6 +39,8 @@ struct AppSettings: Codable, FetchableRecord, PersistableRecord {
     var agentInterface: AgentInterface = .terminal
     /// Permission mode new chats start in.
     var chatRuntimeMode: AgentRuntimeMode = .supervised
+    /// Font family for chat text. `nil` → the system font.
+    var chatFontFamily: String?
     /// Last model/effort picked in a chat, per provider; new chats start
     /// there. `nil` → the CLI's own default.
     var claudeChatModel: String?

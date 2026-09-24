@@ -8,6 +8,15 @@ struct MarkdownStyle: Hashable {
     var codeSize: CGFloat = 11
     /// Vertical gap between sibling blocks.
     var blockSpacing: CGFloat = 8
+    /// Family for non-code text; `nil` → system font.
+    var fontFamily: String?
+    /// Table text size; `nil` → `bodySize`.
+    var tableBodySize: CGFloat?
+    /// Extra leading between wrapped lines.
+    var lineSpacing: CGFloat = 0
+    /// Airy, striped tables for reading room (the chat) rather than the
+    /// inspector's dense boxed ones.
+    var spaciousTables = false
 
     static let comment = MarkdownStyle()
     /// Slightly tighter, for the quoted body of an inline review thread.
@@ -81,6 +90,7 @@ private struct MarkdownBlockView: View {
             size: size ?? style.bodySize,
             weight: weight
         ))
+        .lineSpacing(style.lineSpacing)
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -167,7 +177,7 @@ private struct MarkdownListView: View {
                 .foregroundStyle(.secondary)
         } else {
             Text("•")
-                .font(.system(size: style.bodySize))
+                .font(.chat(size: style.bodySize, family: style.fontFamily))
                 .foregroundStyle(.secondary)
         }
     }
@@ -175,11 +185,35 @@ private struct MarkdownListView: View {
 
 // MARK: - Tables
 
+extension EnvironmentValues {
+    /// Width a table may grow to beyond its column, centred on it. `nil`
+    /// keeps tables within the column. The chat sets this so tables can use
+    /// the space beside its narrow reading column.
+    @Entry var markdownTableBreakoutWidth: CGFloat?
+}
+
 private struct MarkdownTableView: View {
     let table: MarkdownTable
     let style: MarkdownStyle
+    @Environment(\.markdownTableBreakoutWidth) private var breakoutWidth
+    @State private var contentWidth: CGFloat = 0
 
     var body: some View {
+        TableBreakoutLayout(contentWidth: contentWidth, limit: breakoutWidth) {
+            scroller
+        }
+    }
+
+    @ViewBuilder
+    private var scroller: some View {
+        if style.spaciousTables {
+            spaciousScroller
+        } else {
+            compactScroller
+        }
+    }
+
+    private var compactScroller: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             Grid(alignment: .topLeading, horizontalSpacing: 12, verticalSpacing: 5) {
                 GridRow {
@@ -197,10 +231,88 @@ private struct MarkdownTableView: View {
                 }
             }
             .padding(8)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.secondary.opacity(0.06))
         .clipShape(RoundedRectangle(cornerRadius: 5))
+    }
+
+    /// Uppercase tracked header, generous cell padding, alternate rows on a
+    /// rounded stripe, row labels in the first column bold. No box around it.
+    private var spaciousScroller: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
+                GridRow {
+                    ForEach(table.header.indices, id: \.self) { index in
+                        spaciousCell(column: index, stripe: false) {
+                            Text(Self.uppercased(MarkdownInlineCache.attributed(
+                                table.header[index],
+                                style: style,
+                                size: tableSize - 3,
+                                weight: .semibold
+                            )))
+                            .tracking(0.6)
+                        }
+                    }
+                }
+                ForEach(table.rows.indices, id: \.self) { row in
+                    GridRow {
+                        ForEach(table.rows[row].indices, id: \.self) { index in
+                            spaciousCell(column: index, stripe: row % 2 == 0) {
+                                Text(MarkdownInlineCache.attributed(
+                                    table.rows[row][index],
+                                    style: style,
+                                    size: tableSize,
+                                    weight: index == 0 ? .semibold : nil
+                                ))
+                                .lineSpacing(style.lineSpacing)
+                            }
+                        }
+                    }
+                }
+            }
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
+        }
+    }
+
+    private var tableSize: CGFloat { style.tableBodySize ?? style.bodySize }
+
+    private func spaciousCell(column: Int, stripe: Bool, @ViewBuilder content: () -> some View) -> some View {
+        let align = table.alignments[column]
+        let radius: CGFloat = 8
+        let first = column == 0
+        let last = column == table.columnCount - 1
+        return content()
+            .multilineTextAlignment(align.textAlignment)
+            .modifier(CappedWidth(maxWidth: 320))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: Alignment(horizontal: align.frameAlignment.horizontal, vertical: .center))
+            .background {
+                if stripe {
+                    UnevenRoundedRectangle(
+                        topLeadingRadius: first ? radius : 0,
+                        bottomLeadingRadius: first ? radius : 0,
+                        bottomTrailingRadius: last ? radius : 0,
+                        topTrailingRadius: last ? radius : 0
+                    )
+                    .fill(Color.secondary.opacity(0.07))
+                }
+            }
+            .gridColumnAlignment(align.frameAlignment.horizontal)
+    }
+
+    /// Uppercases everything but code spans, which would change meaning.
+    private static func uppercased(_ text: AttributedString) -> AttributedString {
+        var result = AttributedString()
+        for run in text.runs {
+            if run.inlinePresentationIntent?.contains(.code) == true {
+                result += text[run.range]
+            } else {
+                result += AttributedString(String(text[run.range].characters).uppercased(), attributes: run.attributes)
+            }
+        }
+        return result
     }
 
     private func cellText(_ source: String, column: Int, bold: Bool) -> some View {
@@ -210,12 +322,68 @@ private struct MarkdownTableView: View {
         return Text(MarkdownInlineCache.attributed(
             source,
             style: style,
-            size: style.bodySize,
+            size: tableSize,
             weight: bold ? .semibold : nil
         ))
         .multilineTextAlignment(align.textAlignment)
-        .frame(maxWidth: 280, alignment: align.frameAlignment)
-        .fixedSize(horizontal: false, vertical: true)
+        .modifier(CappedWidth(maxWidth: 280))
+        .gridColumnAlignment(align.frameAlignment.horizontal)
+    }
+}
+
+/// Takes the column's width, but lays the table out at its natural width
+/// up to `limit`, centred on the column and overhanging it on both sides.
+/// Wider than that, the table scrolls horizontally.
+private struct TableBreakoutLayout: Layout {
+    let contentWidth: CGFloat
+    let limit: CGFloat?
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let subview = subviews.first else { return .zero }
+        let width = proposal.width ?? contentWidth
+        let height = subview.sizeThatFits(ProposedViewSize(width: layoutWidth(column: width), height: nil)).height
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let width = layoutWidth(column: bounds.width)
+        subviews.first?.place(
+            at: CGPoint(x: bounds.midX - width / 2, y: bounds.minY),
+            proposal: ProposedViewSize(width: width, height: nil)
+        )
+    }
+
+    private func layoutWidth(column: CGFloat) -> CGFloat {
+        guard let limit, limit > column else { return column }
+        return min(max(contentWidth, column), limit)
+    }
+}
+
+/// Sizes a cell to its natural width up to `maxWidth`, then measures its
+/// height *at that width*. `.frame(maxWidth:)` can't do this inside the
+/// horizontal scroll view: the scroll view proposes no width, so text
+/// reports its one-line height, then wraps at the cap and overflows into
+/// the rows below.
+private struct CappedWidth: ViewModifier {
+    let maxWidth: CGFloat
+
+    func body(content: Content) -> some View {
+        CappedWidthLayout(maxWidth: maxWidth) { content }
+    }
+}
+
+private struct CappedWidthLayout: Layout {
+    let maxWidth: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let subview = subviews.first else { return .zero }
+        let width = min(subview.sizeThatFits(.unspecified).width, maxWidth)
+        let height = subview.sizeThatFits(ProposedViewSize(width: width, height: nil)).height
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, proposal: ProposedViewSize(width: bounds.width, height: nil))
     }
 }
 
@@ -291,7 +459,7 @@ enum MarkdownInlineCache {
         // `weight` is tagged by hand rather than interpolated: `Font.Weight`
         // isn't `CustomStringConvertible`, so `String(describing:)` falls back
         // to reflection and dominates the cost of a cache hit.
-        let key = "\(size)|\(style.codeSize)|\(weight == nil ? 0 : 1)|\(source)" as NSString
+        let key = "\(size)|\(style.codeSize)|\(style.fontFamily ?? "")|\(weight == nil ? 0 : 1)|\(source)" as NSString
         if let hit = cache.object(forKey: key) { return hit.value }
         let value = render(source, style: style, size: size, weight: weight)
         cache.setObject(Box(value), forKey: key, cost: source.utf8.count)
@@ -316,7 +484,7 @@ enum MarkdownInlineCache {
         for (range, intent, link) in runs {
             var font: Font = intent.contains(.code)
                 ? .system(size: style.codeSize, design: .monospaced)
-                : .system(size: size)
+                : .chat(size: size, family: style.fontFamily)
             if let weight { font = font.weight(weight) }
             if intent.contains(.stronglyEmphasized) { font = font.bold() }
             if intent.contains(.emphasized) { font = font.italic() }

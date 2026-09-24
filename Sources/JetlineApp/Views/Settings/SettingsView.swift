@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct SettingsView: View {
     @EnvironmentObject private var state: AppState
@@ -97,6 +98,13 @@ private struct AgentsSettingsView: View {
                     }
                 }
                 .disabled(state.settings.agentInterface != .chat)
+                Picker("Assistant message font", selection: bindingChatFont) {
+                    Text("System").tag(String?.none)
+                    Divider()
+                    ForEach(fontFamilies, id: \.self) { family in
+                        Text(family).tag(String?.some(family))
+                    }
+                }
             } footer: {
                 Text("Chat drives the agent CLI directly and shows the conversation, tool calls, diffs and approvals in Jetline's own UI. The other interface stays available from the new-tab menu.")
                     .font(.caption)
@@ -140,6 +148,21 @@ private struct AgentsSettingsView: View {
             set: { newValue in
                 var s = state.settings
                 s.agentInterface = newValue
+                state.saveSettings(s)
+            }
+        )
+    }
+
+    private let fontFamilies = NSFontManager.shared.availableFontFamilies
+        .filter { !$0.hasPrefix(".") }
+        .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+
+    private var bindingChatFont: Binding<String?> {
+        Binding(
+            get: { state.settings.chatFontFamily },
+            set: { newValue in
+                var s = state.settings
+                s.chatFontFamily = newValue
                 state.saveSettings(s)
             }
         )
