@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 struct TerminalArea: View {
     @EnvironmentObject private var state: AppState
@@ -667,14 +668,29 @@ private struct DiffTabButton: View {
 
     var body: some View {
         StripTab(isActive: isActive, onSelect: onSelect, onClose: onClose) {
-            Image(systemName: "plus.forwardslash.minus")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .frame(width: 14, height: 14)
+            Image(nsImage: Self.icon(for: tab.path))
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 16, height: 16)
+                .opacity(isActive ? 1 : 0.75)
         } title: {
             Text((tab.path as NSString).lastPathComponent)
         }
         .help(tab.path)
+    }
+
+    /// Finder's document icon for the file's type, cached per extension.
+    /// Looked up by type rather than by path so a deleted file still gets
+    /// its icon.
+    @MainActor private static var iconCache: [String: NSImage] = [:]
+
+    @MainActor private static func icon(for path: String) -> NSImage {
+        let ext = (path as NSString).pathExtension.lowercased()
+        if let cached = iconCache[ext] { return cached }
+        let type = UTType(filenameExtension: ext) ?? .plainText
+        let icon = NSWorkspace.shared.icon(for: type)
+        iconCache[ext] = icon
+        return icon
     }
 }
 
