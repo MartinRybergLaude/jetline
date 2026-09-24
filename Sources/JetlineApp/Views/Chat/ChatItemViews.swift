@@ -179,6 +179,29 @@ private struct MessageActionsModifier: ViewModifier {
     }
 }
 
+/// Borderless icon button that gets a rounded gray wash under the pointer.
+private struct HoverIconButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HoverIconButtonBody(configuration: configuration)
+    }
+}
+
+private struct HoverIconButtonBody: View {
+    let configuration: ButtonStyle.Configuration
+    @State private var hovering = false
+
+    var body: some View {
+        configuration.label
+            .background(
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(Color.secondary.opacity(configuration.isPressed ? 0.25 : hovering ? 0.15 : 0))
+            )
+            .foregroundStyle(hovering ? .primary : .secondary)
+            .onHover { hovering = $0 }
+            .animation(.easeOut(duration: 0.1), value: hovering)
+    }
+}
+
 private struct MessageActionBar: View {
     /// User messages sit on the right, so their time leads the buttons.
     let timestampFirst: Bool
@@ -205,7 +228,7 @@ private struct MessageActionBar: View {
             Text(Self.format(timestamp))
                 .font(.system(size: 11))
                 .monospacedDigit()
-                .help(timestamp.formatted(date: .complete, time: .standard))
+                .help(timestamp.formatted(date: .complete, time: .shortened))
         }
     }
 
@@ -213,20 +236,23 @@ private struct MessageActionBar: View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 11, weight: .medium))
+                // Old symbol shrinks and blurs out, new one grows and
+                // sharpens in.
+                .contentTransition(.symbolEffect(.replace.downUp, options: .speed(3)))
                 .frame(width: 24, height: 20)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.borderless)
+        .buttonStyle(HoverIconButtonStyle())
         .help(help)
     }
 
     private func copy() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
-        copied = true
+        withAnimation(.smooth(duration: 0.12)) { copied = true }
         Task {
             try? await Task.sleep(for: .seconds(1.5))
-            copied = false
+            withAnimation(.smooth(duration: 0.12)) { copied = false }
         }
     }
 

@@ -25,7 +25,7 @@ struct ChatTimelineView: View {
             .padding(.bottom, 20)
             .frame(maxWidth: .infinity)
         }
-        .environment(\.markdownTableBreakoutWidth, max(width - 48, 0))
+        .environment(\.markdownTableBreakoutWidth, width)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .scrollPosition($position)
         .defaultScrollAnchor(.bottom, for: .initialOffset)

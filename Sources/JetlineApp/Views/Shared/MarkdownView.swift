@@ -14,8 +14,8 @@ struct MarkdownStyle: Hashable {
     var tableBodySize: CGFloat?
     /// Extra leading between wrapped lines.
     var lineSpacing: CGFloat = 0
-    /// Airy, striped tables for reading room (the chat) rather than the
-    /// inspector's dense boxed ones.
+    /// Roomy bordered tables with a shaded header, for reading room (the
+    /// chat), rather than the inspector's dense ones.
     var spaciousTables = false
 
     static let comment = MarkdownStyle()
@@ -186,9 +186,9 @@ private struct MarkdownListView: View {
 // MARK: - Tables
 
 extension EnvironmentValues {
-    /// Width a table may grow to beyond its column, centred on it. `nil`
-    /// keeps tables within the column. The chat sets this so tables can use
-    /// the space beside its narrow reading column.
+    /// Full width of the view a table may grow into beyond its column,
+    /// centred on it. `nil` keeps tables within the column. The chat sets
+    /// this so tables can use the space beside its narrow reading column.
     @Entry var markdownTableBreakoutWidth: CGFloat?
 }
 
@@ -197,10 +197,16 @@ private struct MarkdownTableView: View {
     let style: MarkdownStyle
     @Environment(\.markdownTableBreakoutWidth) private var breakoutWidth
     @State private var contentWidth: CGFloat = 0
+    /// Breathing room between a broken-out table and the view's edges.
+    private static let breakoutMargin: CGFloat = 24
 
     var body: some View {
-        TableBreakoutLayout(contentWidth: contentWidth, limit: breakoutWidth) {
-            scroller
+        let margin = breakoutWidth == nil ? 0 : Self.breakoutMargin
+        TableBreakoutLayout(contentWidth: contentWidth, limit: breakoutWidth, margin: margin) {
+            // The margin lives inside the scroll view: at rest the table
+            // keeps clear of the view's edges, but scrolled it runs right
+            // up to them instead of being cut off short.
+            scroller.contentMargins(.horizontal, margin, for: .scrollContent)
         }
     }
 
@@ -237,83 +243,48 @@ private struct MarkdownTableView: View {
         .clipShape(RoundedRectangle(cornerRadius: 5))
     }
 
-    /// Uppercase tracked header, generous cell padding, alternate rows on a
-    /// rounded stripe, row labels in the first column bold. No box around it.
+    /// Rounded, bordered box: shaded header row, a hairline between rows,
+    /// generous cell padding.
     private var spaciousScroller: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        let shape = RoundedRectangle(cornerRadius: 8)
+        return ScrollView(.horizontal, showsIndicators: false) {
             Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
                 GridRow {
                     ForEach(table.header.indices, id: \.self) { index in
-                        spaciousCell(column: index, stripe: false) {
-                            Text(Self.uppercased(MarkdownInlineCache.attributed(
-                                table.header[index],
-                                style: style,
-                                size: tableSize - 3,
-                                weight: .semibold
-                            )))
-                            .tracking(0.6)
-                        }
+                        spaciousCell(table.header[index], column: index, weight: .semibold)
+                            .background(Color.secondary.opacity(0.08))
                     }
                 }
                 ForEach(table.rows.indices, id: \.self) { row in
+                    // Outside a GridRow, so it spans every column.
+                    Divider()
                     GridRow {
                         ForEach(table.rows[row].indices, id: \.self) { index in
-                            spaciousCell(column: index, stripe: row % 2 == 0) {
-                                Text(MarkdownInlineCache.attributed(
-                                    table.rows[row][index],
-                                    style: style,
-                                    size: tableSize,
-                                    weight: index == 0 ? .semibold : nil
-                                ))
-                                .lineSpacing(style.lineSpacing)
-                            }
+                            spaciousCell(table.rows[row][index], column: index, weight: nil)
                         }
                     }
                 }
             }
+            .clipShape(shape)
+            .overlay(shape.strokeBorder(Color.secondary.opacity(0.22), lineWidth: 1))
+            .padding(1)
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
         }
     }
 
-    private var tableSize: CGFloat { style.tableBodySize ?? style.bodySize }
-
-    private func spaciousCell(column: Int, stripe: Bool, @ViewBuilder content: () -> some View) -> some View {
+    private func spaciousCell(_ source: String, column: Int, weight: Font.Weight?) -> some View {
         let align = table.alignments[column]
-        let radius: CGFloat = 8
-        let first = column == 0
-        let last = column == table.columnCount - 1
-        return content()
+        return Text(MarkdownInlineCache.attributed(source, style: style, size: tableSize, weight: weight))
+            .lineSpacing(style.lineSpacing)
             .multilineTextAlignment(align.textAlignment)
-            .modifier(CappedWidth(maxWidth: 320))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 11)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: Alignment(horizontal: align.frameAlignment.horizontal, vertical: .center))
-            .background {
-                if stripe {
-                    UnevenRoundedRectangle(
-                        topLeadingRadius: first ? radius : 0,
-                        bottomLeadingRadius: first ? radius : 0,
-                        bottomTrailingRadius: last ? radius : 0,
-                        topTrailingRadius: last ? radius : 0
-                    )
-                    .fill(Color.secondary.opacity(0.07))
-                }
-            }
+            .modifier(CappedWidth(maxWidth: 480))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: Alignment(horizontal: align.frameAlignment.horizontal, vertical: .top))
             .gridColumnAlignment(align.frameAlignment.horizontal)
     }
 
-    /// Uppercases everything but code spans, which would change meaning.
-    private static func uppercased(_ text: AttributedString) -> AttributedString {
-        var result = AttributedString()
-        for run in text.runs {
-            if run.inlinePresentationIntent?.contains(.code) == true {
-                result += text[run.range]
-            } else {
-                result += AttributedString(String(text[run.range].characters).uppercased(), attributes: run.attributes)
-            }
-        }
-        return result
-    }
+    private var tableSize: CGFloat { style.tableBodySize ?? style.bodySize }
 
     private func cellText(_ source: String, column: Int, bold: Bool) -> some View {
         // `takeTable` pads every row to the header width, so the column index
@@ -337,6 +308,8 @@ private struct MarkdownTableView: View {
 private struct TableBreakoutLayout: Layout {
     let contentWidth: CGFloat
     let limit: CGFloat?
+    /// Horizontal content margin inside the scroll view, on each side.
+    let margin: CGFloat
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         guard let subview = subviews.first else { return .zero }
@@ -355,7 +328,7 @@ private struct TableBreakoutLayout: Layout {
 
     private func layoutWidth(column: CGFloat) -> CGFloat {
         guard let limit, limit > column else { return column }
-        return min(max(contentWidth, column), limit)
+        return min(max(contentWidth, column) + margin * 2, limit)
     }
 }
 

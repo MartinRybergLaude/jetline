@@ -121,6 +121,10 @@ struct ChatComposer: View {
                 )
                 .frame(height: height)
                 controls
+                    // Optical alignment: pull the first pill's capsule out
+                    // past the text column so its label, not its edge,
+                    // lines up with the text above.
+                    .padding(.leading, -8)
             }
             .overlay(alignment: .topLeading) {
                 if !suggestions.isEmpty {
