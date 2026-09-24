@@ -61,7 +61,6 @@ final class SyntaxHighlighterTests: XCTestCase {
             ])
         ])
         let rows = FileDiffLine.lines(for: file, language: .c)
-        let added = rows[1].highlighted!
-        XCTAssertEqual(added.runs.first.map { String(added[$0.range].characters) }, "int")
+        XCTAssertEqual(rows[1].segments?.first, SyntaxSegment(text: "int", kind: .keyword))
     }
 }

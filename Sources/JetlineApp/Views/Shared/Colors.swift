@@ -20,9 +20,14 @@ extension Color {
     /// Low-opacity washes (added-line diff backgrounds) and the small
     /// `A` file-status badge keep the system color: they carry no
     /// `readableGreen` neighbor, and darkening a wash just muddies it.
-    static let readableGreen = Color(nsColor: NSColor(name: "readableGreen") { appearance in
+    static let readableGreen = Color(nsColor: .readableGreen)
+}
+
+extension NSColor {
+    /// AppKit side of `Color.readableGreen`, for views drawn outside SwiftUI.
+    static let readableGreen = NSColor(name: "readableGreen") { appearance in
         appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
             ? .systemGreen
             : NSColor(srgbRed: 0.102, green: 0.498, blue: 0.216, alpha: 1)
-    })
+    }
 }

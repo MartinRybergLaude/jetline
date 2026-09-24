@@ -105,7 +105,7 @@ struct FileDiffView: View {
             if loaded.isBinary {
                 InspectorPlaceholder(systemImage: "doc", title: "Binary file — not shown")
             } else {
-                FileDiffLines(lines: rows)
+                DiffTextView(lines: rows)
                     .id(tab)
             }
         } else if isLoading {
@@ -121,74 +121,6 @@ struct FileDiffView: View {
     }
 }
 
-private struct FileDiffLines: View {
-    let lines: [FileDiffLine]
-    @State private var didScrollToFirstChange = false
-
-    var body: some View {
-        let digits = max(3, String(lines.compactMap { $0.newNumber ?? $0.oldNumber }.max() ?? 0).count)
-        let gutterWidth = CGFloat(digits) * 7 + 8
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(lines) { line in
-                        row(line, gutterWidth: gutterWidth).id(line.id)
-                    }
-                }
-                .padding(.vertical, 6)
-            }
-            .onAppear {
-                guard !didScrollToFirstChange else { return }
-                didScrollToFirstChange = true
-                if let first = lines.first(where: { $0.kind != .context && !$0.isHunkHeader }) {
-                    proxy.scrollTo(first.id, anchor: UnitPoint(x: 0, y: 0.25))
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func row(_ line: FileDiffLine, gutterWidth: CGFloat) -> some View {
-        if line.isHunkHeader {
-            Text(line.text)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 2)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(DiffLineTint.headerBackground)
-                .font(.system(size: 11, design: .monospaced))
-        } else {
-            HStack(alignment: .top, spacing: 0) {
-                lineNumber(line.oldNumber, width: gutterWidth)
-                lineNumber(line.newNumber, width: gutterWidth)
-                Text(marker(line.kind))
-                    .foregroundStyle(DiffLineTint.marker(line.kind))
-                    .frame(width: 16)
-                Text(line.highlighted ?? AttributedString(line.text.isEmpty ? " " : line.text))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-            }
-            .font(.system(size: 12, design: .monospaced))
-            .padding(.vertical, 1)
-            .background(DiffLineTint.background(line.kind))
-        }
-    }
-
-    private func lineNumber(_ n: Int?, width: CGFloat) -> some View {
-        Text(n.map(String.init) ?? "")
-            .foregroundStyle(.tertiary)
-            .frame(width: width, alignment: .trailing)
-    }
-
-    private func marker(_ kind: FileDiff.Line.Kind) -> String {
-        switch kind {
-        case .addition: return "+"
-        case .deletion: return "-"
-        case .context:  return ""
-        }
-    }
-}
-
 /// One rendered row of a full-file diff, with its old/new line numbers.
 struct FileDiffLine: Identifiable, Equatable {
     let id: Int
@@ -197,8 +129,8 @@ struct FileDiffLine: Identifiable, Equatable {
     var oldNumber: Int?
     var newNumber: Int?
     var isHunkHeader = false
-    /// Syntax-colored text; plain `text` when the language is unknown.
-    var highlighted: AttributedString?
+    /// Syntax-colored runs of `text`; nil when the language is unknown.
+    var segments: [SyntaxSegment]?
 
     /// Rows for `file`, numbering lines from each hunk's `@@ -a,b +c,d @@`
     /// header. Headers get a row of their own only between hunks — a
@@ -239,10 +171,7 @@ struct FileDiffLine: Identifiable, Equatable {
                             _ = highlighter.tokenize(line.text, state: &oldState)
                         }
                     }
-                    // An empty AttributedString would collapse the row.
-                    if !line.text.isEmpty {
-                        row.highlighted = SyntaxTheme.attributed(segments)
-                    }
+                    row.segments = segments
                 }
                 switch line.kind {
                 case .context:

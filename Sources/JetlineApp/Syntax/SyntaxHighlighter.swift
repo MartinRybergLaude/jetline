@@ -1,4 +1,3 @@
-import SwiftUI
 import AppKit
 
 enum SyntaxTokenKind: Equatable, Sendable {
@@ -204,9 +203,10 @@ struct SyntaxHighlighter: Sendable {
     }
 }
 
-/// Token colors, after Xcode's default light and dark themes.
+/// Token colors, after Xcode's default light and dark themes. Dynamic
+/// `NSColor`s, so text already on screen follows an appearance flip.
 enum SyntaxTheme {
-    static func color(_ kind: SyntaxTokenKind) -> Color {
+    static func color(_ kind: SyntaxTokenKind) -> NSColor {
         switch kind {
         case .keyword:   return keyword
         case .string:    return string
@@ -218,17 +218,7 @@ enum SyntaxTheme {
         }
     }
 
-    static func attributed(_ segments: [SyntaxSegment]) -> AttributedString {
-        var result = AttributedString()
-        for segment in segments {
-            var part = AttributedString(segment.text)
-            if let kind = segment.kind { part.foregroundColor = color(kind) }
-            result += part
-        }
-        return result
-    }
-
-    private static func dynamic(_ name: String, light: UInt32, dark: UInt32) -> Color {
+    private static func dynamic(_ name: String, light: UInt32, dark: UInt32) -> NSColor {
         func rgb(_ hex: UInt32) -> NSColor {
             NSColor(
                 srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
@@ -237,9 +227,9 @@ enum SyntaxTheme {
                 alpha: 1
             )
         }
-        return Color(nsColor: NSColor(name: NSColor.Name(name)) { appearance in
+        return NSColor(name: NSColor.Name(name)) { appearance in
             appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? rgb(dark) : rgb(light)
-        })
+        }
     }
 
     private static let keyword   = dynamic("syntaxKeyword",   light: 0x9B2393, dark: 0xFC5FA3)

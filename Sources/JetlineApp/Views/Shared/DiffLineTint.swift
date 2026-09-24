@@ -1,15 +1,21 @@
 import SwiftUI
+import AppKit
 
-/// Diff-line tints, shared by the full-file diff tab and the review-thread hunk
-/// preview in `ReviewThreadCard`. The two render differently — one parses a
-/// patch, the other gets GitHub's raw `diffHunk` string — but they should
-/// never disagree about what an added line looks like.
+/// Diff-line tints, shared by the full-file diff tab (AppKit, `DiffTextView`)
+/// and the review-thread hunk preview in `ReviewThreadCard` (SwiftUI). The
+/// two render differently — one parses a patch, the other gets GitHub's raw
+/// `diffHunk` string — but they should never disagree about what an added
+/// line looks like.
 enum DiffLineTint {
     static func background(_ kind: FileDiff.Line.Kind) -> Color {
+        backgroundColor(kind).map { Color(nsColor: $0) } ?? .clear
+    }
+
+    static func backgroundColor(_ kind: FileDiff.Line.Kind) -> NSColor? {
         switch kind {
-        case .addition: return Color.green.opacity(0.10)
-        case .deletion: return Color.red.opacity(0.10)
-        case .context:  return .clear
+        case .addition: return NSColor.systemGreen.withAlphaComponent(0.10)
+        case .deletion: return NSColor.systemRed.withAlphaComponent(0.10)
+        case .context:  return nil
         }
     }
 
@@ -22,7 +28,8 @@ enum DiffLineTint {
     }
 
     /// `@@ … @@` header row.
-    static let headerBackground = Color.secondary.opacity(0.08)
+    static let headerBackground = Color(nsColor: headerBackgroundColor)
+    static let headerBackgroundColor = NSColor.secondaryLabelColor.withAlphaComponent(0.08)
 
     /// Classifies a raw unified-diff line by its leading character. `nil`
     /// means a hunk header, which has no line kind of its own.
