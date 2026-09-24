@@ -634,11 +634,11 @@ enum ClaudeTools {
         }
         switch name {
         case "Read": return file("file_path").map { "Read \($0)" }
-        case "Glob": return input["pattern"]?.string.map { "Find \($0)" }
-        case "Grep": return input["pattern"]?.string.map { "Search “\($0)”" }
-        case "LS": return file("path").map { "List \($0)" }
-        case "WebFetch": return input["url"]?.string.map { "Fetch \($0)" }
-        case "Skill": return input["skill"]?.string.map { "Use skill \($0)" }
+        case "Glob": return input["pattern"]?.string.map { "Found \($0)" }
+        case "Grep": return input["pattern"]?.string.map { "Searched for “\($0)”" }
+        case "LS": return file("path").map { "Listed \($0)" }
+        case "WebFetch": return input["url"]?.string.map { "Fetched \($0)" }
+        case "Skill": return input["skill"]?.string.map { "Used skill \($0)" }
         case "AskUserQuestion": return "Asked a question"
         case "TodoWrite", "TaskCreate", "TaskUpdate", "TaskList": return "Updated the plan"
         case "EnterPlanMode": return "Entered plan mode"

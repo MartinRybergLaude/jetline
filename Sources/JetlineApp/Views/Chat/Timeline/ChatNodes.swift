@@ -476,6 +476,103 @@ final class SpinnerNode: ChatNode {
     }
 }
 
+/// A spinning, breathing asterisk: the working indicator.
+final class ChatSparkView: NSView {
+    var color: NSColor = .controlAccentColor {
+        didSet { if color != oldValue { updateLayer() } }
+    }
+    var isAnimating = true {
+        didSet { if isAnimating != oldValue { animate() } }
+    }
+    private let shape = CAShapeLayer()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.addSublayer(shape)
+        shape.lineCap = .round
+        shape.fillColor = nil
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            shape.strokeColor = color.cgColor
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        let side = min(bounds.width, bounds.height)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        shape.bounds = CGRect(x: 0, y: 0, width: side, height: side)
+        shape.position = CGPoint(x: bounds.midX, y: bounds.midY)
+        shape.lineWidth = max(1.5, side * 0.15)
+        let path = CGMutablePath()
+        let center = CGPoint(x: side / 2, y: side / 2)
+        let outer = side / 2 - shape.lineWidth / 2
+        for ray in 0..<8 {
+            let angle = CGFloat(ray) * .pi / 4
+            // Alternate ray lengths, like a hand-drawn spark.
+            let length = outer * (ray.isMultiple(of: 2) ? 1 : 0.72)
+            path.move(to: center)
+            path.addLine(to: CGPoint(x: center.x + cos(angle) * length, y: center.y + sin(angle) * length))
+        }
+        shape.path = path
+        CATransaction.commit()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        animate()
+    }
+
+    private func animate() {
+        shape.removeAllAnimations()
+        guard window != nil, isAnimating else { return }
+        let spin = CABasicAnimation(keyPath: "transform.rotation.z")
+        spin.fromValue = 0
+        spin.toValue = -2 * CGFloat.pi
+        spin.duration = 3
+        spin.repeatCount = .infinity
+        shape.add(spin, forKey: "spin")
+        let breathe = CABasicAnimation(keyPath: "transform.scale")
+        breathe.fromValue = 1
+        breathe.toValue = 0.78
+        breathe.duration = 0.9
+        breathe.autoreverses = true
+        breathe.repeatCount = .infinity
+        breathe.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        shape.add(breathe, forKey: "breathe")
+    }
+}
+
+final class SparkNode: ChatNode {
+    let side: CGFloat
+    let color: NSColor
+    let animating: Bool
+
+    init(side: CGFloat, color: NSColor, animating: Bool) {
+        self.side = side
+        self.color = color
+        self.animating = animating
+    }
+
+    override func measure(_ width: CGFloat) -> CGSize { CGSize(width: side, height: side) }
+    override var viewType: NSView.Type { ChatSparkView.self }
+    override func makeView() -> NSView { ChatSparkView() }
+    override func configure(_ view: NSView, size: CGSize) {
+        guard let view = view as? ChatSparkView else { return }
+        view.color = color
+        view.isAnimating = animating
+    }
+}
+
 /// Image file shown aspect-filled in a rounded, outlined square.
 final class ChatThumbView: ChatContainerView {
     var path = ""
@@ -838,6 +935,98 @@ final class ChatClickView: ChatContainerView {
     }
 }
 
+/// Text that reads as live: full strength with a light sweeping across
+/// while `isLive`, dimmed once done, full strength again under the pointer.
+final class ChatGlowView: ChatContainerView {
+    var isLive = false {
+        didSet { if isLive != oldValue { apply() } }
+    }
+    private var hovering = false
+    private var area: NSTrackingArea?
+    private let shimmer = CAGradientLayer()
+    static let dimmed: CGFloat = 0.5
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        shimmer.startPoint = CGPoint(x: 0, y: 0.5)
+        shimmer.endPoint = CGPoint(x: 1, y: 0.5)
+        shimmer.colors = [0.4, 0.4, 1, 0.4, 0.4].map { NSColor(white: 1, alpha: $0).cgColor }
+        shimmer.locations = [0, 0.35, 0.5, 0.65, 1]
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let area { removeTrackingArea(area) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp], owner: self)
+        addTrackingArea(area)
+        self.area = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { hovering = true; apply() }
+    override func mouseExited(with event: NSEvent) { hovering = false; apply() }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        // Three widths, so the bright band enters and leaves fully.
+        shimmer.frame = CGRect(x: -bounds.width, y: 0, width: bounds.width * 3, height: bounds.height)
+        CATransaction.commit()
+        if isLive { startShimmer() }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        apply()
+    }
+
+    private func apply() {
+        alphaValue = isLive || hovering ? 1 : Self.dimmed
+        if isLive && window != nil {
+            layer?.mask = shimmer
+            startShimmer()
+        } else {
+            shimmer.removeAllAnimations()
+            layer?.mask = nil
+        }
+    }
+
+    private func startShimmer() {
+        guard window != nil, bounds.width > 0 else { return }
+        let sweep = CABasicAnimation(keyPath: "position.x")
+        sweep.fromValue = -bounds.width / 2
+        sweep.toValue = bounds.width * 1.5
+        sweep.duration = max(1.2, Double(bounds.width) / 110)
+        sweep.repeatCount = .infinity
+        shimmer.add(sweep, forKey: "sweep")
+    }
+}
+
+final class GlowNode: ChatNode {
+    let child: ChatNode
+    let live: Bool
+
+    init(_ child: ChatNode, live: Bool) {
+        self.child = child
+        self.live = live
+    }
+
+    override var children: [ChatNode] { [child] }
+    override func measure(_ width: CGFloat) -> CGSize { child.size(for: width) }
+    override func layout(_ size: CGSize, breakout: ChatBreakout) -> [ChatChildFrame] {
+        [ChatChildFrame(rect: CGRect(origin: .zero, size: size), breakout: breakout)]
+    }
+
+    override var viewType: NSView.Type { ChatGlowView.self }
+    override func makeView() -> NSView { ChatGlowView() }
+    override func configure(_ view: NSView, size: CGSize) {
+        (view as? ChatGlowView)?.isLive = live
+    }
+}
+
 final class ClickNode: ChatNode {
     let child: ChatNode
     let enabled: Bool
@@ -876,6 +1065,8 @@ final class ClickNode: ChatNode {
 /// moving onto it doesn't read as leaving the message.
 final class ChatHoverView: ChatContainerView {
     var isEnabled = true
+    /// Shows the bar regardless of hover.
+    var isPinned = false
     private var hovering = false
     private var area: NSTrackingArea?
 
@@ -906,7 +1097,7 @@ final class ChatHoverView: ChatContainerView {
 
     private func applyBar(animated: Bool) {
         guard let bar else { return }
-        let alpha: CGFloat = isEnabled && hovering ? 1 : 0
+        let alpha: CGFloat = isEnabled && (hovering || isPinned) ? 1 : 0
         guard bar.alphaValue != alpha else { return }
         if animated {
             NSAnimationContext.runAnimationGroup { context in
@@ -927,14 +1118,16 @@ final class HoverNode: ChatNode {
     let edge: Edge
     let gap: CGFloat
     let enabled: Bool
-    static let barHeight: CGFloat = 20
+    let pinned: Bool
+    static let barHeight: CGFloat = 24
 
-    init(_ content: ChatNode, bar: ChatNode, edge: Edge, gap: CGFloat, enabled: Bool) {
+    init(_ content: ChatNode, bar: ChatNode, edge: Edge, gap: CGFloat, enabled: Bool, pinned: Bool = false) {
         self.content = content
         self.bar = bar
         self.edge = edge
         self.gap = gap
         self.enabled = enabled
+        self.pinned = pinned
     }
 
     /// Height the bar adds below the content.
@@ -960,7 +1153,9 @@ final class HoverNode: ChatNode {
     override var viewType: NSView.Type { ChatHoverView.self }
     override func makeView() -> NSView { ChatHoverView() }
     override func configure(_ view: NSView, size: CGSize) {
-        (view as? ChatHoverView)?.isEnabled = enabled
+        guard let view = view as? ChatHoverView else { return }
+        view.isEnabled = enabled
+        view.isPinned = pinned
     }
 }
 
@@ -1071,7 +1266,7 @@ final class IconButtonNode: ChatNode {
         self.action = action
     }
 
-    override func measure(_ width: CGFloat) -> CGSize { CGSize(width: 24, height: 20) }
+    override func measure(_ width: CGFloat) -> CGSize { CGSize(width: 24, height: 24) }
     override var viewType: NSView.Type { ChatIconButton.self }
     override func makeView() -> NSView { ChatIconButton() }
     override func configure(_ view: NSView, size: CGSize) {
@@ -1083,18 +1278,26 @@ final class IconButtonNode: ChatNode {
     }
 }
 
-/// "Working · 12s", ticking once a second.
+/// "12s · Thinking…", ticking once a second.
 final class ChatElapsedLabel: ChatLabel {
     var since = Date()
+    /// Fixed end: the label stops ticking.
+    var until: Date? {
+        didSet { if until != oldValue { schedule() } }
+    }
     var attributes: [NSAttributedString.Key: Any] = [:]
-    var prefix = ""
+    var suffix = ""
     private var timer: Timer?
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        schedule()
+    }
+
+    private func schedule() {
         timer?.invalidate()
         timer = nil
-        guard window != nil else { return }
+        guard window != nil, until == nil else { return }
         let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
@@ -1103,25 +1306,27 @@ final class ChatElapsedLabel: ChatLabel {
     }
 
     func tick() {
-        let seconds = max(0, Int(Date().timeIntervalSince(since)))
+        let seconds = max(0, Int((until ?? Date()).timeIntervalSince(since)))
         let elapsed = seconds < 60 ? "\(seconds)s" : "\(seconds / 60)m \(seconds % 60)s"
-        attributedStringValue = NSAttributedString(string: prefix + elapsed, attributes: attributes)
+        attributedStringValue = NSAttributedString(string: elapsed + suffix, attributes: attributes)
     }
 }
 
 final class ElapsedNode: ChatNode {
     let since: Date
-    let prefix: String
+    let until: Date?
+    let suffix: String
     let attributes: [NSAttributedString.Key: Any]
 
-    init(since: Date, prefix: String, font: NSFont, color: NSColor) {
+    init(since: Date, until: Date? = nil, suffix: String, font: NSFont, color: NSColor) {
         self.since = since
-        self.prefix = prefix
+        self.until = until
+        self.suffix = suffix
         attributes = [.font: font, .foregroundColor: color]
     }
 
     override func measure(_ width: CGFloat) -> CGSize {
-        let size = ChatLabel.naturalSize(NSAttributedString(string: prefix + "00m 00s", attributes: attributes))
+        let size = ChatLabel.naturalSize(NSAttributedString(string: "00m 00s" + suffix, attributes: attributes))
         return CGSize(width: min(width, size.width), height: size.height)
     }
 
@@ -1133,14 +1338,15 @@ final class ElapsedNode: ChatNode {
         label.isBordered = false
         label.drawsBackground = false
         label.usesSingleLineMode = true
-        label.lineBreakMode = .byClipping
+        label.lineBreakMode = .byTruncatingTail
         return label
     }
 
     override func configure(_ view: NSView, size: CGSize) {
         guard let label = view as? ChatElapsedLabel else { return }
         label.since = since
-        label.prefix = prefix
+        label.suffix = suffix
+        label.until = until
         label.attributes = attributes
         label.tick()
     }

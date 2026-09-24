@@ -19,10 +19,11 @@ protocol ChatRowHost: AnyObject {
 @MainActor
 enum ChatRowNodes {
     /// The row's root and the height its content reaches into the gap
-    /// below it (a hover bar), which the gap then gives back.
+    /// below it (a hover bar), which the gap then gives back unless it
+    /// must clear the bar.
     static func root(for row: ChatRow, host: ChatRowHost) -> RowRootNode {
         let (node, reach) = content(for: row, host: host)
-        return RowRootNode(node, gap: max(0, row.gap - reach))
+        return RowRootNode(node, gap: row.gapClearsBar ? row.gap : max(0, row.gap - reach))
     }
 
     private static func content(for row: ChatRow, host: ChatRowHost) -> (ChatNode, CGFloat) {
@@ -35,16 +36,16 @@ enum ChatRowNodes {
             } : nil)
             // Keep clear of the left edge, like a chat bubble.
             return (BoxNode(VStackNode([hover], align: .trailing), padding: NSEdgeInsets(top: 0, left: 60, bottom: 0, right: 0)), hover.reach)
-        case let .assistant(text, timestamp, streaming):
+        case let .assistant(text, timestamp, streaming, copyText):
             let markdown = ChatMarkdown.node(text, options: markdownOptions(row: row.id, host: host, breakout: true), key: row.id)
+            guard let copyText else { return (markdown, 0) }
             let hover = HoverNode(
                 markdown,
-                bar: actionBar(timestampFirst: false, text: text, timestamp: timestamp, revert: nil),
+                bar: actionBar(timestampFirst: false, text: copyText, timestamp: timestamp, revert: nil),
                 edge: .leading,
-                // Assistant text has no bubble, so its bar needs more air
-                // to read as separate.
                 gap: 6,
-                enabled: !streaming
+                enabled: !streaming,
+                pinned: row.pinsActions
             )
             return (hover, hover.reach)
         case let .work(items, isLive):
@@ -112,7 +113,7 @@ enum ChatRowNodes {
             VStackNode(parts, spacing: 6, align: .trailing),
             bar: actionBar(timestampFirst: true, text: text, timestamp: timestamp, revert: revert),
             edge: .trailing,
-            gap: 2,
+            gap: 6,
             enabled: true
         )
     }
@@ -151,142 +152,159 @@ enum ChatRowNodes {
 
     // MARK: Work
 
-    /// Tool calls and reasoning of one stretch of a turn. Expanded while
-    /// the turn runs so progress is visible; collapsed once it's done.
+    /// Tool calls and reasoning of one stretch of a turn: a summary line
+    /// that opens to a card of the calls.
     private static func workGroup(items: [AgentItem], isLive: Bool, row: String, host: ChatRowHost) -> ChatNode {
         let key = "work:" + row
-        let expanded = host.isExpanded(key, default: isLive)
-        let header = ClickNode(HStackNode([
-            BoxNode(SymbolNode(expanded ? "chevron.down" : "chevron.right", size: 11, weight: .semibold), width: 12),
-            LabelNode(summary(items), font: font(14), color: .secondaryLabelColor),
-        ], spacing: 6, flexible: [1])) { [weak host] in
-            host?.toggle(key, default: isLive, row: row)
+        let expanded = host.isExpanded(key, default: false)
+        let live = items.contains { $0.status == .inProgress && $0.parentId == nil }
+        let title = GlowNode(HStackNode([
+            LabelNode(summary(items), font: font(14)),
+            SymbolNode(expanded ? "chevron.down" : "chevron.right", size: 10, weight: .semibold, color: .labelColor),
+        ], spacing: 6, compressible: [0]), live: live)
+        let header = ClickNode(HStackNode([title, FillNode()], spacing: 0, flexible: [1], compressible: [0])) { [weak host] in
+            host?.toggle(key, default: false, row: row)
         }
         guard expanded else { return header }
-        let rows = items.map { workRow($0, row: row, host: host) }
+        var rows: [ChatNode] = []
+        for item in items {
+            if !rows.isEmpty { rows.append(FillNode(height: 1, color: .secondary(0.18))) }
+            rows.append(workRow(item, row: row, host: host))
+        }
         return VStackNode([
             header,
-            BoxNode(VStackNode(rows, spacing: 1), padding: NSEdgeInsets(top: 0, left: 14, bottom: 0, right: 0)),
-        ], spacing: 2)
+            BoxNode(VStackNode(rows), border: .secondary(0.18), radius: 10),
+        ], spacing: 8)
     }
 
-    /// "3 commands, 2 edits, thinking" — counts by kind.
+    /// "Ran 2 commands, edited a file": counts by kind. While something
+    /// runs, just what's running: "Running a command".
     private static func summary(_ items: [AgentItem]) -> String {
-        var commands = 0, edits = 0, reads = 0, tools = 0, searches = 0, agents = 0, thoughts = 0
-        var running = false
-        for item in items {
-            if item.status == .inProgress { running = true }
+        enum Kind: CaseIterable { case command, edit, read, search, agent, tool, thought }
+        func kind(_ item: AgentItem) -> (Kind, Int)? {
             switch item.content {
-            case .command: commands += 1
-            case let .fileChange(change): edits += max(change.edits.count, 1)
-            case let .tool(tool): if tool.summary?.hasPrefix("Read") == true { reads += 1 } else { tools += 1 }
-            case .webSearch: searches += 1
-            case .subagent: agents += 1
-            case .reasoning: thoughts += 1
-            default: break
+            case .command: return (.command, 1)
+            case let .fileChange(change): return (.edit, max(change.edits.count, 1))
+            case let .tool(tool): return (tool.summary?.hasPrefix("Read") == true ? .read : .tool, 1)
+            case .webSearch: return (.search, 1)
+            case .subagent: return (.agent, 1)
+            case .reasoning: return (.thought, 1)
+            default: return nil
             }
         }
-        var parts: [String] = []
-        func add(_ count: Int, _ one: String, _ many: String) {
-            if count > 0 { parts.append(count == 1 ? "1 \(one)" : "\(count) \(many)") }
+        func count(_ n: Int, _ one: String, _ many: String) -> String {
+            n == 1 ? one : "\(n) \(many)"
         }
-        add(commands, "command", "commands")
-        add(edits, "edit", "edits")
-        add(reads, "file read", "files read")
-        add(searches, "web search", "web searches")
-        add(agents, "subagent", "subagents")
-        add(tools, "tool call", "tool calls")
-        if parts.isEmpty && thoughts > 0 { parts.append("Thought") }
-        let text = parts.joined(separator: ", ")
-        return running ? "Working… \(text)" : text
+        func phrase(_ kind: Kind, _ n: Int, live: Bool) -> String {
+            switch kind {
+            case .command: return (live ? "running " : "ran ") + count(n, "a command", "commands")
+            case .edit: return (live ? "editing " : "edited ") + count(n, "a file", "files")
+            case .read: return (live ? "reading " : "read ") + count(n, "a file", "files")
+            case .search: return live ? "searching the web" : (n == 1 ? "searched the web" : "searched the web \(n) times")
+            case .agent: return (live ? "running " : "ran ") + count(n, "a subagent", "subagents")
+            case .tool: return (live ? "using " : "used ") + count(n, "a tool", "tools")
+            case .thought: return live ? "thinking" : "thought"
+            }
+        }
+
+        let running = items.filter { $0.status == .inProgress && $0.parentId == nil }
+        let live = !running.isEmpty
+        var counts: [Kind: Int] = [:]
+        for item in live ? running : items {
+            if let (kind, n) = kind(item) { counts[kind, default: 0] += n }
+        }
+        // Thinking only counts when nothing else happened.
+        if counts.count > 1 { counts[.thought] = nil }
+        let text = Kind.allCases.compactMap { kind in
+            counts[kind].map { phrase(kind, $0, live: live) }
+        }.joined(separator: ", ")
+        guard let first = text.first else { return live ? "Working…" : "" }
+        return first.uppercased() + text.dropFirst()
     }
 
+    /// "Ran git push ›": a verb, what it acted on, and a chevron when
+    /// there's detail to open.
     private static func workRow(_ item: AgentItem, row: String, host: ChatRowHost) -> ChatNode {
         let key = "item:" + item.id
         let detail = hasDetail(item)
         let expanded = detail && host.isExpanded(key, default: false)
         let nested: CGFloat = item.parentId == nil ? 0 : 16
+        let (verb, subject) = title(item, host: host)
 
-        var line: [ChatNode] = [BoxNode(statusGlyph(item), width: 14)]
+        var line: [ChatNode] = [LabelNode(verb, font: font(14), color: .secondaryLabelColor)]
         var compressible: Set<Int> = []
-        for (node, truncates) in title(item, host: host) {
+        for (node, truncates) in subject {
             if truncates { compressible.insert(line.count) }
             line.append(node)
         }
+        switch item.status {
+        case .inProgress: line.append(SpinnerNode(diameter: 12))
+        case .failed: line.append(LabelNode("failed", font: font(13), color: .systemRed))
+        case .declined: line.append(LabelNode("declined", font: font(13), color: .systemOrange))
+        case .interrupted: line.append(LabelNode("stopped", font: font(13), color: .secondaryLabelColor))
+        case .completed: break
+        }
+        if detail {
+            line.append(SymbolNode(expanded ? "chevron.down" : "chevron.right", size: 10, weight: .semibold))
+        }
         line.append(FillNode())
         let button = ClickNode(
-            HStackNode(line, spacing: 7, flexible: [line.count - 1], compressible: compressible),
+            BoxNode(
+                HStackNode(line, spacing: 5, flexible: [line.count - 1], compressible: compressible),
+                padding: NSEdgeInsets(top: 9, left: 14 + nested, bottom: 9, right: 14)
+            ),
             enabled: detail
         ) { [weak host] in
             host?.toggle(key, default: false, row: row)
         }
 
-        var parts: [ChatNode] = [BoxNode(button, padding: NSEdgeInsets(top: 0, left: nested, bottom: 0, right: 0))]
-        if expanded, let detailNode = self.detail(item, row: row, host: host) {
-            parts.append(BoxNode(detailNode, padding: NSEdgeInsets(top: 0, left: nested + 21, bottom: 4, right: 0)))
-        }
-        return BoxNode(VStackNode(parts, spacing: 4), padding: NSEdgeInsets(v: 2))
+        guard expanded, let detailNode = self.detail(item, row: row, host: host) else { return button }
+        return VStackNode([
+            button,
+            BoxNode(detailNode, padding: NSEdgeInsets(top: 0, left: 14 + nested, bottom: 12, right: 14)),
+        ])
     }
 
-    private static func statusGlyph(_ item: AgentItem) -> ChatNode {
-        switch item.status {
-        case .inProgress:
-            return SpinnerNode(diameter: 12)
-        case .completed:
-            return SymbolNode(symbol(item), size: 12)
-        case .failed:
-            return SymbolNode("xmark.circle.fill", size: 12, color: .systemRed)
-        case .declined:
-            return SymbolNode("hand.raised.fill", size: 12, color: .systemOrange)
-        case .interrupted:
-            return SymbolNode("stop.circle", size: 12)
-        }
-    }
-
-    private static func symbol(_ item: AgentItem) -> String {
-        switch item.content {
-        case .command: return "terminal"
-        case .fileChange: return "pencil"
-        case let .tool(tool): return tool.server == nil ? "wrench.and.screwdriver" : "puzzlepiece.extension"
-        case .webSearch: return "globe"
-        case .subagent: return "person.2"
-        case .reasoning: return "brain"
-        default: return "circle"
-        }
-    }
-
-    /// Title pieces of a work row, and whether each may truncate.
-    private static func title(_ item: AgentItem, host: ChatRowHost) -> [(ChatNode, Bool)] {
-        let base = font(14)
-        func label(_ text: String, _ font: NSFont = base, _ color: NSColor = .labelColor) -> ChatNode {
-            LabelNode(text, font: font, color: color, truncation: .byTruncatingMiddle)
+    /// A work row's verb, then the pieces it acted on and whether each may
+    /// truncate.
+    private static func title(_ item: AgentItem, host: ChatRowHost) -> (String, [(ChatNode, Bool)]) {
+        let live = item.status == .inProgress
+        func label(_ text: String, _ font: NSFont = font(14), _ color: NSColor = .labelColor) -> (ChatNode, Bool) {
+            (LabelNode(text, font: font, color: color), true)
         }
         switch item.content {
         case let .command(command):
             let first = command.command.split(whereSeparator: \.isNewline).first.map(String.init) ?? command.command
-            var parts: [(ChatNode, Bool)] = [(label(first, mono(14)), true)]
+            var parts = [label(first + (command.command.contains("\n") ? "…" : ""))]
             if let code = command.exitCode, code != 0 {
                 parts.append((LabelNode("exit \(code)", font: font(13), color: .systemRed), false))
             }
-            return parts
+            return (live ? "Running" : "Ran", parts)
         case let .fileChange(change):
-            let paths = change.edits.map { relative($0.path, cwd: host.cwd) }.joined(separator: ", ").nonBlank ?? "Edit"
-            var parts: [(ChatNode, Bool)] = [(label(paths), true)]
+            let paths = change.edits.map { relative($0.path, cwd: host.cwd) }.joined(separator: ", ").nonBlank ?? "a file"
+            var parts = [label(paths)]
             if let counts = diffCounts(change.edits.first?.diff) {
                 parts.append((LabelNode(counts), false))
             }
-            return parts
+            return (live ? "Editing" : "Edited", parts)
         case let .tool(tool):
-            return [(label(tool.summary ?? [tool.server, tool.name].compactMap { $0 }.joined(separator: " · ")), true)]
+            // Summaries lead with their verb ("Read Package.swift").
+            if let summary = tool.summary?.nonBlank {
+                let words = summary.split(separator: " ", maxSplits: 1).map(String.init)
+                return (words[0], words.count > 1 ? [label(words[1])] : [])
+            }
+            let name = [tool.server, tool.name].compactMap { $0 }.joined(separator: " · ")
+            return (live ? "Using" : "Used", [label(name)])
         case let .webSearch(query):
-            return [(label("Searched “\(query)”"), true)]
+            return (live ? "Searching for" : "Searched for", [label("“\(query)”")])
         case let .subagent(agent):
-            return [(label([agent.agentType, agent.description].compactMap { $0 }.joined(separator: ": ")), true)]
+            let name = [agent.agentType, agent.description].compactMap { $0 }.joined(separator: ": ")
+            return (live ? "Running agent" : "Ran agent", [label(name)])
         case let .reasoning(text):
             let italic = ChatFonts.text(size: 14, family: nil, italic: true)
-            return [(label(text.isEmpty ? "Thinking…" : firstLine(text), italic, .secondaryLabelColor), true)]
+            return (live ? "Thinking" : "Thought", text.isEmpty ? [] : [label(firstLine(text), italic, .secondaryLabelColor)])
         default:
-            return []
+            return ("", [])
         }
     }
 
@@ -481,11 +499,12 @@ enum ChatRowNodes {
 
     private static func footer(_ footer: ChatRow.Footer, row: String, host: ChatRowHost) -> ChatNode {
         switch footer {
-        case let .running(since, waiting, visible):
-            let items: [ChatNode] = waiting
-                ? [SymbolNode("hand.raised.fill", size: 14, color: .systemOrange), LabelNode("Waiting for you", font: font(14), color: .secondaryLabelColor)]
-                : [SpinnerNode(diameter: 16), ElapsedNode(since: since, prefix: "Working · ", font: font(14), color: .secondaryLabelColor)]
-            return BoxNode(HStackNode(items, spacing: 8, flexible: [1]), hidden: !visible, height: 18)
+        case let .status(since, until, activity, agent):
+            let suffix = activity.map { " · " + describe($0, agent: agent) } ?? ""
+            return BoxNode(HStackNode([
+                SparkNode(side: 16, color: agent == .claude ? .claudeSpark : .controlAccentColor, animating: until == nil),
+                ElapsedNode(since: since, until: until, suffix: suffix, font: font(14), color: .secondaryLabelColor),
+            ], spacing: 10, flexible: [1]), height: 18)
         case let .changes(stat, from, to):
             return changedFiles(stat: stat, from: from, to: to, row: row, host: host)
         case .interrupted:
@@ -498,6 +517,16 @@ enum ChatRowNodes {
                 BoxNode(SymbolNode("exclamationmark.triangle.fill", size: 14, color: .systemRed), hug: true, height: bodyLineHeight),
                 TextNode(string(message, font(14), .systemRed)),
             ], spacing: 6, flexible: [1], align: .top)
+        }
+    }
+
+    private static func describe(_ activity: ChatRow.Activity, agent: AgentProviderKind) -> String {
+        switch activity {
+        case .waitingForAgent: return "Waiting for \(agent.displayName)…"
+        case .thinking: return "Thinking…"
+        case .writing: return "Writing…"
+        case .runningTools: return "Running tools…"
+        case .waitingForYou: return "Waiting for you"
         }
     }
 

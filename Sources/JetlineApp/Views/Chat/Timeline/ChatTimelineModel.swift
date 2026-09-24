@@ -7,7 +7,9 @@ struct ChatRow: Equatable {
     enum Content: Equatable {
         case spacer(CGFloat)
         case user(text: String, images: [String], timestamp: Date?, canRevert: Bool)
-        case assistant(text: String, timestamp: Date?, streaming: Bool)
+        /// `copyText` is set on the message that ends a finished reply: it
+        /// alone shows the actions, and copies the whole reply.
+        case assistant(text: String, timestamp: Date?, streaming: Bool, copyText: String?)
         /// Consecutive tool calls and reasoning.
         case work(items: [AgentItem], isLive: Bool)
         case plan(String)
@@ -16,15 +18,22 @@ struct ChatRow: Equatable {
         case footer(Footer)
     }
 
-    /// Below each turn: a live indicator while it runs, then what it
-    /// changed or how it ended.
+    /// Below each turn: how long it has run, live while it runs (`until`
+    /// nil, with its `activity`), then what it changed or how it ended.
     enum Footer: Equatable {
-        /// `visible` is false while a tool call shows its own progress; the
-        /// row keeps its height so the timeline doesn't jump.
-        case running(since: Date, waiting: Bool, visible: Bool)
+        case status(since: Date, until: Date?, activity: Activity?, agent: AgentProviderKind)
         case changes(stat: Checkpointer.Stat, from: String, to: String)
         case interrupted
         case failed(String)
+    }
+
+    /// What a running turn is doing right now.
+    enum Activity: Equatable {
+        case waitingForAgent
+        case thinking
+        case writing
+        case runningTools
+        case waitingForYou
     }
 
     let id: String
@@ -32,6 +41,12 @@ struct ChatRow: Equatable {
     var content: Content
     /// Space below the row.
     var gap: CGFloat = 0
+    /// The gap starts below the row's hover bar rather than sharing its
+    /// space.
+    var gapClearsBar = false
+    /// Keeps a message's actions shown without hover: the conversation's
+    /// last reply.
+    var pinsActions = false
 
     /// Views of rows of the same kind share structure, so the table reuses
     /// them within a kind.
@@ -56,8 +71,11 @@ struct ChatRow: Equatable {
 final class ChatTimelineModel {
     static let turnSpacing: CGFloat = 40
     static let itemSpacing: CGFloat = 26
+    /// Above the status row, so it reads apart from the reply.
+    static let statusSpacing: CGFloat = 26
     static let topPadding: CGFloat = 52
     static let bottomPadding: CGFloat = 20
+    private static let statusPrefix = "status-"
 
     private let session: ChatSession
     private var turns: [ChatTurn] = []
@@ -97,7 +115,14 @@ final class ChatTimelineModel {
         }
         dirty.removeAll()
         rows.append(ChatRow(id: "bottom", turnId: "", content: .spacer(Self.bottomPadding)))
+        // Only the last turn keeps its status row.
+        let lastTurn = turns.last?.id
+        rows.removeAll { $0.id.hasPrefix(Self.statusPrefix) && $0.turnId != lastTurn }
         applyGaps(&rows)
+        if let last = rows.lastIndex(where: { $0.reuseKind != "spacer" && $0.reuseKind != "footer" }),
+           case .assistant(_, _, _, .some) = rows[last].content {
+            rows[last].pinsActions = true
+        }
         return rows
     }
 
@@ -142,7 +167,7 @@ final class ChatTimelineModel {
                 ))
             case let .message(box):
                 guard case let .assistantMessage(text) = box.item.content, !text.isEmpty else { continue }
-                add(box.id, .assistant(text: text, timestamp: box.createdAt ?? turn.completedAt, streaming: box.item.status == .inProgress))
+                add(box.id, .assistant(text: text, timestamp: box.createdAt ?? turn.completedAt, streaming: box.item.status == .inProgress, copyText: nil))
             case let .work(boxes):
                 add(segment.id, .work(items: boxes.map(\.item), isLive: turn.status == .running && index == segments.count - 1))
             case let .plan(box):
@@ -155,26 +180,61 @@ final class ChatTimelineModel {
                 add(box.id, .compaction)
             }
         }
+        if turn.status != .running { markReplyEnd(&rows) }
 
-        let footerId = "footer-" + turn.id
+        let footerId = Self.statusPrefix + turn.id
+        let outcomeId = "outcome-" + turn.id
+        if turn.status == .running {
+            add(footerId, .footer(.status(
+                since: turn.startedAt,
+                until: nil,
+                activity: activity(of: turn),
+                agent: session.provider
+            )))
+        } else if turn.userMessage != nil, let completedAt = turn.completedAt {
+            add(footerId, .footer(.status(
+                since: turn.startedAt,
+                until: completedAt,
+                activity: nil,
+                agent: session.provider
+            )))
+        }
         switch turn.status {
         case .running:
-            let waiting = !session.requests.isEmpty
-            let workRunning = turn.items.contains { box in
-                (box.kind == .work || box.kind == .reasoning) && box.item.status == .inProgress
-            }
-            let started = turn.providerTurnId != nil || !turn.items.isEmpty
-            add(footerId, .footer(.running(since: turn.startedAt, waiting: waiting, visible: started && (waiting || !workRunning))))
+            break
         case .completed:
             if let stat = turn.stat, !stat.isEmpty, let before = turn.checkpointBefore, let after = turn.checkpointAfter {
-                add(footerId, .footer(.changes(stat: stat, from: before, to: after)))
+                add(outcomeId, .footer(.changes(stat: stat, from: before, to: after)))
             }
         case .interrupted:
-            add(footerId, .footer(.interrupted))
+            add(outcomeId, .footer(.interrupted))
         case .failed:
-            add(footerId, .footer(.failed(turn.errorMessage ?? "The turn failed.")))
+            add(outcomeId, .footer(.failed(turn.errorMessage ?? "The turn failed.")))
         }
         return rows
+    }
+
+    private func activity(of turn: ChatTurn) -> ChatRow.Activity {
+        if !session.requests.isEmpty { return .waitingForYou }
+        guard let box = turn.items.last(where: { $0.item.status == .inProgress }) else { return .waitingForAgent }
+        switch box.item.content {
+        case .reasoning: return .thinking
+        case .assistantMessage: return .writing
+        default: return box.kind == .work ? .runningTools : .waitingForAgent
+        }
+    }
+
+    /// Gives the reply's last row, if it is a message, the text of every
+    /// message since the user's.
+    private func markReplyEnd(_ rows: inout [ChatRow]) {
+        guard let last = rows.indices.last,
+              case let .assistant(text, timestamp, streaming, _) = rows[last].content else { return }
+        var texts: [String] = []
+        for row in rows.reversed() {
+            if case .user = row.content { break }
+            if case let .assistant(text, _, _, _) = row.content { texts.append(text) }
+        }
+        rows[last].content = .assistant(text: text, timestamp: timestamp, streaming: streaming, copyText: texts.reversed().joined(separator: "\n\n"))
     }
 
     /// Items within a turn sit `itemSpacing` apart, turns `turnSpacing`. A
@@ -194,6 +254,10 @@ final class ChatTimelineModel {
                 }
             }
             if case .user = rows[index].content { gap += Self.turnSpacing - Self.itemSpacing }
+            if let next, next.id.hasPrefix(Self.statusPrefix) {
+                gap = Self.statusSpacing
+                rows[index].gapClearsBar = true
+            }
             rows[index].gap = gap
         }
     }

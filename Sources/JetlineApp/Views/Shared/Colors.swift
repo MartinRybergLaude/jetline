@@ -30,4 +30,7 @@ extension NSColor {
             ? .systemGreen
             : NSColor(srgbRed: 0.102, green: 0.498, blue: 0.216, alpha: 1)
     }
+
+    /// Claude's terracotta, for its working indicator.
+    static let claudeSpark = NSColor(srgbRed: 0.851, green: 0.467, blue: 0.341, alpha: 1)
 }
