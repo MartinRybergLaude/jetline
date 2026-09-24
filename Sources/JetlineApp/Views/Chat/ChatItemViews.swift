@@ -61,8 +61,8 @@ extension MarkdownStyle {
     /// Chat body text: larger than the inspector's comment style.
     static func chat(fontFamily: String? = nil) -> MarkdownStyle {
         MarkdownStyle(
-            bodySize: 16, codeSize: 15, blockSpacing: 12,
-            fontFamily: fontFamily, tableBodySize: 15, lineSpacing: 3, spaciousTables: true
+            bodySize: 15, codeSize: 14, blockSpacing: 12,
+            fontFamily: fontFamily, tableBodySize: 14, lineSpacing: 3, spaciousTables: true
         )
     }
 }
@@ -71,33 +71,14 @@ extension MarkdownStyle {
 
 struct UserMessageView: View {
     let box: ChatItemBox
+    let timestamp: Date?
     let canRevert: Bool
     let onRevert: () -> Void
-    @State private var hovering = false
     @State private var confirmingRevert = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(spacing: 0) {
             Spacer(minLength: 60)
-            if canRevert {
-                Button {
-                    confirmingRevert = true
-                } label: {
-                    Image(systemName: "arrow.uturn.backward")
-                        .font(.system(size: 14, weight: .medium))
-                        .frame(width: 22, height: 22)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
-                .opacity(hovering ? 1 : 0)
-                .help("Revert to before this message")
-                .confirmationDialog("Revert to before this message?", isPresented: $confirmingRevert) {
-                    Button("Revert", role: .destructive, action: onRevert)
-                } message: {
-                    Text("Files are restored to how they were before this message — including changes other tabs made since — and the agent forgets this message and everything after it. The message goes back into the composer.")
-                }
-            }
             if case let .userMessage(message) = box.item.content {
                 VStack(alignment: .trailing, spacing: 6) {
                     if !message.images.isEmpty {
@@ -109,7 +90,7 @@ struct UserMessageView: View {
                     }
                     if !message.text.isEmpty {
                         Text(message.text)
-                            .font(.system(size: 16))
+                            .font(.system(size: 15))
                             .lineSpacing(3)
                             .textSelection(.enabled)
                             .padding(.horizontal, 16)
@@ -117,19 +98,143 @@ struct UserMessageView: View {
                             .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
+                .messageActions(
+                    alignment: .trailing,
+                    text: message.text,
+                    timestamp: timestamp,
+                    revert: canRevert ? { confirmingRevert = true } : nil
+                )
             }
         }
-        .onHover { hovering = $0 }
+        .confirmationDialog("Revert to before this message?", isPresented: $confirmingRevert) {
+            Button("Revert", role: .destructive, action: onRevert)
+        } message: {
+            Text("Files are restored to how they were before this message — including changes other tabs made since — and the agent forgets this message and everything after it. The message goes back into the composer.")
+        }
     }
 }
 
 struct AssistantMessageView: View {
     let box: ChatItemBox
+    let timestamp: Date?
 
     var body: some View {
         if case let .assistantMessage(text) = box.item.content, !text.isEmpty {
             StreamingMarkdown(text: text)
+                .messageActions(
+                    alignment: .leading, text: text, timestamp: timestamp, revert: nil,
+                    enabled: box.item.status != .inProgress
+                )
         }
+    }
+}
+
+// MARK: - Message actions
+
+private extension View {
+    /// Revert / copy / time, shown below the message on hover. An overlay,
+    /// so it takes no layout space: it sits in the gap to the next item.
+    func messageActions(
+        alignment: HorizontalAlignment, text: String, timestamp: Date?, revert: (() -> Void)?, enabled: Bool = true
+    ) -> some View {
+        modifier(MessageActionsModifier(alignment: alignment, text: text, timestamp: timestamp, revert: revert, enabled: enabled))
+    }
+}
+
+private struct MessageActionsModifier: ViewModifier {
+    let alignment: HorizontalAlignment
+    let text: String
+    let timestamp: Date?
+    let revert: (() -> Void)?
+    let enabled: Bool
+    @State private var hovering = false
+
+    /// Assistant text runs full width with no bubble, so its bar needs more
+    /// air to read as separate; 6 + 20 still fits the 26pt item gap.
+    private var gap: CGFloat { alignment == .leading ? 6 : 2 }
+    private static let barHeight: CGFloat = 20
+
+    func body(content: Content) -> some View {
+        let visible = enabled && hovering
+        let reach = gap + Self.barHeight
+        return content
+            // Grow the view down over the bar's slot so hovering either the
+            // message or the bar counts — the bar has to live *inside* the
+            // hovered view, or pointing at it reads as leaving the message
+            // and it fades out under the cursor. The space is given back
+            // after, so layout is unchanged.
+            .padding(.bottom, reach)
+            .overlay(alignment: Alignment(horizontal: alignment, vertical: .bottom)) {
+                MessageActionBar(timestampFirst: alignment == .trailing, text: text, timestamp: timestamp, revert: revert)
+                    .frame(height: Self.barHeight)
+                    .opacity(visible ? 1 : 0)
+                    .animation(.easeInOut(duration: 0.18), value: visible)
+                    // Hidden buttons would still catch clicks meant for the
+                    // item below.
+                    .allowsHitTesting(visible)
+            }
+            .contentShape(Rectangle())
+            .onHover { hovering = $0 }
+            .padding(.bottom, -reach)
+    }
+}
+
+private struct MessageActionBar: View {
+    /// User messages sit on the right, so their time leads the buttons.
+    let timestampFirst: Bool
+    let text: String
+    let timestamp: Date?
+    let revert: (() -> Void)?
+    @State private var copied = false
+
+    var body: some View {
+        HStack(spacing: 2) {
+            if timestampFirst { time.padding(.trailing, 4) }
+            if let revert {
+                icon("arrow.uturn.backward", help: "Revert to before this message", action: revert)
+            }
+            icon(copied ? "checkmark" : "doc.on.doc", help: "Copy", action: copy)
+            if !timestampFirst { time.padding(.leading, 4) }
+        }
+        .foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder
+    private var time: some View {
+        if let timestamp {
+            Text(Self.format(timestamp))
+                .font(.system(size: 11))
+                .monospacedDigit()
+                .help(timestamp.formatted(date: .complete, time: .standard))
+        }
+    }
+
+    private func icon(_ symbol: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .medium))
+                .frame(width: 24, height: 20)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .help(help)
+    }
+
+    private func copy() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        copied = true
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            copied = false
+        }
+    }
+
+    /// Time only for today; the date too before that.
+    static func format(_ date: Date) -> String {
+        Calendar.current.isDateInToday(date)
+            ? date.formatted(date: .omitted, time: .shortened)
+            : date.formatted(.dateTime.month(.abbreviated).day().hour().minute())
     }
 }
 
@@ -166,12 +271,12 @@ struct WorkGroupView: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                     WorkGroupSummary(boxes: boxes)
                     Spacer(minLength: 0)
                 }
-                .font(.system(size: 15))
+                .font(.system(size: 14))
                 .foregroundStyle(.secondary)
                 .contentShape(Rectangle())
             }
@@ -248,7 +353,7 @@ struct WorkRowView: View {
                         .truncationMode(.middle)
                     Spacer(minLength: 0)
                 }
-                .font(.system(size: 15))
+                .font(.system(size: 14))
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -282,9 +387,9 @@ struct WorkRowView: View {
         case let .command(command):
             HStack(spacing: 6) {
                 Text(command.command.split(whereSeparator: \.isNewline).first.map(String.init) ?? command.command)
-                    .font(.system(size: 15, design: .monospaced))
+                    .font(.system(size: 14, design: .monospaced))
                 if let code = command.exitCode, code != 0 {
-                    Text("exit \(code)").foregroundStyle(.red).font(.system(size: 14))
+                    Text("exit \(code)").foregroundStyle(.red).font(.system(size: 13))
                 }
             }
         case let .fileChange(change):
@@ -338,7 +443,7 @@ struct WorkRowView: View {
                     if let diff = edit.diff, !diff.isEmpty {
                         VStack(alignment: .leading, spacing: 2) {
                             if change.edits.count > 1 {
-                                Text(relative(edit.path)).font(.system(size: 14, weight: .medium))
+                                Text(relative(edit.path)).font(.system(size: 13, weight: .medium))
                             }
                             InlineDiffView(diff: diff)
                         }
@@ -357,7 +462,7 @@ struct WorkRowView: View {
         case let .subagent(agent):
             VStack(alignment: .leading, spacing: 6) {
                 if let prompt = agent.prompt {
-                    Text(prompt).font(.system(size: 15)).foregroundStyle(.secondary).textSelection(.enabled)
+                    Text(prompt).font(.system(size: 14)).foregroundStyle(.secondary).textSelection(.enabled)
                 }
                 if let result = agent.result, !result.isEmpty {
                     MarkdownView(blocks: MarkdownParser.parse(result), style: .comment)
@@ -365,7 +470,7 @@ struct WorkRowView: View {
             }
         case let .reasoning(text):
             Text(text)
-                .font(.system(size: 15))
+                .font(.system(size: 14))
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -393,13 +498,13 @@ private struct StatusGlyph: View {
         case .inProgress:
             ProgressView().controlSize(.mini)
         case .completed:
-            Image(systemName: symbol).foregroundStyle(.secondary).font(.system(size: 13))
+            Image(systemName: symbol).foregroundStyle(.secondary).font(.system(size: 12))
         case .failed:
-            Image(systemName: "xmark.circle.fill").foregroundStyle(.red).font(.system(size: 13))
+            Image(systemName: "xmark.circle.fill").foregroundStyle(.red).font(.system(size: 12))
         case .declined:
-            Image(systemName: "hand.raised.fill").foregroundStyle(.orange).font(.system(size: 13))
+            Image(systemName: "hand.raised.fill").foregroundStyle(.orange).font(.system(size: 12))
         case .interrupted:
-            Image(systemName: "stop.circle").foregroundStyle(.secondary).font(.system(size: 13))
+            Image(systemName: "stop.circle").foregroundStyle(.secondary).font(.system(size: 12))
         }
     }
 }
@@ -414,7 +519,7 @@ struct DiffCounts: View {
             if adds > 0 { Text("+\(adds)").foregroundStyle(Color.readableGreen) }
             if dels > 0 { Text("−\(dels)").foregroundStyle(.red) }
         }
-        .font(.system(size: 14, weight: .medium, design: .monospaced))
+        .font(.system(size: 13, weight: .medium, design: .monospaced))
     }
 
     static func counts(_ diff: String?) -> (Int, Int) {
@@ -440,7 +545,7 @@ struct MonospaceBlock: View {
         VStack(alignment: .leading, spacing: 0) {
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(clipped ? lines.suffix(maxLines).joined(separator: "\n") : text)
-                    .font(.system(size: 14, design: .monospaced))
+                    .font(.system(size: 13, design: .monospaced))
                     .textSelection(.enabled)
                     .fixedSize(horizontal: true, vertical: false)
                     .padding(8)
@@ -448,7 +553,7 @@ struct MonospaceBlock: View {
             if clipped {
                 Button("Show all \(lines.count) lines") { showAll = true }
                     .buttonStyle(.link)
-                    .font(.system(size: 14))
+                    .font(.system(size: 13))
                     .padding([.horizontal, .bottom], 8)
             }
         }
@@ -471,7 +576,7 @@ struct InlineDiffView: View {
                     let raw = String(line)
                     let kind = DiffLineTint.kind(ofRawLine: raw)
                     Text(raw.isEmpty ? " " : raw)
-                        .font(.system(size: 14, design: .monospaced))
+                        .font(.system(size: 13, design: .monospaced))
                         .foregroundStyle(kind == nil ? Color.secondary : Color.primary)
                         .padding(.horizontal, 8)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -500,11 +605,11 @@ struct PlanCardView: View {
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "list.bullet.clipboard")
-                        Text("Plan").font(.system(size: 15, weight: .semibold))
+                        Text("Plan").font(.system(size: 14, weight: .semibold))
                         Spacer()
                         Image(systemName: "chevron.down")
                             .rotationEffect(.degrees(expanded ? 0 : -90))
-                            .font(.system(size: 13))
+                            .font(.system(size: 12))
                     }
                     .foregroundStyle(.secondary)
                     .contentShape(Rectangle())
@@ -536,7 +641,7 @@ struct NoticeView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
-            .font(.system(size: 15))
+            .font(.system(size: 14))
         }
     }
 
@@ -561,7 +666,7 @@ struct CompactionView: View {
     var body: some View {
         HStack(spacing: 8) {
             Rectangle().fill(Color.secondary.opacity(0.25)).frame(height: 0.5)
-            Text("Context compacted").font(.system(size: 14)).foregroundStyle(.secondary).fixedSize()
+            Text("Context compacted").font(.system(size: 13)).foregroundStyle(.secondary).fixedSize()
             Rectangle().fill(Color.secondary.opacity(0.25)).frame(height: 0.5)
         }
     }

@@ -60,6 +60,7 @@ struct ChatItemRecord: Codable, FetchableRecord, PersistableRecord, Sendable {
     var seq: Int
     /// JSON-encoded `AgentItem`.
     var payload: Data
+    var createdAt: Date?
 }
 
 /// Persistence for native chats. Writes go through GRDB's serial

@@ -25,10 +25,14 @@ final class ChatItemBox: Identifiable {
     let id: String
     let kind: Kind
     var item: AgentItem
+    /// When the item first appeared. `nil` for items saved before this was
+    /// recorded.
+    let createdAt: Date?
 
-    init(id: String, item: AgentItem) {
+    init(id: String, item: AgentItem, createdAt: Date? = Date()) {
         self.id = id
         self.item = item
+        self.createdAt = createdAt
         switch item.content {
         case .userMessage: kind = .user
         case .assistantMessage: kind = .message
@@ -800,7 +804,7 @@ final class ChatSession: Identifiable {
     private func persistItem(_ box: ChatItemBox, in turn: ChatTurn) {
         guard let payload = try? ChatStore.encoder.encode(box.item) else { return }
         let seq = turn.seq * 100_000 + (turn.items.firstIndex { $0 === box } ?? turn.items.count)
-        ChatStore.save(ChatItemRecord(id: box.id, threadId: id, turnId: turn.id, seq: seq, payload: payload))
+        ChatStore.save(ChatItemRecord(id: box.id, threadId: id, turnId: turn.id, seq: seq, payload: payload, createdAt: box.createdAt))
     }
 
     private func loadTranscript() {
@@ -824,7 +828,7 @@ final class ChatSession: Identifiable {
             for itemRecord in byTurn[record.id] ?? [] {
                 guard var item = try? ChatStore.decoder.decode(AgentItem.self, from: itemRecord.payload) else { continue }
                 if item.status == .inProgress { item.status = .interrupted }
-                let box = ChatItemBox(id: itemRecord.id, item: item)
+                let box = ChatItemBox(id: itemRecord.id, item: item, createdAt: itemRecord.createdAt)
                 turn.items.append(box)
                 boxesByItemId[item.id] = box
             }

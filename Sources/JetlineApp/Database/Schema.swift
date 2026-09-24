@@ -339,5 +339,11 @@ enum Schema {
                 t.add(column: "chatFontFamily", .text)
             }
         }
+
+        migrator.registerMigration("v24_chat_item_created_at") { db in
+            try db.alter(table: "chat_items") { t in
+                t.add(column: "createdAt", .datetime)
+            }
+        }
     }
 }
