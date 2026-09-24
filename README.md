@@ -14,12 +14,12 @@ action bar that fast-paths the common things and hands the rest to an agent.
 - Embedded terminal hosting `claude` / `codex` / `vibe` / shell ✅ (libghostty-backed)
 - Multiple session tabs per workspace, ⌘N new workspace, ⌘1…⌘9 tabs, ⌘⇧←/→ (or ⌘⇧H/L) terminals, ⌘⇧↑/↓ (or ⌘⇧J/K) workspaces, drag-reorder ✅ — the ⌘⇧ shortcuts yield to standard text selection while repo or app settings are being edited
 - Close a workspace from its sidebar row (✕ on hover) or by closing its last tab — ends its sessions and drops it from ⌘⇧↑/↓ cycling ✅
-- Inspector: changes (combined / PR / local), PR + checks, run output ✅
+- Inspector: changes (combined / PR / local) opening full-file diff tabs, PR + checks + conversation, run output ✅
 - FSEvents watcher → live diff refresh + PR poll kick ✅
 - Git action bar: commit / create PR / pull / rebase / fix CI / fix comments / review / merge ✅
 - Fast-path rebase + pull (no agent token spend on the no-conflict case) ✅
 - Per-repo branch naming controls, setup / run / archive scripts, exclusive run ✅
-- Settings: agents, binary paths, prompt overrides (global + per-repo), theme, terminal font, tab strip scrollbar ✅
+- Settings: agents, binary paths, prompt overrides (global + per-repo), theme, terminal font ✅
 - File editor, Conductor import ❌ explicitly out of scope
 
 ## Build
