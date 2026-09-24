@@ -105,7 +105,6 @@ struct TerminalArea: View {
             state.inspectorVisible.toggle()
         } label: {
             Image(systemName: "sidebar.right")
-                .symbolVariant(state.inspectorVisible ? .fill : .none)
         }
         .help("Toggle inspector")
     }
@@ -476,7 +475,7 @@ private struct ReadyOrRunningRunSlot: View {
             Button {
                 state.toggleRun(for: workspace)
             } label: {
-                Label("Run", systemImage: "play.fill")
+                Label("Run", systemImage: "play")
             }
             .help("Run the configured run script")
         }
@@ -503,7 +502,7 @@ private struct RunStatusButton: View {
         Label {
             Text(accessibilityTitle)
         } icon: {
-            Image(systemName: runner.phase == .idle ? "play.fill" : "stop.fill")
+            Image(systemName: runner.phase == .idle ? "play" : "stop")
                 .overlay(alignment: .topTrailing) { statusDot }
         }
     }
@@ -823,10 +822,9 @@ private struct OpenInAppButton: View {
                 }
             }
         } label: {
-            HStack(spacing: 5) {
+            HStack {
                 if let icon = current.icon(size: 14) {
-                    Image(nsImage: icon)
-                        .frame(width: 14, height: 14)
+                    Image(nsImage: ToolbarLabelIcon.app(icon))
                 }
                 Text(current.displayName)
             }

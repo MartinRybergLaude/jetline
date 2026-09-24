@@ -114,20 +114,21 @@ private struct GitActionMenuContent: View {
     }
 
     private func label(for action: GitAction) -> some View {
-        HStack(spacing: 5) {
-            Image(systemName: action.systemImage)
-                .font(.system(size: 13))
-                .frame(width: 14, height: 14)
-            Text(action.displayName)
-        }
+        toolbarLabel(symbol: action.systemImage, title: action.displayName)
     }
 
     private var idleLabel: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "arrow.triangle.branch")
-                .font(.system(size: 13))
-                .frame(width: 14, height: 14)
-            Text("Git")
+        toolbarLabel(symbol: "arrow.triangle.branch", title: "Git")
+    }
+
+    /// See `ToolbarLabelIcon` for why the icon isn't a plain `Image(systemName:)`.
+    @ViewBuilder
+    private func toolbarLabel(symbol: String, title: String) -> some View {
+        HStack {
+            if let icon = ToolbarLabelIcon.symbol(symbol) {
+                Image(nsImage: icon)
+            }
+            Text(title)
         }
     }
 
