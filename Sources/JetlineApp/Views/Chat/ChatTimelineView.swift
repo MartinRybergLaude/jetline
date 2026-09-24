@@ -127,8 +127,9 @@ private struct TurnFooter: View {
     var body: some View {
         switch turn.status {
         case .running:
-            if turn.providerTurnId != nil || !turn.items.isEmpty {
-                WorkingIndicator(since: turn.startedAt, waiting: !session.requests.isEmpty)
+            let waiting = !session.requests.isEmpty
+            if (turn.providerTurnId != nil || !turn.items.isEmpty) && (waiting || !isWorkRunning) {
+                WorkingIndicator(since: turn.startedAt, waiting: waiting)
             }
         case .completed:
             if let stat = turn.stat, !stat.isEmpty, let before = turn.checkpointBefore, let after = turn.checkpointAfter {
@@ -143,6 +144,14 @@ private struct TurnFooter: View {
                 .font(.system(size: 15))
                 .foregroundStyle(.red)
                 .textSelection(.enabled)
+        }
+    }
+
+    /// A tool call or reasoning block is in progress; the work group shows
+    /// its own progress then, so the footer indicator would double it.
+    private var isWorkRunning: Bool {
+        turn.items.contains { box in
+            (box.kind == .work || box.kind == .reasoning) && box.item.status == .inProgress
         }
     }
 }

@@ -133,6 +133,18 @@ final class ClaudeEventMapperTests: XCTestCase {
         XCTAssertEqual(ClaudeProvider.claudeMode(for: .fullAccess, interaction: .plan), "plan")
     }
 
+    func testModelNamesCarryTheExactVersion() {
+        func name(_ value: String, _ display: String?, _ description: String?) -> String {
+            ClaudeProvider.modelName(value: value, displayName: display, description: description)
+        }
+        XCTAssertEqual(name("default", "Default (recommended)", "Opus 5.5 with 1M context · Best for everyday, complex tasks"), "Default (Opus 5.5 1M)")
+        XCTAssertEqual(name("opus[1m]", "Opus (1M context)", "Opus 5.5 with 1M context · Best for everyday, complex tasks"), "Opus 5.5 1M")
+        XCTAssertEqual(name("claude-fable-5-1[1m]", "Fable", "Fable 5.1 · Most capable for your hardest and longest-running tasks"), "Fable 5.1")
+        XCTAssertEqual(name("haiku", "Haiku", "Haiku 4.5 · Fastest for quick answers"), "Haiku 4.5")
+        XCTAssertEqual(name("custom", "Custom", "Uses your configured model"), "Custom")
+        XCTAssertEqual(name("custom", nil, nil), "custom")
+    }
+
     // MARK: Helpers
 
     /// Replay a transcript, starting a new turn (`turn-N`) before the first

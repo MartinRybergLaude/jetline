@@ -608,12 +608,28 @@ actor ClaudeProvider: AgentProvider {
         }
     }
 
+    /// The CLI's display names are family aliases ("Opus (1M context)"); the
+    /// exact version is only in the description ("Opus 5.5 with 1M context
+    /// · Best for…"). Lift it out: "Opus 5.5 1M", "Default (Opus 5.5 1M)".
+    static func modelName(value: String, displayName: String?, description: String?) -> String {
+        guard let head = description?.components(separatedBy: " · ").first?.nonBlank,
+              head.first?.isLetter == true, head.contains(where: \.isNumber) else {
+            return displayName ?? value
+        }
+        let name = head.replacingOccurrences(of: " with 1M context", with: " 1M")
+        return value == "default" ? "Default (\(name))" : name
+    }
+
     private func sessionInfo(from initialize: JSONValue) -> AgentSessionInfo {
         let models = (initialize["models"]?.array ?? []).compactMap { model -> AgentModelOption? in
             guard let value = model["value"]?.string else { return nil }
             return AgentModelOption(
                 id: value,
-                displayName: model["displayName"]?.string ?? value,
+                displayName: Self.modelName(
+                    value: value,
+                    displayName: model["displayName"]?.string,
+                    description: model["description"]?.string
+                ),
                 description: model["description"]?.string,
                 efforts: model["supportedEffortLevels"]?.array?.compactMap(\.string) ?? [],
                 defaultEffort: nil,

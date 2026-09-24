@@ -143,6 +143,7 @@ struct ChatComposer: View {
     private var controls: some View {
         HStack(spacing: 8) {
             ModelMenu(session: session)
+            EffortMenu(session: session)
             RuntimeModeMenu(session: session)
             Spacer()
             if let usage = session.usage { ContextMeter(usage: usage) }
@@ -313,53 +314,75 @@ private struct ModelMenu: View {
                 Text(session.connection == .connected ? "No models reported" : "Connecting…")
             }
             ForEach(session.models) { model in
-                if model.efforts.count > 1 {
-                    Menu {
-                        ForEach(model.efforts, id: \.self) { effort in
-                            Button {
-                                select(model.id, effort: effort)
-                            } label: {
-                                if session.modelOption?.id == model.id, (session.effort ?? model.defaultEffort) == effort {
-                                    Label(effort.capitalized, systemImage: "checkmark")
-                                } else {
-                                    Text(effort.capitalized)
-                                }
-                            }
-                        }
-                    } label: {
-                        modelLabel(model)
-                    } primaryAction: {
-                        select(model.id, effort: nil)
+                Button { select(model) } label: {
+                    if session.modelOption?.id == model.id {
+                        Label(model.displayName, systemImage: "checkmark")
+                    } else {
+                        Text(model.displayName)
                     }
-                } else {
-                    Button { select(model.id, effort: nil) } label: { modelLabel(model) }
                 }
             }
         } label: {
-            Text(title)
+            Text(session.modelOption?.displayName ?? session.model ?? session.resolvedModel ?? "Default model")
         }
         .pillMenu()
         .help(session.modelOption?.description ?? "Model")
     }
 
-    private var title: String {
-        let name = session.modelOption?.displayName ?? session.model ?? session.resolvedModel ?? "Default model"
-        if let effort = session.effort { return "\(name) · \(effort)" }
-        return name
+    /// Keeps the chosen effort when the new model supports it.
+    private func select(_ model: AgentModelOption) {
+        let effort = session.effort.flatMap { model.efforts.contains($0) ? $0 : nil }
+        session.setModel(model.id, effort: effort)
+        state.rememberChatModel(model.id, effort: effort, for: session.provider)
     }
+}
 
-    @ViewBuilder
-    private func modelLabel(_ model: AgentModelOption) -> some View {
-        if session.modelOption?.id == model.id {
-            Label(model.displayName, systemImage: "checkmark")
-        } else {
-            Text(model.displayName)
+/// Reasoning effort for the current model; hidden when it has no choice.
+private struct EffortMenu: View {
+    @EnvironmentObject private var state: AppState
+    let session: ChatSession
+
+    var body: some View {
+        if let model = session.modelOption, model.efforts.count > 1 {
+            Menu {
+                Button { select(nil, model: model) } label: {
+                    let title = model.defaultEffort.map { "Default (\($0.capitalized))" } ?? "Default"
+                    if session.effort == nil {
+                        Label(title, systemImage: "checkmark")
+                    } else {
+                        Text(title)
+                    }
+                }
+                Divider()
+                ForEach(model.efforts, id: \.self) { effort in
+                    Button { select(effort, model: model) } label: {
+                        if session.effort == effort {
+                            Label(effort.capitalized, systemImage: "checkmark")
+                        } else {
+                            Text(effort.capitalized)
+                        }
+                    }
+                }
+            } label: {
+                Label((session.effort ?? model.defaultEffort)?.capitalized ?? "Default effort", systemImage: "gauge.with.dots.needle.50percent")
+            }
+            .pillMenu(tint: tint(for: session.effort ?? model.defaultEffort))
+            .help("Reasoning effort")
         }
     }
 
-    private func select(_ model: String, effort: String?) {
-        session.setModel(model, effort: effort)
-        state.rememberChatModel(model, effort: effort, for: session.provider)
+    /// Flags the slow, token-hungry levels.
+    private func tint(for effort: String?) -> PillTint? {
+        switch effort?.lowercased() {
+        case "max": return .red
+        case "xhigh": return .yellow
+        default: return nil
+        }
+    }
+
+    private func select(_ effort: String?, model: AgentModelOption) {
+        session.setModel(model.id, effort: effort)
+        state.rememberChatModel(model.id, effort: effort, for: session.provider)
     }
 }
 
@@ -373,28 +396,90 @@ private struct RuntimeModeMenu: View {
                     session.setRuntimeMode(mode)
                 } label: {
                     if mode == session.runtimeMode {
-                        Label("\(mode.displayName) — \(mode.summary)", systemImage: "checkmark")
+                        Label(mode.displayName, systemImage: "checkmark")
                     } else {
-                        Text("\(mode.displayName) — \(mode.summary)")
+                        Text(mode.displayName)
                     }
                 }
             }
         } label: {
             Label(session.runtimeMode.displayName, systemImage: session.runtimeMode.symbol)
         }
-        .pillMenu()
+        .pillMenu(tint: tint)
         .help(session.runtimeMode.summary)
+    }
+
+    /// Warns when the agent runs without asking.
+    private var tint: PillTint? {
+        switch session.runtimeMode {
+        case .fullAccess: return .red
+        case .auto: return .yellow
+        case .supervised, .acceptEdits: return nil
+        }
+    }
+}
+
+enum PillTint {
+    case red, yellow
+
+    var foreground: Color {
+        switch self {
+        case .red: return Color(nsColor: .pillRed)
+        case .yellow: return Color(nsColor: .pillYellow)
+        }
+    }
+
+    var fill: Color {
+        switch self {
+        case .red: return Color.red.opacity(0.14)
+        case .yellow: return Color.yellow.opacity(0.22)
+        }
+    }
+}
+
+private extension NSColor {
+    static let pillRed = NSColor(name: "pillRed") { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(srgbRed: 1, green: 0.5, blue: 0.47, alpha: 1)
+            : NSColor(srgbRed: 0.72, green: 0.1, blue: 0.1, alpha: 1)
+    }
+    static let pillYellow = NSColor(name: "pillYellow") { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(srgbRed: 1, green: 0.82, blue: 0.35, alpha: 1)
+            : NSColor(srgbRed: 0.55, green: 0.38, blue: 0, alpha: 1)
+    }
+}
+
+/// Capsule with a trailing chevron; gray unless tinted.
+private struct PillButtonStyle: ButtonStyle {
+    var tint: PillTint?
+
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 6) {
+            configuration.label
+            Image(systemName: "chevron.down")
+                .font(.system(size: 10, weight: .semibold))
+                .opacity(0.7)
+        }
+        .font(.system(size: 14))
+        .foregroundStyle(tint?.foreground ?? Color.primary)
+        // Fixed height: symbols differ in height (the Full access bolt is
+        // taller), which would otherwise resize the pill per mode.
+        .imageScale(.small)
+        .frame(height: 28)
+        .padding(.horizontal, 12)
+        .background(Capsule().fill(tint?.fill ?? Color.secondary.opacity(0.12)))
+        .opacity(configuration.isPressed ? 0.7 : 1)
+        .contentShape(Capsule())
     }
 }
 
 private extension View {
     /// Capsule dropdown button for the composer's option menus.
-    func pillMenu() -> some View {
+    func pillMenu(tint: PillTint? = nil) -> some View {
         menuStyle(.button)
-            .buttonStyle(.bordered)
-            .buttonBorderShape(.capsule)
-            .menuIndicator(.visible)
-            .controlSize(.small)
+            .buttonStyle(PillButtonStyle(tint: tint))
+            .menuIndicator(.hidden)
             .fixedSize()
     }
 }
