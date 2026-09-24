@@ -19,11 +19,11 @@ enum DiffLineTint {
         }
     }
 
-    static func marker(_ kind: FileDiff.Line.Kind) -> Color {
+    static func markerColor(_ kind: FileDiff.Line.Kind) -> NSColor? {
         switch kind {
         case .addition: return .readableGreen
-        case .deletion: return .red
-        case .context:  return .secondary
+        case .deletion: return .systemRed
+        case .context:  return nil
         }
     }
 

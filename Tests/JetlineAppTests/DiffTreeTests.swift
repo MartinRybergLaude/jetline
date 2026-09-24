@@ -56,12 +56,11 @@ final class FileDiffLineTests: XCTestCase {
             ])
         ])
         let rows = FileDiffLine.lines(for: file)
-        XCTAssertEqual(rows.map(\.oldNumber), [3, 4, nil, 5])
         XCTAssertEqual(rows.map(\.newNumber), [3, nil, 4, 5])
         XCTAssertFalse(rows.contains(where: \.isHunkHeader))
     }
 
     func testNewFileStartsAtOne() {
-        XCTAssertEqual(FileDiffLine.startLines(ofHunkHeader: "@@ -0,0 +1,12 @@").1, 1)
+        XCTAssertEqual(FileDiffLine.newStartLine(ofHunkHeader: "@@ -0,0 +1,12 @@"), 1)
     }
 }

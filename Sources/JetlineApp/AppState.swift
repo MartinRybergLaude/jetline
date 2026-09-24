@@ -854,11 +854,15 @@ final class AppState: ObservableObject {
             agent: agent,
             cwd: workspace.worktreePath
         )
-        let ws = workspaceState(for: workspace.id)
+        addSession(session, to: workspace.id)
+    }
+
+    /// Appends `session` to the end of the strip, shows it, and starts it.
+    private func addSession(_ session: PTYSession, to workspaceId: String) {
+        let ws = workspaceState(for: workspaceId)
         ws.sessions.append(session)
         ws.tabOrder.append(.session(session.id))
-        ws.activeSessionId = session.id
-        ws.activeDiffTabId = nil
+        selectSession(session.id, in: workspaceId)
         Task { await session.startIfNeeded() }
     }
 
@@ -892,7 +896,7 @@ final class AppState: ObservableObject {
     func closeDiffTab(_ tabId: String, in workspaceId: String) {
         let ws = workspaceState(for: workspaceId)
         guard let idx = ws.diffTabs.firstIndex(where: { $0.id == tabId }) else { return }
-        let order = ws.orderedTabs
+        let order = ws.tabOrder
         ws.diffTabs.remove(at: idx)
         ws.tabOrder.removeAll { $0 == .diff(tabId) }
         if ws.activeDiffTabId == tabId {
@@ -958,12 +962,7 @@ final class AppState: ObservableObject {
             cwd: workspace.worktreePath,
             initialPrompt: prompt
         )
-        let ws = workspaceState(for: workspace.id)
-        ws.sessions.append(session)
-        ws.tabOrder.append(.session(session.id))
-        ws.activeSessionId = session.id
-        ws.activeDiffTabId = nil
-        Task { await session.startIfNeeded() }
+        addSession(session, to: workspace.id)
     }
 
     /// Resolve the agent for a given action through the fallback chain:
@@ -1265,7 +1264,7 @@ final class AppState: ObservableObject {
     func closeSession(_ sessionId: String, in workspaceId: String) {
         let ws = workspaceState(for: workspaceId)
         guard let idx = ws.sessions.firstIndex(where: { $0.id == sessionId }) else { return }
-        let order = ws.orderedTabs
+        let order = ws.tabOrder
         let wasShowing = ws.activeTab == .session(sessionId)
         let session = ws.sessions.remove(at: idx)
         ws.tabOrder.removeAll { $0 == .session(sessionId) }
@@ -1293,7 +1292,7 @@ final class AppState: ObservableObject {
     /// don't thrash observers mid-drag.
     func moveTab(_ tab: TabRef, toIndex newIndex: Int, in workspaceId: String) {
         let ws = workspaceState(for: workspaceId)
-        var order = ws.orderedTabs
+        var order = ws.tabOrder
         guard let from = order.firstIndex(of: tab),
               newIndex >= 0, newIndex < order.count, from != newIndex else { return }
         order.insert(order.remove(at: from), at: newIndex)
@@ -1303,7 +1302,7 @@ final class AppState: ObservableObject {
     /// Activate the Nth tab (1-indexed) of the active workspace. Used by ⌘1…⌘9.
     func selectTabByIndex(_ oneBased: Int) {
         guard let wsId = selectedWorkspaceId else { return }
-        let tabs = workspaceState(for: wsId).orderedTabs
+        let tabs = workspaceState(for: wsId).tabOrder
         guard oneBased >= 1, oneBased <= tabs.count else { return }
         selectTab(tabs[oneBased - 1], in: wsId)
     }
@@ -1386,7 +1385,7 @@ final class AppState: ObservableObject {
     func cycleTab(forward: Bool) {
         guard let wsId = selectedWorkspaceId else { return }
         let ws = workspaceState(for: wsId)
-        let tabs = ws.orderedTabs
+        let tabs = ws.tabOrder
         guard let active = ws.activeTab,
               let idx = tabs.firstIndex(of: active) else { return }
         let next = (idx + (forward ? 1 : -1) + tabs.count) % tabs.count

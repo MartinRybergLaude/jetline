@@ -62,6 +62,8 @@ struct PullRequest: Codable, Sendable, Hashable {
 
     var isApproved: Bool { reviewState == .approved }
 
+    var isOpen: Bool { state.uppercased() == "OPEN" }
+
     var hasOpenComments: Bool {
         unresolvedThreadCount > 0 || issueCommentCount > 0
     }

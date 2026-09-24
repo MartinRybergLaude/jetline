@@ -125,7 +125,7 @@ struct TerminalArea: View {
     /// reorder; only the tab's content differs.
     @ViewBuilder
     private var sessionTabStrip: some View {
-        let tabs = workspaceState.orderedTabs
+        let tabs = workspaceState.tabOrder
         let activeId = workspaceState.activeTab?.id
         let tabIds = tabs.map(\.id)
         ScrollViewReader { proxy in

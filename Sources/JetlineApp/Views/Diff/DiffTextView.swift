@@ -133,12 +133,11 @@ private enum DiffStyle {
     }
 
     static func marker(_ kind: FileDiff.Line.Kind) -> (String, NSColor)? {
-        switch kind {
-        case .addition: return ("+", .readableGreen)
-        case .deletion: return ("−", .systemRed)
-        case .context:  return nil
-        }
+        guard let color = DiffLineTint.markerColor(kind) else { return nil }
+        return (kind == .addition ? "+" : "−", color)
     }
+
+    static let gutterTextHeight = NSLayoutManager().defaultLineHeight(for: gutterFont)
 }
 
 final class DiffNSTextView: NSTextView {
@@ -319,7 +318,7 @@ final class DiffGutterView: NSView {
             .font: DiffStyle.gutterFont,
             .foregroundColor: NSColor.tertiaryLabelColor,
         ]
-        let textHeight = NSLayoutManager().defaultLineHeight(for: DiffStyle.gutterFont)
+        let textHeight = DiffStyle.gutterTextHeight
         let numberRight = Self.padding + columnWidth
 
         textView.enumerateVisibleLines(in: textView.visibleRect) { line, lineRect in

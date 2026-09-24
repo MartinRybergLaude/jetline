@@ -59,10 +59,9 @@ private struct GitActionMenuContent: View {
                 trigger(primary)
             }
             .menuIndicator(.visible)
-        } else if hasOpenPR {
+        } else if s.isVisible {
             // Nothing actionable — still show the button so the user can
-            // open the dropdown and see *why*. Without a PR there's no why
-            // worth reading, so the button goes away instead.
+            // open the dropdown and see *why*.
             Menu {
                 items(state: s, excluding: nil)
             } label: {
@@ -70,11 +69,6 @@ private struct GitActionMenuContent: View {
             }
             .menuIndicator(.visible)
         }
-    }
-
-    private var hasOpenPR: Bool {
-        if case let .loaded(pr, _) = workspaceState.pr { return pr.state.uppercased() == "OPEN" }
-        return false
     }
 
     @ViewBuilder

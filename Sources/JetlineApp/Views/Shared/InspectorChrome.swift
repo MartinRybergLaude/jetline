@@ -37,8 +37,7 @@ extension View {
 }
 
 /// Spinner-or-arrow refresh control. `isRefreshing` and the action are the
-/// caller's: the PR panel drives a tracker poll through `WorkspaceState`,
-/// the comments panel drives its own store.
+/// caller's.
 struct RefreshButton: View {
     let isRefreshing: Bool
     var title: String?

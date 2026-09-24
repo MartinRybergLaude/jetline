@@ -6,7 +6,7 @@ import Foundation
 /// Separate from `PRTracker` because the cost profile is the opposite:
 /// the tracker polls every workspace in every repo on a timer and must stay
 /// cheap, while a conversation is one PR's worth of full comment bodies
-/// fetched only while the Comments tab is actually looking at it. The
+/// fetched only while the PR tab is actually looking at it. The
 /// panel drives the cadence via its `.task` loop; this type only
 /// de-duplicates concurrent requests and suppresses redundant ones.
 @MainActor
@@ -111,7 +111,7 @@ final class PRConversationStore {
     }
 
     /// `PRTracker` owns this lookup and caches it in `repoMetadataByRepo`, but
-    /// on a cold launch the Comments tab can open before the first GitHub poll
+    /// on a cold launch the PR tab can open before the first GitHub poll
     /// lands. Resolving once here beats waiting out a poll interval; the result
     /// goes into the shared cache, so this runs at most once per repo.
     private func resolveIdentifier(repo: Repository) async -> RepoIdentifier? {

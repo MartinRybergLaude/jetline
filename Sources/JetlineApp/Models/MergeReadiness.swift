@@ -86,7 +86,7 @@ enum MergeReadiness: Equatable {
     var reason: String? { blocker?.message }
 
     static func evaluate(pr: PullRequest, checks: [CheckRun] = []) -> MergeReadiness {
-        guard pr.state.uppercased() == "OPEN" else {
+        guard pr.isOpen else {
             return .blocked(.notOpen(state: pr.state.lowercased()))
         }
         if pr.isDraft || pr.mergeState == .draft {

@@ -121,12 +121,11 @@ struct FileDiffView: View {
     }
 }
 
-/// One rendered row of a full-file diff, with its old/new line numbers.
+/// One rendered row of a full-file diff, with its new-file line number.
 struct FileDiffLine: Identifiable, Equatable {
     let id: Int
     var kind: FileDiff.Line.Kind
     var text: String
-    var oldNumber: Int?
     var newNumber: Int?
     var isHunkHeader = false
     /// Syntax-colored runs of `text`; nil when the language is unknown.
@@ -147,7 +146,7 @@ struct FileDiffLine: Identifiable, Equatable {
         var newState = SyntaxHighlighter.State.normal
         var rows: [FileDiffLine] = []
         for hunk in file.hunks {
-            var (old, new) = startLines(ofHunkHeader: hunk.header)
+            var new = newStartLine(ofHunkHeader: hunk.header)
             if file.hunks.count > 1 {
                 rows.append(FileDiffLine(id: rows.count, kind: .context, text: hunk.header, isHunkHeader: true))
             }
@@ -173,14 +172,7 @@ struct FileDiffLine: Identifiable, Equatable {
                     }
                     row.segments = segments
                 }
-                switch line.kind {
-                case .context:
-                    row.oldNumber = old; row.newNumber = new
-                    old += 1; new += 1
-                case .deletion:
-                    row.oldNumber = old
-                    old += 1
-                case .addition:
+                if line.kind != .deletion {
                     row.newNumber = new
                     new += 1
                 }
@@ -190,15 +182,12 @@ struct FileDiffLine: Identifiable, Equatable {
         return rows
     }
 
-    /// `(a, c)` from `@@ -a[,b] +c[,d] @@`. A zero start (pure add/delete
-    /// side) numbers from 1 so the other side still counts correctly.
-    static func startLines(ofHunkHeader header: String) -> (Int, Int) {
-        func start(after sign: Character) -> Int {
-            guard let range = header.firstIndex(of: sign) else { return 1 }
-            let digits = header[header.index(after: range)...].prefix(while: \.isNumber)
-            return max(1, Int(digits) ?? 1)
-        }
-        return (start(after: "-"), start(after: "+"))
+    /// `c` from `@@ -a[,b] +c[,d] @@`. A zero start (a deleted file) numbers
+    /// from 1.
+    static func newStartLine(ofHunkHeader header: String) -> Int {
+        guard let plus = header.firstIndex(of: "+") else { return 1 }
+        let digits = header[header.index(after: plus)...].prefix(while: \.isNumber)
+        return max(1, Int(digits) ?? 1)
     }
 }
 

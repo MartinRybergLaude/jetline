@@ -14,6 +14,12 @@ enum DiffTree {
             case .file(let file, _):      return file.id
             }
         }
+
+        var depth: Int {
+            switch self {
+            case .folder(_, _, let depth), .file(_, let depth): return depth
+            }
+        }
     }
 
     /// Rows for `files`, skipping the contents of any folder whose full

@@ -272,5 +272,11 @@ enum Schema {
                 )
             }
         }
+
+        migrator.registerMigration("v21_drop_tab_strip_scroll_indicators") { db in
+            try db.alter(table: "app_settings") { t in
+                t.drop(column: "showTabStripScrollIndicators")
+            }
+        }
     }
 }

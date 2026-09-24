@@ -106,7 +106,7 @@ private struct PRPanelContent: View {
     @ViewBuilder
     private var mergeFooter: some View {
         if case let .loaded(pr, checks) = workspaceState.pr,
-           pr.state.uppercased() == "OPEN" {
+           pr.isOpen {
             MergeSection(
                 workspace: workspace,
                 pr: pr,

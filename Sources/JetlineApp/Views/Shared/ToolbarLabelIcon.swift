@@ -24,8 +24,14 @@ enum ToolbarLabelIcon {
         return image
     }
 
+    /// Keyed on the source image's identity: `OpenInApp.icon(size:)` hands
+    /// back the same cached instance for each app.
     static func app(_ icon: NSImage, side: CGFloat = 14) -> NSImage {
-        padded(icon, size: NSSize(width: side, height: side))
+        let key = "app:\(ObjectIdentifier(icon).hashValue):\(side)"
+        if let hit = cache[key] { return hit }
+        let image = padded(icon, size: NSSize(width: side, height: side))
+        cache[key] = image
+        return image
     }
 
     private static func padded(_ source: NSImage, size: NSSize) -> NSImage {

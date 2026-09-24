@@ -43,14 +43,13 @@ private struct ChangesPanelContent: View {
             LazyVStack(alignment: .leading, spacing: 2) {
                 summaryHeader(snap: snap)
                 ForEach(DiffTree.rows(for: snap.files, collapsed: collapsedFolders)) { row in
-                    switch row {
-                    case .folder(let path, let name, let depth):
-                        folderRow(path: path, name: name)
-                            .padding(.leading, CGFloat(depth) * Self.indentWidth)
-                    case .file(let file, let depth):
-                        fileRow(file)
-                            .padding(.leading, CGFloat(depth) * Self.indentWidth)
+                    Group {
+                        switch row {
+                        case .folder(let path, let name, _): folderRow(path: path, name: name)
+                        case .file(let file, _):             fileRow(file)
+                        }
                     }
+                    .padding(.leading, CGFloat(row.depth) * Self.indentWidth)
                 }
             }
             .padding(.horizontal, 12)
@@ -78,21 +77,16 @@ private struct ChangesPanelContent: View {
                 if collapsed { collapsedFolders.remove(path) } else { collapsedFolders.insert(path) }
             }
         } label: {
-            HStack(spacing: 6) {
+            treeRowLabel(name: name) {
                 Image(systemName: collapsed ? "chevron.right" : "chevron.down")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .frame(width: Self.chevronWidth)
                 Image(systemName: "folder")
                     .foregroundStyle(.secondary)
-                Text(name)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer()
+            } trailing: {
+                EmptyView()
             }
-            .font(.system(.caption, design: .monospaced))
-            .padding(.vertical, 3)
-            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(path)
@@ -104,19 +98,13 @@ private struct ChangesPanelContent: View {
         return Button {
             state.openDiffTab(path: file.path, mode: mode, in: workspace.id)
         } label: {
-            HStack(spacing: 6) {
+            treeRowLabel(name: (file.path as NSString).lastPathComponent) {
                 Color.clear.frame(width: Self.chevronWidth, height: 1)
                 FileStatusBadge(status: file.status)
-                Text((file.path as NSString).lastPathComponent)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer()
+            } trailing: {
                 Text("+\(file.additions)").foregroundStyle(Color.readableGreen)
                 Text("-\(file.deletions)").foregroundStyle(.red)
             }
-            .font(.system(.caption, design: .monospaced))
-            .padding(.vertical, 3)
-            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .background(
@@ -125,6 +113,24 @@ private struct ChangesPanelContent: View {
                 .padding(.horizontal, -4)
         )
         .help(file.path)
+    }
+
+    private func treeRowLabel(
+        name: String,
+        @ViewBuilder leading: () -> some View,
+        @ViewBuilder trailing: () -> some View
+    ) -> some View {
+        HStack(spacing: 6) {
+            leading()
+            Text(name)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer()
+            trailing()
+        }
+        .font(.system(.caption, design: .monospaced))
+        .padding(.vertical, 3)
+        .contentShape(Rectangle())
     }
 
     private func summaryHeader(snap: DiffSnapshot) -> some View {

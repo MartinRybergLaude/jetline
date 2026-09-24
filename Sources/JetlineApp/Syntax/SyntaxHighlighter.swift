@@ -93,12 +93,8 @@ struct SyntaxHighlighter: Sendable {
                     let end = numberEnd(from: i)
                     emit(i, end, .number); i = end; continue
                 }
-                if language.atAttributes, c == "@", i + 1 < chars.count, Self.isIdentStart(chars[i + 1]) {
-                    let end = identEnd(from: i + 1)
-                    emit(i, end, .attribute); i = end; continue
-                }
-                if language.hashDirectives, c == "#", i + 1 < chars.count,
-                   Self.isIdentStart(chars[i + 1]) {
+                if (language.atAttributes && c == "@") || (language.hashDirectives && c == "#"),
+                   i + 1 < chars.count, Self.isIdentStart(chars[i + 1]) {
                     let end = identEnd(from: i + 1)
                     emit(i, end, .attribute); i = end; continue
                 }

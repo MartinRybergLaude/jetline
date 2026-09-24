@@ -30,7 +30,7 @@ final class WorkspaceState {
     var hasUncommitted: Bool = false
     var pr: PRSnapshot = .loading
     /// PR comment stream. Loaded on demand by `PRConversationStore` while
-    /// the Comments tab is open — never by `PRTracker`, whose batched poll
+    /// the PR tab is open — never by `PRTracker`, whose batched poll
     /// covers every workspace in every repo and would carry every comment
     /// body on every tick.
     var conversation: PRConversationSnapshot = .idle
@@ -58,7 +58,8 @@ final class WorkspaceState {
     /// session. Selecting any session clears it.
     var activeDiffTabId: String?
     /// Strip order across sessions and diff tabs, which the strip shows as
-    /// one list. Read through `orderedTabs`.
+    /// one list. Every open, close and reorder in `AppState` keeps it in step
+    /// with `sessions` and `diffTabs`.
     var tabOrder: [TabRef] = []
     /// Setup-script controller. Created when a fresh workspace spins up;
     /// lingers after exit so the user can scroll back through the log
@@ -75,20 +76,6 @@ final class WorkspaceState {
     /// The tab the main area is showing.
     var activeTab: TabRef? {
         activeDiffTabId.map(TabRef.diff) ?? activeSessionId.map(TabRef.session)
-    }
-
-    /// Every open tab in strip order: `tabOrder` minus anything already
-    /// closed, plus anything it somehow missed, so the strip can never drop
-    /// or duplicate a tab.
-    var orderedTabs: [TabRef] {
-        let live = Set(sessions.map { TabRef.session($0.id) } + diffTabs.map { TabRef.diff($0.id) })
-        var seen = Set<TabRef>()
-        var result = tabOrder.filter { live.contains($0) && seen.insert($0).inserted }
-        for ref in sessions.map({ TabRef.session($0.id) }) + diffTabs.map({ TabRef.diff($0.id) })
-        where !seen.contains(ref) {
-            result.append(ref)
-        }
-        return result
     }
 }
 

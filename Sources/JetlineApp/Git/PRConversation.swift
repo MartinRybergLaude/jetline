@@ -180,7 +180,7 @@ enum PRTimelineItem: Sendable, Hashable, Identifiable {
 }
 
 /// Mirrors `PRSnapshot`'s shape. `.idle` is the extra state: conversations
-/// are only fetched once the Comments tab asks for them, so "never loaded"
+/// are only fetched once the PR tab asks for them, so "never loaded"
 /// has to be distinguishable from "loading".
 enum PRConversationSnapshot: Equatable, Sendable {
     case idle

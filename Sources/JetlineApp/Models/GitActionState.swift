@@ -8,13 +8,17 @@ import Foundation
 /// first by priority that's currently available (commit when there's a dirty
 /// working tree, pullUpdates when behind, etc). When *nothing* is available,
 /// `primary` is nil and the toolbar button stops offering a primary tap —
-/// the dropdown still lets the user open the menu and see every option in a
-/// disabled state, so they can read the bar like a status report.
+/// with an open PR the dropdown still lets the user open the menu and see
+/// every option in a disabled state, so they can read the bar like a status
+/// report. Without one there's nothing worth reading, so the button hides.
 struct GitActionState: Equatable {
     var primary: GitAction?
     var availability: [GitAction: Bool]
+    var hasOpenPR = false
 
     static let empty = GitActionState(primary: nil, availability: [:])
+
+    var isVisible: Bool { primary != nil || hasOpenPR }
 
     func isAvailable(_ action: GitAction) -> Bool {
         availability[action] ?? false
@@ -52,6 +56,7 @@ struct GitActionState: Equatable {
         let hasDiffVsBase = !(diff?.isEmpty ?? true)
 
         var avail: [GitAction: Bool] = [:]
+        var hasOpenPR = false
         for action in GitAction.allCases { avail[action] = false }
 
         avail[.commit] = hasUncommitted
@@ -64,8 +69,8 @@ struct GitActionState: Equatable {
 
         switch pr {
         case .loaded(let pull, let checks):
-            let isOpen = pull.state.uppercased() == "OPEN"
-            guard isOpen else { break }
+            guard pull.isOpen else { break }
+            hasOpenPR = true
 
             let hasFailing = checks.contains { $0.bucket == .fail }
             let hasComments = pull.hasOpenComments
@@ -88,6 +93,6 @@ struct GitActionState: Equatable {
         }
 
         let primary = priority.first { avail[$0] == true }
-        return GitActionState(primary: primary, availability: avail)
+        return GitActionState(primary: primary, availability: avail, hasOpenPR: hasOpenPR)
     }
 }
