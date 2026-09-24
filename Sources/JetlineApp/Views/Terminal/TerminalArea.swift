@@ -180,7 +180,9 @@ struct TerminalArea: View {
                 proxy.scrollTo(added, anchor: .trailing)
             }
         }
-        .scrollIndicators(state.settings.showTabStripScrollIndicators ? .visible : .hidden, axes: .horizontal)
+        // `.never` rather than `.hidden`: the latter still yields to the
+        // system's "Always show scroll bars" setting.
+        .scrollIndicators(.never, axes: .horizontal)
         .overlay(alignment: .bottom) { Divider() }
     }
 

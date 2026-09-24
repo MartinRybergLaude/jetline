@@ -183,7 +183,6 @@ private struct TerminalSettingsView: View {
                     .frame(width: 36, alignment: .trailing)
                     .font(.system(.caption, design: .monospaced))
             }
-            Toggle("Show tab strip scrollbar", isOn: bindingShowTabStripScrollIndicators)
         }
         .formStyle(.grouped)
         .scrollIndicators(.visible)
@@ -217,17 +216,6 @@ private struct TerminalSettingsView: View {
             set: { newValue in
                 var s = state.settings
                 s.terminalPaddingX = Int(newValue.rounded())
-                state.saveSettings(s)
-            }
-        )
-    }
-
-    private var bindingShowTabStripScrollIndicators: Binding<Bool> {
-        Binding(
-            get: { state.settings.showTabStripScrollIndicators },
-            set: { newValue in
-                var s = state.settings
-                s.showTabStripScrollIndicators = newValue
                 state.saveSettings(s)
             }
         )
