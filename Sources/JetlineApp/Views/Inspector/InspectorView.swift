@@ -15,7 +15,7 @@ struct InspectorView: View {
                 Hairline()
                 CapsuleTabs(
                     selection: $state.inspectorTab,
-                    tabs: [.changes, .pr, .comments, .run],
+                    tabs: tabs,
                     help: { Self.tooltip(for: $0) }
                 ) { tab, _ in
                     icon(for: tab)
@@ -29,6 +29,20 @@ struct InspectorView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .onChange(of: tabs, initial: true) { _, tabs in
+            if !tabs.contains(state.inspectorTab) { state.inspectorTab = .changes }
+        }
+    }
+
+    /// A repository's base checkout has no branch of its own to open a PR
+    /// from, so the PR and comments tabs would only ever spin.
+    private var tabs: [InspectorTab] {
+        if let id = state.inspectorWorkspaceId,
+           let ws = state.workspaceById(id),
+           state.isRepositoryBaseWorkspace(ws) {
+            return [.changes, .run]
+        }
+        return [.changes, .pr, .comments, .run]
     }
 
     /// macOS 27 leaves this edge unmarked: the `NSSplitDividerView` the
