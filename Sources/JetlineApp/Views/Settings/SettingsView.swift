@@ -86,6 +86,22 @@ private struct AgentsSettingsView: View {
 
     var body: some View {
         Form {
+            Section {
+                Picker("Open Claude Code and Codex in", selection: bindingInterface) {
+                    Text("Terminal").tag(AppSettings.AgentInterface.terminal)
+                    Text("Chat").tag(AppSettings.AgentInterface.chat)
+                }
+                Picker("New chats start in", selection: bindingChatMode) {
+                    ForEach(AgentRuntimeMode.allCases, id: \.self) { mode in
+                        Text("\(mode.displayName) — \(mode.summary)").tag(mode)
+                    }
+                }
+                .disabled(state.settings.agentInterface != .chat)
+            } footer: {
+                Text("Chat drives the agent CLI directly and shows the conversation, tool calls, diffs and approvals in Jetline's own UI. The other interface stays available from the new-tab menu.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section("Claude Code") {
                 Toggle("Show in new tab menu", isOn: bindingVisible(.claude))
                 BinaryPathField(
@@ -116,6 +132,28 @@ private struct AgentsSettingsView: View {
         }
         .formStyle(.grouped)
         .scrollIndicators(.visible)
+    }
+
+    private var bindingInterface: Binding<AppSettings.AgentInterface> {
+        Binding(
+            get: { state.settings.agentInterface },
+            set: { newValue in
+                var s = state.settings
+                s.agentInterface = newValue
+                state.saveSettings(s)
+            }
+        )
+    }
+
+    private var bindingChatMode: Binding<AgentRuntimeMode> {
+        Binding(
+            get: { state.settings.chatRuntimeMode },
+            set: { newValue in
+                var s = state.settings
+                s.chatRuntimeMode = newValue
+                state.saveSettings(s)
+            }
+        )
     }
 
     private func bindingPath(_ keyPath: WritableKeyPath<AppSettings, String?>) -> Binding<String> {

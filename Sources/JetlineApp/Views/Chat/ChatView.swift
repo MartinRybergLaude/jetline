@@ -1,0 +1,178 @@
+import SwiftUI
+
+/// Main-area content of a chat tab.
+struct ChatView: View {
+    @EnvironmentObject private var state: AppState
+    let session: ChatSession
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            ChatTimelineView(session: session)
+            bottom
+                .frame(maxWidth: 820)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 16)
+                .padding(.top, 6)
+                .frame(maxWidth: .infinity)
+        }
+        .background(Color(nsColor: .textBackgroundColor))
+        .onAppear { session.connectIfNeeded() }
+    }
+
+    // MARK: Header
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            AgentMark(agent: session.provider.agentKind, size: 16)
+            Text(session.title)
+                .font(.system(size: 13, weight: .semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
+            ConnectionBadge(connection: session.connection)
+            Spacer()
+            if session.terminalResumeArgs != nil {
+                Button {
+                    state.openChatInTerminal(session)
+                } label: {
+                    Label("Open in Terminal", systemImage: "terminal")
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .disabled(session.isWorking)
+                .help("Continue this conversation in \(session.provider.displayName)'s own terminal UI")
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+
+    // MARK: Bottom
+
+    @ViewBuilder
+    private var bottom: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if case let .failed(message) = session.connection {
+                BannerView(text: message, level: .error) {
+                    Button("Retry") { session.connectIfNeeded() }
+                }
+            }
+            if let banner = session.banner {
+                BannerView(text: banner, level: .warning) {
+                    Button("Dismiss") { session.banner = nil }
+                }
+            }
+            if !session.todos.isEmpty {
+                TodoStrip(todos: session.todos)
+            }
+            if let request = session.requests.first {
+                ChatRequestPanel(session: session, request: request)
+            } else {
+                ChatComposer(session: session)
+                    .disabled(session.isReverting)
+            }
+        }
+    }
+}
+
+private struct ConnectionBadge: View {
+    let connection: ChatSession.Connection
+
+    var body: some View {
+        switch connection {
+        case .connecting:
+            HStack(spacing: 4) {
+                ProgressView().controlSize(.mini)
+                Text("Starting…")
+            }
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+        case .failed:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .font(.system(size: 11))
+        case .connected, .disconnected:
+            EmptyView()
+        }
+    }
+}
+
+private struct BannerView<Actions: View>: View {
+    let text: String
+    let level: AgentItem.Notice.Level
+    @ViewBuilder let actions: Actions
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: level == .error ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(level == .error ? Color.red : Color.orange)
+            Text(text)
+                .font(.system(size: 12))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            actions.controlSize(.small)
+        }
+        .padding(10)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+/// The agent's working checklist, pinned above the composer.
+private struct TodoStrip: View {
+    let todos: [AgentTodo]
+    @State private var expanded = false
+
+    var body: some View {
+        let done = todos.filter { $0.status == .completed }.count
+        let current = todos.first { $0.status == .inProgress }
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "checklist")
+                    Text("\(done)/\(todos.count)")
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    Text(current?.text ?? (done == todos.count ? "All steps done" : "Plan"))
+                        .lineLimit(1)
+                    Spacer()
+                    Image(systemName: "chevron.up")
+                        .rotationEffect(.degrees(expanded ? 180 : 0))
+                        .font(.system(size: 9))
+                }
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if expanded {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(Array(todos.enumerated()), id: \.offset) { _, todo in
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Image(systemName: icon(todo.status))
+                                .foregroundStyle(todo.status == .completed ? Color.readableGreen : .secondary)
+                                .font(.system(size: 11))
+                            Text(todo.text)
+                                .strikethrough(todo.status == .completed)
+                                .foregroundStyle(todo.status == .completed ? .secondary : .primary)
+                        }
+                        .font(.system(size: 12))
+                    }
+                }
+                .padding(.leading, 4)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func icon(_ status: AgentTodo.Status) -> String {
+        switch status {
+        case .pending: return "circle"
+        case .inProgress: return "circle.dotted.circle"
+        case .completed: return "checkmark.circle.fill"
+        }
+    }
+}

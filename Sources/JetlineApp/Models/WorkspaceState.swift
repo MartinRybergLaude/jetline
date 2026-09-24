@@ -57,6 +57,13 @@ final class WorkspaceState {
     /// When set, the main area shows this diff tab instead of the active
     /// session. Selecting any session clears it.
     var activeDiffTabId: String?
+    /// Native chats (the chat-UI alternative to agent TUI sessions). They
+    /// survive relaunches: open chats are restored from the database the
+    /// first time the workspace is activated.
+    var chats: [ChatSession] = []
+    /// When set, the main area shows this chat. Selecting a session or a
+    /// diff tab clears it.
+    var activeChatId: String?
     /// Strip order across sessions and diff tabs, which the strip shows as
     /// one list. Every open, close and reorder in `AppState` keeps it in step
     /// with `sessions` and `diffTabs`.
@@ -75,19 +82,31 @@ final class WorkspaceState {
 
     /// The tab the main area is showing.
     var activeTab: TabRef? {
-        activeDiffTabId.map(TabRef.diff) ?? activeSessionId.map(TabRef.session)
+        activeDiffTabId.map(TabRef.diff)
+            ?? activeChatId.map(TabRef.chat)
+            ?? activeSessionId.map(TabRef.session)
+    }
+
+    /// Terminal sessions and chats — the tabs that keep a workspace open.
+    var hasAgentTabs: Bool { !sessions.isEmpty || !chats.isEmpty }
+
+    var activeChat: ChatSession? {
+        activeChatId.flatMap { id in chats.first { $0.id == id } }
     }
 }
 
-/// A tab in the main-area strip: an agent/shell session or a diff tab.
+/// A tab in the main-area strip: an agent/shell session, a diff tab or a
+/// native chat.
 enum TabRef: Hashable, Identifiable {
     case session(String)
     case diff(String)
+    case chat(String)
 
     var id: String {
         switch self {
         case .session(let id): return "session:" + id
         case .diff(let id):    return "diff:" + id
+        case .chat(let id):    return "chat:" + id
         }
     }
 }

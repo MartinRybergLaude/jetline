@@ -34,6 +34,18 @@ struct AppSettings: Codable, FetchableRecord, PersistableRecord {
     /// Agent that runs the "Review" action. `nil` → use `defaultAgent`.
     var reviewAgent: Workspace.AgentKind?
 
+    /// How Claude Code and Codex tabs open: their own TUI in a terminal, or
+    /// Jetline's native chat UI driving the CLI's machine protocol.
+    var agentInterface: AgentInterface = .terminal
+    /// Permission mode new chats start in.
+    var chatRuntimeMode: AgentRuntimeMode = .supervised
+    /// Last model/effort picked in a chat, per provider; new chats start
+    /// there. `nil` → the CLI's own default.
+    var claudeChatModel: String?
+    var claudeChatEffort: String?
+    var codexChatModel: String?
+    var codexChatEffort: String?
+
     /// Flips to `true` once the first-launch onboarding window has been
     /// shown so it doesn't auto-open on every relaunch. Debug menu has
     /// an item to clear it for redisplay.
@@ -48,6 +60,11 @@ struct AppSettings: Codable, FetchableRecord, PersistableRecord {
     var fixCIPrompt: String?
     var fixCommentsPrompt: String?
     var reviewPrompt: String?
+
+    enum AgentInterface: String, Codable, CaseIterable, DatabaseValueConvertible {
+        case terminal
+        case chat
+    }
 
     enum Theme: String, Codable, CaseIterable, DatabaseValueConvertible {
         case system
@@ -71,6 +88,19 @@ struct AppSettings: Codable, FetchableRecord, PersistableRecord {
         Set(hiddenAgents
             .split(separator: ",")
             .compactMap { Workspace.AgentKind(rawValue: String($0)) })
+    }
+
+    func chatModel(for provider: AgentProviderKind) -> String? {
+        provider == .claude ? claudeChatModel : codexChatModel
+    }
+
+    func chatEffort(for provider: AgentProviderKind) -> String? {
+        provider == .claude ? claudeChatEffort : codexChatEffort
+    }
+
+    /// Whether new `agent` tabs should open as chats.
+    func opensChat(for agent: Workspace.AgentKind) -> Bool {
+        agentInterface == .chat && AgentProviderKind(agent: agent) != nil
     }
 
     /// Lookup helper for the action-prompt fallback chain. `mergePR`

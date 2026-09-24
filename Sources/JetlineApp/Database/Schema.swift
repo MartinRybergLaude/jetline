@@ -278,5 +278,60 @@ enum Schema {
                 t.drop(column: "showTabStripScrollIndicators")
             }
         }
+
+        migrator.registerMigration("v22_agent_chats") { db in
+            // Native chat UI (the alternative to agent TUIs in a terminal).
+            // `workspaceId` has no foreign key: base-checkout workspaces are
+            // synthetic ("repo-base:<id>") and never get a `workspaces` row.
+            try db.create(table: "chat_threads") { t in
+                t.column("id", .text).primaryKey()
+                t.column("workspaceId", .text).notNull().indexed()
+                t.column("provider", .text).notNull()
+                t.column("title", .text).notNull()
+                t.column("model", .text)
+                t.column("effort", .text)
+                t.column("runtimeMode", .text).notNull()
+                t.column("interactionMode", .text).notNull()
+                t.column("resumeCursor", .text)
+                t.column("todos", .text)
+                t.column("createdAt", .datetime).notNull()
+                t.column("updatedAt", .datetime).notNull()
+                t.column("closedAt", .datetime)
+            }
+            try db.create(table: "chat_turns") { t in
+                t.column("id", .text).notNull()
+                t.column("threadId", .text).notNull()
+                    .references("chat_threads", onDelete: .cascade)
+                t.column("seq", .integer).notNull()
+                t.column("providerTurnId", .text)
+                t.column("status", .text).notNull()
+                t.column("errorMessage", .text)
+                t.column("startedAt", .datetime).notNull()
+                t.column("completedAt", .datetime)
+                t.column("checkpointBefore", .text)
+                t.column("checkpointAfter", .text)
+                t.column("stat", .text)
+                t.primaryKey(["threadId", "id"])
+            }
+            try db.create(table: "chat_items") { t in
+                t.column("id", .text).notNull()
+                t.column("threadId", .text).notNull()
+                    .references("chat_threads", onDelete: .cascade)
+                t.column("turnId", .text).notNull()
+                t.column("seq", .integer).notNull()
+                t.column("payload", .blob).notNull()
+                t.primaryKey(["threadId", "id"])
+            }
+            try db.create(index: "idx_chat_items_order", on: "chat_items", columns: ["threadId", "seq"])
+
+            try db.alter(table: "app_settings") { t in
+                t.add(column: "agentInterface", .text).notNull().defaults(to: "terminal")
+                t.add(column: "chatRuntimeMode", .text).notNull().defaults(to: "supervised")
+                t.add(column: "claudeChatModel", .text)
+                t.add(column: "claudeChatEffort", .text)
+                t.add(column: "codexChatModel", .text)
+                t.add(column: "codexChatEffort", .text)
+            }
+        }
     }
 }

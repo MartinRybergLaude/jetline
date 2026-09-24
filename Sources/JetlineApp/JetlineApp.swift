@@ -197,6 +197,13 @@ final class JetlineAppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Quit")
         let cancel = alert.addButton(withTitle: "Cancel")
         cancel.keyEquivalent = "\u{1b}"
-        return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
+        guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
+        // Chat agents run in their own process sessions and wouldn't get
+        // the hangup terminal tabs do. Stop them before exiting.
+        Task { @MainActor in
+            await state.shutdownAgents()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 }

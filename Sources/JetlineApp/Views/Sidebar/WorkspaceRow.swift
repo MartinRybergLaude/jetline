@@ -28,7 +28,7 @@ private struct WorkspaceRowContent: View {
     let onClose: () -> Void
 
     var body: some View {
-        let isOpen = !workspaceState.sessions.isEmpty
+        let isOpen = workspaceState.hasAgentTabs
         HStack(spacing: 0) {
             PRStatusIcon(snapshot: workspaceState.pr, size: 13)
             Spacer().frame(width: 10)
@@ -38,6 +38,7 @@ private struct WorkspaceRowContent: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
             Spacer(minLength: 0)
+            ChatActivityIndicator(chats: workspaceState.chats)
         }
         // 27.5 centers the 13pt PR icon on the repo favicon in the section
         // header above: the header's icon center sits at 4 (leading) + 12
@@ -59,7 +60,7 @@ private struct WorkspaceRowContent: View {
             Button("Reveal worktree in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: workspace.worktreePath)])
             }
-            if !workspaceState.sessions.isEmpty {
+            if workspaceState.hasAgentTabs {
                 Button("Close workspace") { onClose() }
             }
             Divider()
@@ -71,6 +72,29 @@ private struct WorkspaceRowContent: View {
     private func nameColor(isOpen: Bool) -> Color {
         if isSelected { return Color.accentColor.opacity(0.9) }
         return isOpen ? Color.primary : Color.secondary
+    }
+}
+
+/// What the workspace's chats are doing, most urgent first: waiting on
+/// the user, working, or failed. Terminal tabs have no such signal.
+private struct ChatActivityIndicator: View {
+    let chats: [ChatSession]
+
+    var body: some View {
+        let activities = chats.map(\.activity)
+        if activities.contains(.needsInput) {
+            Image(systemName: "hand.raised.fill")
+                .font(.system(size: 10))
+                .foregroundStyle(.orange)
+                .help("An agent is waiting for you")
+        } else if activities.contains(.working) {
+            ProgressView().controlSize(.mini)
+                .help("An agent is working")
+        } else if activities.contains(.failed) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 10))
+                .foregroundStyle(.red)
+        }
     }
 }
 

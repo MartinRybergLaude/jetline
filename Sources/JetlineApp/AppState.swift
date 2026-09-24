@@ -140,7 +140,31 @@ final class AppState: ObservableObject {
         }
         prTracker.sync()
         startIdleSweep()
+        #if DEBUG
+        applyDebugLaunchArguments()
+        #endif
     }
+
+    #if DEBUG
+    /// Development hooks for driving the app from a script:
+    /// `-JetlineOpenWorkspace <id>` selects a workspace at launch (a repo's
+    /// base checkout is `repo-base:<repo id>`), and `-JetlineSendPrompt
+    /// <text>` sends a message to the chat that opens there
+    /// (`-JetlinePlanMode YES` sends it in plan mode).
+    private func applyDebugLaunchArguments() {
+        let defaults = UserDefaults.standard
+        guard let id = defaults.string(forKey: "JetlineOpenWorkspace"), workspaceById(id) != nil else { return }
+        selectWorkspace(id)
+        guard let prompt = defaults.string(forKey: "JetlineSendPrompt") else { return }
+        let plan = defaults.bool(forKey: "JetlinePlanMode")
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard let chat = self?.workspaceState(for: id).activeChat else { return }
+            if plan { chat.setInteractionMode(.plan) }
+            chat.send(text: prompt)
+        }
+    }
+    #endif
 
     // MARK: - Idle pausing
 
@@ -605,6 +629,11 @@ final class AppState: ObservableObject {
                 )
             }
             if removeWorktree {
+                // Checkpoint refs live in the shared repository, not the
+                // worktree, so they'd outlive it.
+                for threadId in ChatStore.threadIds(workspaceId: workspace.id) {
+                    await Checkpointer.deleteRefs(worktree: repo.path, thread: threadId)
+                }
                 try? await WorktreeOps.remove(
                     repoPath: repo.path,
                     worktreePath: workspace.worktreePath,
@@ -841,13 +870,33 @@ final class AppState: ObservableObject {
 
     // MARK: - Sessions
 
-    /// Spawn a fresh tab the first time a workspace is selected this app run.
+    /// The first time a workspace is activated this app run: bring back its
+    /// open chats, or spawn a fresh tab when it has none.
     private func ensureSessionExists(for workspace: Workspace) {
-        guard workspaceState(for: workspace.id).sessions.isEmpty else { return }
+        let ws = workspaceState(for: workspace.id)
+        guard !ws.hasAgentTabs else { return }
+        let restored = ChatStore.openThreads(workspaceId: workspace.id)
+        if !restored.isEmpty {
+            for record in restored {
+                let chat = ChatSession(record: record, cwd: workspace.worktreePath, executableResolver: resolveAgentExecutable)
+                attach(chat, to: workspace.id)
+            }
+            selectChat(restored[restored.count - 1].id, in: workspace.id)
+            return
+        }
         startNewSession(for: workspace, agent: workspace.agent)
     }
 
+    /// Open a new tab for `agent` in whichever interface the settings pick.
     func startNewSession(for workspace: Workspace, agent: Workspace.AgentKind) {
+        if settings.opensChat(for: agent), let provider = AgentProviderKind(agent: agent) {
+            startNewChat(for: workspace, provider: provider)
+        } else {
+            startNewTerminal(for: workspace, agent: agent)
+        }
+    }
+
+    func startNewTerminal(for workspace: Workspace, agent: Workspace.AgentKind) {
         noteWorkspaceActivity(workspace.id)
         let session = PTYSession(
             workspaceId: workspace.id,
@@ -870,6 +919,138 @@ final class AppState: ObservableObject {
         let ws = workspaceState(for: workspaceId)
         ws.activeSessionId = sessionId
         ws.activeDiffTabId = nil
+        ws.activeChatId = nil
+    }
+
+    // MARK: - Chats
+
+    /// Open a native chat tab. `prompt` is sent as the first message.
+    @discardableResult
+    func startNewChat(for workspace: Workspace, provider: AgentProviderKind, prompt: String? = nil) -> ChatSession {
+        noteWorkspaceActivity(workspace.id)
+        let chat = ChatSession(
+            workspaceId: workspace.id,
+            cwd: workspace.worktreePath,
+            provider: provider,
+            model: settings.chatModel(for: provider),
+            effort: settings.chatEffort(for: provider),
+            runtimeMode: settings.chatRuntimeMode,
+            executableResolver: resolveAgentExecutable
+        )
+        attach(chat, to: workspace.id)
+        selectChat(chat.id, in: workspace.id)
+        chat.connectIfNeeded()
+        if let prompt { chat.send(text: prompt) }
+        return chat
+    }
+
+    /// Bring a closed chat back as a tab.
+    func reopenChat(_ record: ChatThreadRecord, in workspace: Workspace) {
+        let ws = workspaceState(for: workspace.id)
+        if ws.chats.contains(where: { $0.id == record.id }) {
+            selectChat(record.id, in: workspace.id)
+            return
+        }
+        ChatStore.setClosed(record.id, closed: false)
+        let chat = ChatSession(record: record, cwd: workspace.worktreePath, executableResolver: resolveAgentExecutable)
+        attach(chat, to: workspace.id)
+        selectChat(chat.id, in: workspace.id)
+    }
+
+    private func attach(_ chat: ChatSession, to workspaceId: String) {
+        let ws = workspaceState(for: workspaceId)
+        ws.chats.append(chat)
+        ws.tabOrder.append(.chat(chat.id))
+        chat.onTurnFinished = { [weak self] chat in
+            guard let self, let workspace = self.workspaceById(chat.workspaceId) else { return }
+            self.noteWorkspaceActivity(chat.workspaceId)
+            Task { await self.refreshDiff(for: workspace) }
+        }
+        chat.onAttention = { [weak self] chat in
+            self?.chatNeedsAttention(chat)
+        }
+    }
+
+    func selectChat(_ chatId: String, in workspaceId: String) {
+        let ws = workspaceState(for: workspaceId)
+        ws.activeChatId = chatId
+        ws.activeDiffTabId = nil
+        ws.activeChat?.connectIfNeeded()
+    }
+
+    /// Close a chat tab. Like closing a session, closing the last agent tab
+    /// closes the workspace.
+    func closeChat(_ chatId: String, in workspaceId: String) {
+        let ws = workspaceState(for: workspaceId)
+        guard let idx = ws.chats.firstIndex(where: { $0.id == chatId }) else { return }
+        let order = ws.tabOrder
+        let wasShowing = ws.activeTab == .chat(chatId)
+        let chat = ws.chats.remove(at: idx)
+        ws.tabOrder.removeAll { $0 == .chat(chatId) }
+        chat.close()
+        if ws.activeChatId == chatId { ws.activeChatId = nil }
+        if !ws.hasAgentTabs {
+            closeWorkspace(workspaceId)
+        } else if wasShowing, let next = Self.neighbour(of: .chat(chatId), in: order) {
+            selectTab(next, in: workspaceId)
+        }
+    }
+
+    /// Continue a chat in the agent's own TUI: stop the chat's process (two
+    /// writers on one transcript would fork it) and open a terminal tab
+    /// resuming the same conversation.
+    func openChatInTerminal(_ chat: ChatSession) {
+        guard let args = chat.terminalResumeArgs, let workspace = workspaceById(chat.workspaceId) else { return }
+        chat.disconnect()
+        let session = PTYSession(
+            workspaceId: workspace.id,
+            agent: chat.provider.agentKind,
+            cwd: workspace.worktreePath,
+            launchArgs: args
+        )
+        addSession(session, to: workspace.id)
+    }
+
+    /// Resolve the CLI for a chat: the configured path, else a PATH probe.
+    private func resolveAgentExecutable(_ provider: AgentProviderKind) async -> String? {
+        let configured = provider == .claude ? settings.claudeBinaryPath : settings.codexBinaryPath
+        if let configured, !configured.isEmpty, FileManager.default.isExecutableFile(atPath: configured) {
+            return configured
+        }
+        return await AgentLauncher.resolveOnPath(provider.agentKind.executableName)
+    }
+
+    /// A chat finished a turn or is waiting on the user. Bounce the dock
+    /// when Jetline isn't frontmost so a long run doesn't go unnoticed.
+    private func chatNeedsAttention(_ chat: ChatSession) {
+        guard !NSApp.isActive else { return }
+        NSApp.requestUserAttention(chat.activity == .needsInput ? .criticalRequest : .informationalRequest)
+    }
+
+    /// Remember a chat's model and effort as the default for new chats.
+    func rememberChatModel(_ model: String?, effort: String?, for provider: AgentProviderKind) {
+        var s = settings
+        switch provider {
+        case .claude:
+            s.claudeChatModel = model
+            s.claudeChatEffort = effort
+        case .codex:
+            s.codexChatModel = model
+            s.codexChatEffort = effort
+        }
+        saveSettings(s)
+    }
+
+    /// Stop every chat's agent process. Chats run in their own sessions
+    /// (see `JSONLineProcess`), so nothing else would signal them on quit.
+    func shutdownAgents() async {
+        await withTaskGroup(of: Void.self) { group in
+            for ws in workspaceStates.values {
+                for chat in ws.chats {
+                    group.addTask { await chat.shutdown() }
+                }
+            }
+        }
     }
 
     // MARK: - Diff tabs
@@ -913,6 +1094,7 @@ final class AppState: ObservableObject {
         switch tab {
         case .session(let id): selectSession(id, in: workspaceId)
         case .diff(let id):    selectDiffTab(id, in: workspaceId)
+        case .chat(let id):    selectChat(id, in: workspaceId)
         }
     }
 
@@ -920,6 +1102,7 @@ final class AppState: ObservableObject {
         switch tab {
         case .session(let id): closeSession(id, in: workspaceId)
         case .diff(let id):    closeDiffTab(id, in: workspaceId)
+        case .chat(let id):    closeChat(id, in: workspaceId)
         }
     }
 
@@ -955,6 +1138,11 @@ final class AppState: ObservableObject {
             checks = []
         }
         let prompt = GitActionPrompts.render(template, workspace: workspace, pr: pr, checks: checks)
+
+        if settings.opensChat(for: agent), let provider = AgentProviderKind(agent: agent) {
+            startNewChat(for: workspace, provider: provider, prompt: prompt)
+            return
+        }
 
         let session = PTYSession(
             workspaceId: workspace.id,
@@ -1255,7 +1443,7 @@ final class AppState: ObservableObject {
     /// quit-confirmation dialog so the user doesn't lose an in-flight agent
     /// run by reflex-quitting.
     var hasOpenTabs: Bool {
-        workspaceStates.values.contains { !$0.sessions.isEmpty }
+        workspaceStates.values.contains { $0.hasAgentTabs }
     }
 
     /// Close one session tab, handing the strip over to its neighbour when it
@@ -1280,7 +1468,7 @@ final class AppState: ObservableObject {
             ws.activeSessionId = neighbour?.id
         }
 
-        if ws.sessions.isEmpty {
+        if !ws.hasAgentTabs {
             closeWorkspace(workspaceId)
         } else if wasShowing, let next = Self.neighbour(of: .session(sessionId), in: order) {
             selectTab(next, in: workspaceId)
@@ -1408,7 +1596,7 @@ final class AppState: ObservableObject {
     private func loadedSidebarWorkspaceOrder() -> [String] {
         sidebarWorkspaceOrder().filter { id in
             guard let state = workspaceStates[id] else { return false }
-            return !state.sessions.isEmpty
+            return state.hasAgentTabs
         }
     }
 
@@ -1706,6 +1894,11 @@ final class AppState: ObservableObject {
         }
         ws.sessions.removeAll()
         ws.activeSessionId = nil
+        // Chats stay open in the database and come back next activation;
+        // only their processes stop.
+        for chat in ws.chats { chat.disconnect() }
+        ws.chats.removeAll()
+        ws.activeChatId = nil
         ws.diffTabs.removeAll()
         ws.activeDiffTabId = nil
         ws.tabOrder.removeAll()

@@ -14,6 +14,9 @@ final class PTYSession: ObservableObject, Identifiable {
     /// argument. Used by the inspector's git action bar; nil for plain new
     /// tabs.
     let initialPrompt: String?
+    /// Extra CLI arguments ahead of the prompt — `--resume <id>` when a
+    /// chat is handed over to the agent's own TUI.
+    let launchArgs: [String]
     let emulator: TerminalEmulatorView
 
     @Published private(set) var hasStarted: Bool = false
@@ -25,9 +28,11 @@ final class PTYSession: ObservableObject, Identifiable {
         workspaceId: String,
         agent: Workspace.AgentKind,
         cwd: String,
-        initialPrompt: String? = nil
+        initialPrompt: String? = nil,
+        launchArgs: [String] = []
     ) {
         self.id = id
+        self.launchArgs = launchArgs
         self.workspaceId = workspaceId
         self.agent = agent
         self.cwd = cwd
@@ -62,7 +67,8 @@ final class PTYSession: ObservableObject, Identifiable {
             let spec = try await AgentLauncher.spec(
                 for: agent,
                 settings: settings,
-                initialPrompt: initialPrompt
+                initialPrompt: initialPrompt,
+                launchArgs: launchArgs
             )
             fellBackToShell = spec.fellBackToShell
             emulator.spawn(executable: spec.executable, args: spec.args, cwd: cwd, env: spec.env)

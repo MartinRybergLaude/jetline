@@ -21,7 +21,8 @@ enum AgentLauncher {
     static func spec(
         for agent: Workspace.AgentKind,
         settings: AppSettings,
-        initialPrompt: String? = nil
+        initialPrompt: String? = nil,
+        launchArgs: [String] = []
     ) async throws -> Spec {
         // Plain terminal: skip resolution, just open the user's login shell.
         if agent == .shell {
@@ -42,7 +43,7 @@ enum AgentLauncher {
             }
         }()
 
-        var args: [String] = []
+        var args = launchArgs
         if let prompt = initialPrompt?.nonBlank {
             args.append(prompt)
         }

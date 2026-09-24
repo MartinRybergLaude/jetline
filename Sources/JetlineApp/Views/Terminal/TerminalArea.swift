@@ -56,6 +56,9 @@ struct TerminalArea: View {
             if let tab = activeDiffTab {
                 FileDiffView(workspace: workspace, workspaceState: workspaceState, tab: tab)
                     .id(tab.id)
+            } else if let chat = workspaceState.activeChat {
+                ChatView(session: chat)
+                    .id(chat.id)
             } else {
                 terminalSurface
             }
@@ -149,6 +152,8 @@ struct TerminalArea: View {
                     NewSessionMenu(
                         defaultAgent: state.settings.defaultAgent,
                         visibleAgents: Workspace.AgentKind.allCases.filter(state.settings.isAgentVisible),
+                        prefersChat: state.settings.agentInterface == .chat,
+                        closedChats: ChatStore.closedThreads(workspaceId: workspace.id, limit: 8),
                         // Resolve the workspace at click time rather than capturing it.
                         // SwiftUI keeps NewSessionMenu's view identity stable across
                         // workspace switches, so the NSMenuItem actions inside the
@@ -161,6 +166,20 @@ struct TerminalArea: View {
                             guard let id = state.selectedWorkspaceId,
                                   let ws = state.workspaceById(id) else { return }
                             state.startNewSession(for: ws, agent: agent)
+                        },
+                        onStartInterface: { agent, chat in
+                            guard let id = state.selectedWorkspaceId,
+                                  let ws = state.workspaceById(id) else { return }
+                            if chat, let provider = AgentProviderKind(agent: agent) {
+                                state.startNewChat(for: ws, provider: provider)
+                            } else {
+                                state.startNewTerminal(for: ws, agent: agent)
+                            }
+                        },
+                        onReopen: { record in
+                            guard let id = state.selectedWorkspaceId,
+                                  let ws = state.workspaceById(id) else { return }
+                            state.reopenChat(record, in: ws)
                         }
                     )
                     .id("new-session-menu")
@@ -202,6 +221,15 @@ struct TerminalArea: View {
             if let diffTab = workspaceState.diffTabs.first(where: { $0.id == id }) {
                 DiffTabButton(
                     tab: diffTab,
+                    isActive: isActive,
+                    onSelect: { state.selectTab(tab, in: workspace.id) },
+                    onClose: { state.closeTab(tab, in: workspace.id) }
+                )
+            }
+        case .chat(let id):
+            if let chat = workspaceState.chats.first(where: { $0.id == id }) {
+                ChatTabButton(
+                    chat: chat,
                     isActive: isActive,
                     onSelect: { state.selectTab(tab, in: workspace.id) },
                     onClose: { state.closeTab(tab, in: workspace.id) }
@@ -661,6 +689,59 @@ private struct BorderedTab: View {
     }
 }
 
+/// Chat tab: agent mark, chat title, and a dot for what the agent is doing.
+private struct ChatTabButton: View {
+    let chat: ChatSession
+    let isActive: Bool
+    let onSelect: () -> Void
+    let onClose: () -> Void
+
+    var body: some View {
+        StripTab(isActive: isActive, onSelect: onSelect, onClose: onClose) {
+            AgentMark(agent: chat.provider.agentKind, size: 14)
+                .opacity(isActive ? 1 : 0.75)
+                .overlay(alignment: .bottomTrailing) { activityDot }
+        } title: {
+            Text(chat.title)
+                .frame(maxWidth: 180, alignment: .leading)
+        }
+        .help(chat.title)
+    }
+
+    @ViewBuilder
+    private var activityDot: some View {
+        switch chat.activity {
+        case .idle:
+            EmptyView()
+        case .working:
+            PulsingDot(color: .accentColor)
+        case .needsInput:
+            dot(.orange)
+        case .failed:
+            dot(.red)
+        }
+    }
+
+    private func dot(_ color: Color) -> some View {
+        Circle().fill(color).frame(width: 6, height: 6).offset(x: 2, y: 2)
+    }
+}
+
+private struct PulsingDot: View {
+    let color: Color
+    @State private var pulse = false
+
+    var body: some View {
+        Circle()
+            .fill(color)
+            .frame(width: 6, height: 6)
+            .opacity(pulse ? 0.35 : 1)
+            .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: pulse)
+            .onAppear { pulse = true }
+            .offset(x: 2, y: 2)
+    }
+}
+
 /// Full-file diff tab, opened from the inspector's changes panel.
 private struct DiffTabButton: View {
     let tab: DiffTab
@@ -842,7 +923,13 @@ struct AgentMark: View {
 private struct NewSessionMenu: View {
     let defaultAgent: Workspace.AgentKind
     let visibleAgents: [Workspace.AgentKind]
+    /// Whether Claude Code / Codex tabs open as chats by default.
+    let prefersChat: Bool
+    let closedChats: [ChatThreadRecord]
     let onStart: (Workspace.AgentKind) -> Void
+    /// Start `agent` in a specific interface: `true` → chat.
+    let onStartInterface: (Workspace.AgentKind, Bool) -> Void
+    let onReopen: (ChatThreadRecord) -> Void
 
     var body: some View {
         Menu {
@@ -850,7 +937,30 @@ private struct NewSessionMenu: View {
                 Button {
                     onStart(kind)
                 } label: {
-                    Text("New \(kind.displayName) tab")
+                    Text(label(for: kind, chat: prefersChat && AgentProviderKind(agent: kind) != nil))
+                }
+            }
+            let chatCapable = visibleAgents.filter { AgentProviderKind(agent: $0) != nil }
+            if !chatCapable.isEmpty {
+                Divider()
+                ForEach(chatCapable, id: \.self) { kind in
+                    Button {
+                        onStartInterface(kind, !prefersChat)
+                    } label: {
+                        Text(label(for: kind, chat: !prefersChat))
+                    }
+                }
+            }
+            if !closedChats.isEmpty {
+                Divider()
+                Menu("Reopen Chat") {
+                    ForEach(closedChats, id: \.id) { record in
+                        Button {
+                            onReopen(record)
+                        } label: {
+                            Text("\(record.title) — \(record.provider.displayName)")
+                        }
+                    }
                 }
             }
         } label: {
@@ -863,7 +973,11 @@ private struct NewSessionMenu: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.visible)
         .fixedSize()
-        .help("New \(defaultAgent.displayName) tab")
+        .help(label(for: defaultAgent, chat: prefersChat && AgentProviderKind(agent: defaultAgent) != nil))
+    }
+
+    private func label(for kind: Workspace.AgentKind, chat: Bool) -> String {
+        chat ? "New \(kind.displayName) chat" : "New \(kind.displayName) tab"
     }
 }
 

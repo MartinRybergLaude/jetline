@@ -28,7 +28,7 @@ struct RepositorySection: View {
         state.selectedWorkspaceId == baseWorkspaceId
     }
     private var isBaseOpen: Bool {
-        !state.workspaceState(for: baseWorkspaceId).sessions.isEmpty
+        state.workspaceState(for: baseWorkspaceId).hasAgentTabs
     }
 
     var body: some View {

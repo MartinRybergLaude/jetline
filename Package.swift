@@ -28,7 +28,8 @@ let package = Package(
         .testTarget(
             name: "JetlineAppTests",
             dependencies: ["JetlineApp"],
-            path: "Tests/JetlineAppTests"
+            path: "Tests/JetlineAppTests",
+            resources: [.copy("Fixtures")]
         )
     ]
 )
