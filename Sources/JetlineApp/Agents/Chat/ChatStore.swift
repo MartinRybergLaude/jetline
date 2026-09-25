@@ -23,7 +23,7 @@ struct ChatThreadRecord: Codable, FetchableRecord, PersistableRecord, Sendable {
     var createdAt: Date
     var updatedAt: Date
     /// Set when the tab closes. The transcript stays, so the chat can be
-    /// reopened from the new-tab menu.
+    /// reopened from the new-tab page.
     var closedAt: Date?
 
     enum Columns {

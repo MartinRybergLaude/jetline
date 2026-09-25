@@ -154,6 +154,9 @@ struct ChatComposer: View {
     // MARK: Controls
 
     private var controls: some View {
+        // One container so the capsules share a lensing pass and merge as
+        // they touch, instead of refracting each other.
+        GlassEffectContainer(spacing: 8) {
         HStack(spacing: 8) {
             // Until the agent reports its models the pills can only show
             // placeholders; keep their space and fade them in once ready.
@@ -170,22 +173,30 @@ struct ChatComposer: View {
             UsageMeter(usage: session.usage, limits: AgentRateLimits.shared.windows[session.provider] ?? [])
             if session.isWorking && session.draft.nonBlank == nil && session.draftImages.isEmpty {
                 Button(action: session.interrupt) {
-                    Image(systemName: "stop.circle.fill").font(.system(size: 24))
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 11, weight: .bold))
+                        .frame(width: Self.roundButtonGlyph, height: Self.roundButtonGlyph)
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.primary)
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
                 .help("Stop (Esc)")
             } else {
                 Button(action: submit) {
-                    Image(systemName: "arrow.up.circle.fill").font(.system(size: 24))
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 13, weight: .bold))
+                        .frame(width: Self.roundButtonGlyph, height: Self.roundButtonGlyph)
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(canSend ? Color.accentColor : Color.secondary.opacity(0.5))
+                .buttonStyle(.glassProminent)
+                .buttonBorderShape(.circle)
                 .disabled(!canSend)
                 .help("Send (Return)")
             }
         }
+        }
     }
+
+    /// Sized so the round buttons come out as tall as the pills.
+    private static let roundButtonGlyph: CGFloat = 19
 
     /// The agent has reported in once. Its models outlive a disconnect
     /// (continuing in the terminal), so the pills stay up then.
@@ -512,7 +523,7 @@ private extension NSColor {
     }
 }
 
-/// Capsule with a trailing chevron; gray unless tinted.
+/// Liquid Glass capsule with a trailing chevron; clear unless tinted.
 private struct PillButtonStyle: ButtonStyle {
     var tint: PillTint?
 
@@ -530,9 +541,12 @@ private struct PillButtonStyle: ButtonStyle {
         .imageScale(.small)
         .frame(height: 28)
         .padding(.horizontal, 12)
-        .background(Capsule().fill(tint?.fill ?? Color.secondary.opacity(0.12)))
-        .opacity(configuration.isPressed ? 0.7 : 1)
+        // A tinted mode (Full access, high effort) washes the capsule itself
+        // rather than tinting the glass: tinted glass goes gray in an
+        // inactive window, and Full access should read as a warning always.
+        .background(Capsule().fill(tint?.fill ?? .clear))
         .contentShape(Capsule())
+        .glassEffect(.regular.interactive(), in: Capsule())
     }
 }
 

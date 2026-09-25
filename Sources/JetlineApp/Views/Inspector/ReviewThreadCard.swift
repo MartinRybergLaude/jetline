@@ -53,15 +53,17 @@ struct ReviewThreadCard: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
+        // Resolved threads sit flat on the column; open ones are raised.
         .cardSurface(
-            fill: Color.secondary.opacity(thread.isResolved ? 0.04 : 0.07),
+            raised: !thread.isResolved,
+            fill: thread.isResolved ? Color.secondary.opacity(0.04) : .clear,
             stroke: borderColor
         )
         .opacity(thread.isOutdated && !expanded ? 0.75 : 1)
     }
 
     private var borderColor: Color {
-        if thread.isResolved { return Color.secondary.opacity(0.15) }
+        if thread.isResolved { return .inspectorCardStroke }
         return Color.orange.opacity(0.35)
     }
 

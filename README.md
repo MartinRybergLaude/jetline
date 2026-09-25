@@ -94,9 +94,10 @@ Sources/JetlineApp/
 └── Views/
     ├── Shell/AppShell.swift      ─ per-tab-window AppKit split: sidebar | tab | inspector
     ├── Shell/TabWindows.swift    ─ native window tabs (one NSWindow per tab), menu-first hotkeys
-    ├── Shell/TabToolbar.swift    ─ AppKit toolbar per tab window: title, new tab, git, open in, run
+    ├── Shell/TabToolbar.swift    ─ AppKit toolbar per tab window: title, git, open in, run
     ├── Sidebar/                  ─ repos, workspaces, new/import sheets, repo settings
     ├── Terminal/TerminalArea     ─ one tab's content (terminal, chat or diff)
+    ├── Terminal/NewTabPage       ─ what the tab bar's + opens: pick a chat, terminal or closed chat
     ├── Inspector/                ─ Changes / PR / Run tabs (segmented accessory, Xcode-style)
     ├── Settings/                 ─ TabView'd preferences (incl. action prompts)
     ├── Shared/                   ─ CapsuleTabs etc.

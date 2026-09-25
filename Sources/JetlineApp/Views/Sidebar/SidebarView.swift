@@ -70,8 +70,11 @@ struct SidebarView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.glass)
+            .buttonBorderShape(.capsule)
+            .controlSize(.large)
             .padding(.horizontal, 10)
-            .padding(.bottom, 10)
+            // Level with the chat composer's pill row across the window.
+            .padding(.bottom, 12)
         }
     }
 }

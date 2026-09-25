@@ -5,34 +5,37 @@ import AppKit
 /// these existed in two or three near-identical copies before, which is how
 /// the corner radii and opacities started drifting apart.
 
-/// Rounded card fill + hairline border. The tints stay per-caller — a
-/// resolved thread is deliberately flatter than an open one — but the
-/// geometry is fixed here.
+/// Rounded card: a raised surface, lighter than the inspector's grey, with
+/// an optional tint over it and a hairline border. The tints stay
+/// per-caller — a resolved thread is deliberately flatter than an open one —
+/// but the geometry is fixed here.
 struct CardSurface: ViewModifier {
+    var raised: Bool
     var fill: Color
     var stroke: Color
-    var cornerRadius: CGFloat = 8
+    var cornerRadius: CGFloat = 10
 
     func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius)
         content
-            .background(
-                RoundedRectangle(cornerRadius: cornerRadius)
-                    .fill(fill)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: cornerRadius)
-                            .stroke(stroke, lineWidth: 0.5)
-                    )
-            )
+            .background {
+                ZStack {
+                    if raised { shape.fill(Color.inspectorCard) }
+                    shape.fill(fill)
+                    shape.strokeBorder(stroke, lineWidth: 0.5)
+                }
+            }
     }
 }
 
 extension View {
     func cardSurface(
-        fill: Color = Color.secondary.opacity(0.06),
-        stroke: Color = Color.secondary.opacity(0.15),
-        cornerRadius: CGFloat = 8
+        raised: Bool = true,
+        fill: Color = .clear,
+        stroke: Color = .inspectorCardStroke,
+        cornerRadius: CGFloat = 10
     ) -> some View {
-        modifier(CardSurface(fill: fill, stroke: stroke, cornerRadius: cornerRadius))
+        modifier(CardSurface(raised: raised, fill: fill, stroke: stroke, cornerRadius: cornerRadius))
     }
 }
 

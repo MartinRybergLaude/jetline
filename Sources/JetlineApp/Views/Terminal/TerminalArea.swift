@@ -69,6 +69,8 @@ struct TerminalArea: View {
                 }
             case .session:
                 terminalSurface
+            case .launcher(let id):
+                NewTabPage(workspace: workspace, launcherId: id)
             case nil:
                 ProgressView()
             }
@@ -101,6 +103,11 @@ struct TerminalArea: View {
             return NativeTabTitle(
                 text: (id as NSString).lastPathComponent,
                 icon: TabTitle.fileIcon(for: id)
+            )
+        case .launcher:
+            return NativeTabTitle(
+                text: "New Tab",
+                icon: NSImage(systemSymbolName: "plus.square.on.square", accessibilityDescription: nil)
             )
         case nil:
             return NativeTabTitle(text: workspace.name, icon: nil)

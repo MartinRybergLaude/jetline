@@ -18,7 +18,6 @@ final class TabToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
     private let state: AppState
 
     private var title: NSToolbarItem?
-    private var newTab: NSMenuToolbarItem?
     private var git: NSMenuToolbarItem?
     private var gitBusy: NSToolbarItem?
     private var openIn: NSMenuToolbarItem?
@@ -32,7 +31,6 @@ final class TabToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
     private var pulseDim = false
 
     private static let titleID = NSToolbarItem.Identifier("jetline.title")
-    private static let newTabID = NSToolbarItem.Identifier("jetline.newTab")
     private static let gitID = NSToolbarItem.Identifier("jetline.git")
     private static let gitBusyID = NSToolbarItem.Identifier("jetline.gitBusy")
     private static let openInID = NSToolbarItem.Identifier("jetline.openIn")
@@ -62,7 +60,7 @@ final class TabToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
         [
             .toggleSidebar, .sidebarTrackingSeparator,
             Self.titleID, .flexibleSpace,
-            Self.newTabID, Self.gitID, Self.gitBusyID, Self.openInID, Self.runID, Self.runBusyID,
+            Self.gitID, Self.gitBusyID, Self.openInID, Self.runID, Self.runBusyID,
             .inspectorTrackingSeparator, .flexibleSpace, .toggleInspector,
         ]
     }
@@ -86,11 +84,6 @@ final class TabToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
             // Text, not a control: no glass capsule.
             item.isBordered = false
             title = item
-        case Self.newTabID:
-            let menuItem = menuItem(id, label: "New Tab", action: #selector(startDefaultSession))
-            menuItem.image = NSImage(systemSymbolName: "plus.rectangle.on.rectangle", accessibilityDescription: "New Tab")
-            newTab = menuItem
-            item = menuItem
         case Self.gitID:
             let menuItem = menuItem(id, label: "Git", action: #selector(triggerPrimaryGitAction))
             git = menuItem
@@ -169,7 +162,7 @@ final class TabToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
         let windowTitle = workspace?.name ?? "Jetline"
         if let window = slot.window, window.title != windowTitle { window.title = windowTitle }
         guard let workspace, let ws else {
-            for item in [title, newTab, git, gitBusy, openIn, run, runBusy] {
+            for item in [title, git, gitBusy, openIn, run, runBusy] {
                 item?.setHiddenIfNeeded(true)
             }
             stopPulse()
@@ -177,8 +170,6 @@ final class TabToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
         }
 
         title?.setHiddenIfNeeded(false)
-        newTab?.setHiddenIfNeeded(false)
-        newTab?.toolTip = Self.sessionLabel(state.settings.defaultAgent, chat: prefersChat(state.settings.defaultAgent))
 
         refreshGit(workspace: workspace, ws: ws)
         refreshOpenIn()
@@ -299,10 +290,6 @@ final class TabToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
         return stored.isInstalled ? stored : .finder
     }
 
-    private func prefersChat(_ agent: Workspace.AgentKind) -> Bool {
-        state.settings.agentInterface == .chat && AgentProviderKind(agent: agent) != nil
-    }
-
     // MARK: - Menus
 
     /// Menus are built as they open, from the state at that moment.
@@ -310,49 +297,9 @@ final class TabToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
         menu.removeAllItems()
         guard let workspace else { return }
         switch menu {
-        case newTab?.menu: buildNewTabMenu(menu, workspace: workspace)
         case git?.menu: buildGitMenu(menu, workspace: workspace)
         case openIn?.menu: buildOpenInMenu(menu)
         default: break
-        }
-    }
-
-    private func buildNewTabMenu(_ menu: NSMenu, workspace: Workspace) {
-        let visible = Workspace.AgentKind.allCases.filter(state.settings.isAgentVisible)
-        let chatDefault = state.settings.agentInterface == .chat
-        for kind in visible {
-            menu.addItem(ActionMenuItem(Self.sessionLabel(kind, chat: prefersChat(kind))) { [weak self] in
-                guard let self, let ws = self.workspace else { return }
-                state.startNewSession(for: ws, agent: kind)
-            })
-        }
-        let chatCapable = visible.filter { AgentProviderKind(agent: $0) != nil }
-        if !chatCapable.isEmpty {
-            menu.addItem(.separator())
-            for kind in chatCapable {
-                menu.addItem(ActionMenuItem(Self.sessionLabel(kind, chat: !chatDefault)) { [weak self] in
-                    guard let self, let ws = self.workspace else { return }
-                    if !chatDefault, let provider = AgentProviderKind(agent: kind) {
-                        state.startNewChat(for: ws, provider: provider)
-                    } else {
-                        state.startNewTerminal(for: ws, agent: kind)
-                    }
-                })
-            }
-        }
-        let closed = ChatStore.closedThreads(workspaceId: workspace.id, limit: 8)
-        if !closed.isEmpty {
-            menu.addItem(.separator())
-            let reopen = NSMenuItem(title: "Reopen Chat", action: nil, keyEquivalent: "")
-            let submenu = NSMenu()
-            for record in closed {
-                submenu.addItem(ActionMenuItem("\(record.title) — \(record.provider.displayName)") { [weak self] in
-                    guard let self, let ws = self.workspace else { return }
-                    state.reopenChat(record, in: ws)
-                })
-            }
-            reopen.submenu = submenu
-            menu.addItem(reopen)
         }
     }
 
@@ -381,11 +328,6 @@ final class TabToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
     }
 
     // MARK: - Actions
-
-    @objc private func startDefaultSession() {
-        guard let ws = workspace else { return }
-        state.startNewSession(for: ws, agent: state.settings.defaultAgent)
-    }
 
     @objc private func triggerPrimaryGitAction() {
         guard let ws = workspace, let primary = gitActionState(state.workspaceState(for: ws.id)).primary else { return }
@@ -423,10 +365,6 @@ final class TabToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
     }
 
     // MARK: - Text
-
-    private static func sessionLabel(_ kind: Workspace.AgentKind, chat: Bool) -> String {
-        chat ? "New \(kind.displayName) chat" : "New \(kind.displayName) tab"
-    }
 
     private static func runningText(for action: GitAction) -> String {
         switch action {

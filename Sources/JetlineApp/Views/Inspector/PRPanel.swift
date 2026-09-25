@@ -40,7 +40,7 @@ private struct PRPanelContent: View {
                 .padding(.vertical, 8)
         }
         .scrollIndicators(.visible)
-        .safeAreaInset(edge: .bottom, spacing: 0) { mergeFooter }
+        .safeAreaBar(edge: .bottom, spacing: 0) { mergeFooter }
         // Re-entered whenever the panel appears or the workspace changes, and
         // cancelled when either goes away — so the poll only runs while
         // someone is actually reading the tab. `refresh` collapses requests
@@ -91,9 +91,14 @@ private struct PRPanelContent: View {
                         }
                     }
                 )
-                ReviewSection(pr: pr)
-                ChecksSection(checks: checks)
-                Divider()
+                // The merge gates, together on one card.
+                VStack(alignment: .leading, spacing: 10) {
+                    ReviewSection(pr: pr)
+                    Divider()
+                    ChecksSection(checks: checks)
+                }
+                .padding(12)
+                .cardSurface()
                 PRConversationSection(workspace: workspace, workspaceState: workspaceState)
             }
             .padding(.horizontal, 12)
@@ -164,7 +169,6 @@ private struct MergeSection: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Hairline()
             if let caption {
                 Label(caption.text, systemImage: caption.symbol)
                     .font(.caption)
@@ -218,12 +222,8 @@ private struct MergeSection: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
         }
-        // Near-opaque, so the checks list passes behind the bar rather than
-        // showing through it — the buttons carry glass, but a floating glass
-        // *bar* over scrolling text is where Liquid Glass stops being
-        // legible. A material rather than a colour so it takes on the
-        // inspector column's own background.
-        .background(.thickMaterial)
+        // No bar of its own: `safeAreaBar` fades the checks list out under
+        // the buttons, the way the inspector's top edge does.
         .mergeConfirmation(
             workspace: workspace,
             method: pendingMethod,
@@ -408,10 +408,7 @@ private struct PRHeaderCard: View {
             actions
         }
         .padding(12)
-        .cardSurface(
-            fill: Color.secondary.opacity(0.08),
-            stroke: Color.secondary.opacity(0.18)
-        )
+        .cardSurface()
     }
 
     private var identityRow: some View {

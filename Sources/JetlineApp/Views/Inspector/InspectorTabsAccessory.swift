@@ -9,6 +9,7 @@ import Observation
 final class InspectorTabsAccessory: NSSplitViewItemAccessoryViewController {
     private let state: AppState
     private let control = NSSegmentedControl()
+    private static let inset: CGFloat = 10
     private var tabs: [InspectorTab] = []
     private var cancellables: Set<AnyCancellable> = []
 
@@ -20,6 +21,9 @@ final class InspectorTabsAccessory: NSSplitViewItemAccessoryViewController {
         if #available(macOS 26.1, *) {
             preferredScrollEdgeEffectStyle = .soft
         }
+        // The standard insets drop the control below the window's tab bar;
+        // flush with the toolbar's bottom edge it sits on the same line.
+        automaticallyAppliesContentInsets = false
     }
 
     @available(*, unavailable)
@@ -27,6 +31,12 @@ final class InspectorTabsAccessory: NSSplitViewItemAccessoryViewController {
 
     override func loadView() {
         control.trackingMode = .selectOne
+        // Xcode's inspector tabs: the thumb lifts into a glass lens that
+        // follows the pointer while it's held. (macOS 26 draws the plain
+        // segmented look.)
+        if #available(macOS 27, *) {
+            control.role = .tabs
+        }
         control.segmentDistribution = .fillEqually
         control.controlSize = .large
         control.target = self
@@ -35,10 +45,10 @@ final class InspectorTabsAccessory: NSSplitViewItemAccessoryViewController {
         let container = NSView()
         container.addSubview(control)
         NSLayoutConstraint.activate([
-            control.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            control.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            control.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: Self.inset),
+            control.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -Self.inset),
             control.topAnchor.constraint(equalTo: container.topAnchor),
-            control.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+            control.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -Self.inset)
         ])
         view = container
 

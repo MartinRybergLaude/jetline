@@ -64,6 +64,11 @@ final class WorkspaceState {
     /// When set, the main area shows this chat. Selecting a session or a
     /// diff tab clears it.
     var activeChatId: String?
+    /// New-tab pages: what the tab bar's `+` opens, where the user picks
+    /// what the tab becomes. Nothing runs behind one.
+    var launcherTabs: [String] = []
+    /// When set, the main area shows this new-tab page.
+    var activeLauncherId: String?
     /// Strip order across sessions and diff tabs, which the strip shows as
     /// one list. Every open, close and reorder in `AppState` keeps it in step
     /// with `sessions` and `diffTabs`.
@@ -82,7 +87,8 @@ final class WorkspaceState {
 
     /// The tab the main area is showing.
     var activeTab: TabRef? {
-        activeDiffTabId.map(TabRef.diff)
+        activeLauncherId.map(TabRef.launcher)
+            ?? activeDiffTabId.map(TabRef.diff)
             ?? activeChatId.map(TabRef.chat)
             ?? activeSessionId.map(TabRef.session)
     }
@@ -95,18 +101,20 @@ final class WorkspaceState {
     }
 }
 
-/// A tab in the main-area strip: an agent/shell session, a diff tab or a
-/// native chat.
+/// A tab in the main-area strip: an agent/shell session, a diff tab, a
+/// native chat or a new-tab page.
 enum TabRef: Hashable, Identifiable {
     case session(String)
     case diff(String)
     case chat(String)
+    case launcher(String)
 
     var id: String {
         switch self {
         case .session(let id): return "session:" + id
         case .diff(let id):    return "diff:" + id
         case .chat(let id):    return "chat:" + id
+        case .launcher(let id): return "launcher:" + id
         }
     }
 }

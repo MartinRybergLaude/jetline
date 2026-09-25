@@ -159,10 +159,7 @@ struct CommentCard: View {
         }
         .padding(role.showsBorder ? 10 : 0)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(
-            fill: role.showsBorder ? Color.secondary.opacity(0.06) : .clear,
-            stroke: role.showsBorder ? Color.secondary.opacity(0.15) : .clear
-        )
+        .cardSurface(raised: role.showsBorder, stroke: role.showsBorder ? .inspectorCardStroke : .clear)
     }
 }
 

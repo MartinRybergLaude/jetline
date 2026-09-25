@@ -879,6 +879,7 @@ final class AppState: ObservableObject {
         ws.activeSessionId = sessionId
         ws.activeDiffTabId = nil
         ws.activeChatId = nil
+        ws.activeLauncherId = nil
     }
 
     // MARK: - Chats
@@ -934,6 +935,7 @@ final class AppState: ObservableObject {
         let ws = workspaceState(for: workspaceId)
         ws.activeChatId = chatId
         ws.activeDiffTabId = nil
+        ws.activeLauncherId = nil
         ws.activeChat?.connectIfNeeded()
     }
 
@@ -1037,7 +1039,9 @@ final class AppState: ObservableObject {
     }
 
     func selectDiffTab(_ tabId: String, in workspaceId: String) {
-        workspaceState(for: workspaceId).activeDiffTabId = tabId
+        let ws = workspaceState(for: workspaceId)
+        ws.activeDiffTabId = tabId
+        ws.activeLauncherId = nil
     }
 
     /// Close a diff tab. An active one hands over to its strip neighbour.
@@ -1055,6 +1059,51 @@ final class AppState: ObservableObject {
         }
     }
 
+    // MARK: - New-tab pages
+
+    /// Open a new-tab page at the end of the strip and show it.
+    func openLauncherTab(in workspaceId: String) {
+        let ws = workspaceState(for: workspaceId)
+        let id = UUID().uuidString
+        ws.launcherTabs.append(id)
+        ws.tabOrder.append(.launcher(id))
+        selectLauncherTab(id, in: workspaceId)
+    }
+
+    func selectLauncherTab(_ id: String, in workspaceId: String) {
+        workspaceState(for: workspaceId).activeLauncherId = id
+    }
+
+    /// Close a new-tab page. An active one hands over to its strip neighbour.
+    func closeLauncherTab(_ id: String, in workspaceId: String) {
+        let ws = workspaceState(for: workspaceId)
+        guard ws.launcherTabs.contains(id) else { return }
+        let order = ws.tabOrder
+        ws.launcherTabs.removeAll { $0 == id }
+        ws.tabOrder.removeAll { $0 == .launcher(id) }
+        if ws.activeLauncherId == id {
+            ws.activeLauncherId = nil
+            if let next = Self.neighbour(of: .launcher(id), in: order) {
+                selectTab(next, in: workspaceId)
+            }
+        }
+    }
+
+    /// Turn a new-tab page into the tab `open` creates, in the page's place
+    /// in the strip. `open` adds and shows exactly one tab.
+    func fillLauncherTab(_ id: String, in workspaceId: String, with open: () -> Void) {
+        let ws = workspaceState(for: workspaceId)
+        guard let index = ws.tabOrder.firstIndex(of: .launcher(id)) else { return }
+        ws.launcherTabs.removeAll { $0 == id }
+        ws.tabOrder.remove(at: index)
+        if ws.activeLauncherId == id { ws.activeLauncherId = nil }
+        let before = Set(ws.tabOrder)
+        open()
+        guard let added = ws.tabOrder.last, !before.contains(added) else { return }
+        ws.tabOrder.removeLast()
+        ws.tabOrder.insert(added, at: min(index, ws.tabOrder.count))
+    }
+
     // MARK: - Tab strip
 
     func selectTab(_ tab: TabRef, in workspaceId: String) {
@@ -1062,6 +1111,7 @@ final class AppState: ObservableObject {
         case .session(let id): selectSession(id, in: workspaceId)
         case .diff(let id):    selectDiffTab(id, in: workspaceId)
         case .chat(let id):    selectChat(id, in: workspaceId)
+        case .launcher(let id): selectLauncherTab(id, in: workspaceId)
         }
     }
 
@@ -1070,6 +1120,7 @@ final class AppState: ObservableObject {
         case .session(let id): closeSession(id, in: workspaceId)
         case .diff(let id):    closeDiffTab(id, in: workspaceId)
         case .chat(let id):    closeChat(id, in: workspaceId)
+        case .launcher(let id): closeLauncherTab(id, in: workspaceId)
         }
     }
 
@@ -1866,6 +1917,8 @@ final class AppState: ObservableObject {
         ws.activeChatId = nil
         ws.diffTabs.removeAll()
         ws.activeDiffTabId = nil
+        ws.launcherTabs.removeAll()
+        ws.activeLauncherId = nil
         ws.tabOrder.removeAll()
 
         ws.setupController?.discard()

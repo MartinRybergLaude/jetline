@@ -592,8 +592,8 @@ final class MainWindowCoordinator: NSObject, NSWindowDelegate {
     }
 
     private func newTabFromTabBar() {
-        guard let id = state.selectedWorkspaceId, let ws = state.workspaceById(id) else { return }
-        state.startNewSession(for: ws, agent: state.settings.defaultAgent)
+        guard let id = state.selectedWorkspaceId else { return }
+        state.openLauncherTab(in: id)
     }
 
     // MARK: - NSWindowDelegate

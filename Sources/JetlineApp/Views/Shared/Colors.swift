@@ -21,6 +21,8 @@ extension Color {
     /// `A` file-status badge keep the system color: they carry no
     /// `readableGreen` neighbor, and darkening a wash just muddies it.
     static let readableGreen = Color(nsColor: .readableGreen)
+    static let inspectorCard = Color(nsColor: .inspectorCard)
+    static let inspectorCardStroke = Color(nsColor: .inspectorCardStroke)
 }
 
 extension NSColor {
@@ -29,5 +31,19 @@ extension NSColor {
         appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
             ? .systemGreen
             : NSColor(srgbRed: 0.102, green: 0.498, blue: 0.216, alpha: 1)
+    }
+
+    /// A card raised off the inspector column's grey: lighter than it in
+    /// both appearances, the way grouped content sits on a sidebar.
+    static let inspectorCard = NSColor(name: "inspectorCard") { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(white: 1, alpha: 0.07)
+            : NSColor(white: 1, alpha: 0.8)
+    }
+
+    static let inspectorCardStroke = NSColor(name: "inspectorCardStroke") { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(white: 1, alpha: 0.08)
+            : NSColor(white: 0, alpha: 0.07)
     }
 }
