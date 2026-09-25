@@ -241,9 +241,17 @@ final class ChatSession: Identifiable {
         request.itemId.flatMap { boxesByItemId[$0]?.item }
     }
 
+    /// The agent's session to continue. Nil until a message was sent: the
+    /// agent writes nothing before that, so there is nothing to resume.
+    private var resumableSession: AgentResumeCursor? {
+        guard let resume, !resume.sessionId.isEmpty,
+              turns.contains(where: { $0.userMessage != nil }) else { return nil }
+        return resume
+    }
+
     /// Arguments that open this conversation in the agent's own TUI.
     var terminalResumeArgs: [String]? {
-        guard let id = resume?.sessionId, !id.isEmpty else { return nil }
+        guard let id = resumableSession?.sessionId else { return nil }
         switch provider {
         case .claude: return ["--resume", id]
         case .codex: return ["resume", id]
@@ -299,7 +307,7 @@ final class ChatSession: Identifiable {
                 effort: effort,
                 runtimeMode: runtimeMode,
                 interactionMode: interactionMode,
-                resume: resume
+                resume: resumableSession
             ))
         } catch {
             self.agent = nil
