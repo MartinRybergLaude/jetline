@@ -40,7 +40,10 @@ private struct PRPanelContent: View {
                 .padding(.vertical, 8)
         }
         .scrollIndicators(.visible)
-        .safeAreaBar(edge: .bottom, spacing: 0) { mergeFooter }
+        // An inset, not a `safeAreaBar`: the footer is opaque with its own
+        // divider, and the bar's scroll edge effect drew a second edge
+        // above it.
+        .safeAreaInset(edge: .bottom, spacing: 0) { mergeFooter }
         // Re-entered whenever the panel appears or the workspace changes, and
         // cancelled when either goes away — so the poll only runs while
         // someone is actually reading the tab. `refresh` collapses requests
@@ -181,27 +184,19 @@ private struct MergeSection: View {
             GlassEffectContainer(spacing: 6) {
                 HStack(spacing: 6) {
                     Button { primaryAction() } label: { label }
-                        .buttonStyle(.glassProminent)
-                        .buttonBorderShape(.capsule)
-                        .tint(mode == .merge ? .readableGreen : .accentColor)
+                        .buttonStyle(FooterButtonStyle(fill: mode == .merge ? .readableGreen : .accentColor))
                         .disabled(isBusy || defaultMethod == nil)
 
                     if offersStrategyChoice {
                         Button { showingAlternates.toggle() } label: {
                             Image(systemName: "chevron.down")
-                                .frame(width: 12)
-                                // Same trick as the header card's link
-                                // button: a glyph-only label is shorter than
-                                // a text one, so stretch to the row height
-                                // the wide half sets.
-                                .frame(maxHeight: .infinity)
+                                .font(.system(size: 11, weight: .semibold))
+                                .frame(width: FooterButtonStyle.height)
                         }
                         // Untinted: the chevron only *picks* a strategy, and
                         // a second tinted button beside the first would read
                         // as two ways to merge rather than one.
-                        .buttonStyle(.glass)
-                        .buttonBorderShape(.capsule)
-                        .frame(maxHeight: .infinity)
+                        .buttonStyle(FooterButtonStyle(fill: nil))
                         .help("Other merge strategies")
                         .popover(isPresented: $showingAlternates, arrowEdge: .bottom) {
                             VStack(alignment: .leading, spacing: 1) {
@@ -217,19 +212,22 @@ private struct MergeSection: View {
                         }
                     }
                 }
-                .controlSize(.regular)
-                .fixedSize(horizontal: false, vertical: true)
                 .disabled(mode == .blocked)
                 .help(helpText)
             }
+            // Level with the chat composer's pills and the sidebar's Add
+            // repository button across the window.
             .padding(.horizontal, 12)
-            .padding(.vertical, 10)
+            .padding(.top, 10)
+            .padding(.bottom, 12)
         }
-        // As tall as the chat composer's bar beside it, so the two dividers
-        // sit on one line.
-        .frame(maxWidth: .infinity, minHeight: slot?.composerBarHeight)
+        // As tall as the chat composer's bar beside it, divider included,
+        // so the two dividers sit on one line.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .safeAreaInset(edge: .top, spacing: 0) { Divider() }
+        .frame(minHeight: slot?.composerBarHeight)
+        .fixedSize(horizontal: false, vertical: true)
         .background(Color(nsColor: .textBackgroundColor))
-        .overlay(alignment: .top) { Divider() }
         .mergeConfirmation(
             workspace: workspace,
             method: pendingMethod,
@@ -764,5 +762,29 @@ private struct CheckRow: View {
             }
         case .unknown: return .unknown
         }
+    }
+}
+
+/// The footer's buttons, at the chat composer pills' fixed height. The
+/// system glass styles size to their label, which puts a glyph-only button
+/// and a text one at different heights. A tinted one washes the capsule
+/// rather than tinting the glass, which would go gray in an inactive
+/// window.
+private struct FooterButtonStyle: ButtonStyle {
+    static let height: CGFloat = 28
+
+    let fill: Color?
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 13, weight: fill == nil ? .regular : .medium))
+            .foregroundStyle(fill == nil ? Color.primary : .white)
+            .frame(height: Self.height)
+            .padding(.horizontal, fill == nil ? 0 : 12)
+            .background(Capsule().fill(fill ?? .clear))
+            .contentShape(Capsule())
+            .glassEffect(.regular.interactive(), in: Capsule())
+            .opacity(isEnabled ? 1 : 0.5)
     }
 }

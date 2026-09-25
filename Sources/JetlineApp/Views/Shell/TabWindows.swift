@@ -38,7 +38,7 @@ final class TabSlot {
     /// The toolbar's Merge asks for confirmation, which the tab's content
     /// presents.
     var pendingMerge = false
-    /// Height of the chat composer's bar below its divider, while a chat
+    /// Height of the chat composer's bar, divider included, while a chat
     /// is showing, so the inspector's merge footer can match it and the
     /// two dividers line up.
     var composerBarHeight: CGFloat?

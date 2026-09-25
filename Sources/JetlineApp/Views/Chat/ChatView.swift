@@ -23,13 +23,15 @@ struct ChatView: View {
                             .frame(maxWidth: .infinity)
                     }
                 }
-            Divider()
-            bottom
-                .frame(maxWidth: 720)
-                .padding(.horizontal, 24)
-                .padding(.vertical, 12)
-                .frame(maxWidth: .infinity)
-                .onGeometryChange(for: CGFloat.self, of: \.size.height) { slot?.composerBarHeight = $0 }
+            VStack(spacing: 0) {
+                Divider()
+                bottom
+                    .frame(maxWidth: 720)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity)
+            }
+            .onGeometryChange(for: CGFloat.self, of: \.size.height) { slot?.composerBarHeight = $0 }
         }
         .background(Color(nsColor: .textBackgroundColor))
         // A fixed floor, independent of content. Otherwise the detail
