@@ -562,7 +562,12 @@ final class ChatSession: Identifiable {
     func close() {
         disconnect()
         eventTask?.cancel()
-        ChatStore.setClosed(id, closed: true)
+        // Nothing was said: not worth reopening.
+        if turns.contains(where: { $0.userMessage != nil }) {
+            ChatStore.setClosed(id, closed: true)
+        } else {
+            ChatStore.deleteThread(id)
+        }
     }
 
     // MARK: - Event reduction

@@ -1,7 +1,7 @@
 import Foundation
 
 enum MergeCleanupPolicy {
-    static func shouldArchive(workspace: Workspace, pr: PullRequest) -> Bool {
+    static func shouldDelete(workspace: Workspace, pr: PullRequest) -> Bool {
         guard pr.state.uppercased() == "MERGED",
               let mergedAt = pr.mergedAt else { return false }
         return mergedAt >= workspace.createdAt
@@ -86,18 +86,18 @@ final class PRTracker {
     /// inner `nil` = "looked up, repo has no GitHub remote — skip forever".
     private var repoIdentifiers: [String: RepoIdentifier?] = [:]
     private var loops: [String: Loops] = [:]
-    /// Workspace IDs we've already kicked off auto-archive for. The archive
+    /// Workspace IDs we've already kicked off auto-delete for. The delete
     /// itself removes the workspace from `workspacesByRepo`, so subsequent
-    /// polls won't see it — but the archive is fire-and-forget, so this
+    /// polls won't see it — but the delete is fire-and-forget, so this
     /// guard prevents a re-trigger before it lands.
-    private var autoArchived: Set<String> = []
+    private var autoDeleted: Set<String> = []
 
     init(state: AppState) {
         self.state = state
     }
 
     /// Reconcile poll loops with the current set of repositories. Idempotent
-    /// — call after add/remove/load/archive.
+    /// — call after add/remove/load/delete.
     func sync() {
         guard let state else { return }
         let current = Set(state.repositories.map(\.id))
@@ -113,7 +113,7 @@ final class PRTracker {
     func stopAll() {
         for repoId in loops.keys { stop(repoId: repoId) }
         repoIdentifiers.removeAll()
-        autoArchived.removeAll()
+        autoDeleted.removeAll()
     }
 
     /// Wake both loops so the next poll of each fires immediately. If a
@@ -344,7 +344,7 @@ final class PRTracker {
             // Branch reconciliation costs two git subprocesses per
             // workspace, so it only runs for awake ones. Asleep workspaces
             // keep their stored branch name, which still feeds the batched
-            // PR lookup below — merge detection and auto-archive keep
+            // PR lookup below — merge detection and auto-delete keep
             // working for paused workspaces.
             _ = await reconcileWorkspaceBranches(
                 workspaces.filter { state.isWorkspaceAwake($0.id) },
@@ -374,7 +374,7 @@ final class PRTracker {
                     state.applyPRIdentity(number: pr.number, url: pr.url, for: ws.id)
                 }
                 state.applyPR(snap, for: ws.id)
-                autoArchiveIfMerged(workspace: state.workspaceById(ws.id) ?? ws, snapshot: snap, state: state)
+                autoDeleteIfMerged(workspace: state.workspaceById(ws.id) ?? ws, snapshot: snap, state: state)
             }
         } catch GitHubRunner.Error.ghMissing {
             updateStatus(.ghMissing)
@@ -564,14 +564,13 @@ final class PRTracker {
 
     /// Auto-cleanup is tied to the specific PR lifetime, not just the branch
     /// name. A same-named branch recreated after an older PR merged should
-    /// not be archived by that historical merged PR.
-    private func autoArchiveIfMerged(workspace: Workspace, snapshot: PRSnapshot, state: AppState) {
+    /// not be deleted by that historical merged PR.
+    private func autoDeleteIfMerged(workspace: Workspace, snapshot: PRSnapshot, state: AppState) {
         guard case let .loaded(pr, _) = snapshot,
-              MergeCleanupPolicy.shouldArchive(workspace: workspace, pr: pr),
-              !autoArchived.contains(workspace.id) else { return }
-        autoArchived.insert(workspace.id)
-        let removeWorktree = state.settings.deleteWorktreeOnMerge
-        Task { await state.archiveWorkspace(workspace, removeWorktree: removeWorktree) }
+              MergeCleanupPolicy.shouldDelete(workspace: workspace, pr: pr),
+              !autoDeleted.contains(workspace.id) else { return }
+        autoDeleted.insert(workspace.id)
+        Task { await state.deleteWorkspace(workspace) }
     }
 
     private func updateStatus(_ new: Status) {

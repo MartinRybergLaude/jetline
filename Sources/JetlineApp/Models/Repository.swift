@@ -50,7 +50,6 @@ struct Repository: Codable, Identifiable, Hashable, FetchableRecord, Persistable
     var runScript: String?
     /// When true, starting a run stops every other active runner in the same repo.
     var runExclusive: Bool = false
-    var archiveScript: String?
 
     /// Last merge strategy the user picked from the merge confirmation
     /// dialog for this repo, as `MergeMethod.rawValue`. `nil` → no
@@ -72,7 +71,6 @@ struct Repository: Codable, Identifiable, Hashable, FetchableRecord, Persistable
     /// blank so callers can use `if let` instead of repeated trim+isEmpty.
     var trimmedSetupScript: String? { setupScript?.nonBlank }
     var trimmedRunScript: String? { runScript?.nonBlank }
-    var trimmedArchiveScript: String? { archiveScript?.nonBlank }
 
     /// Resolved worktree folder — falls back to the legacy UUID id when
     /// `folderName` is unset so path construction never breaks.
@@ -110,7 +108,6 @@ struct Repository: Codable, Identifiable, Hashable, FetchableRecord, Persistable
         static let setupScript = Column(CodingKeys.setupScript)
         static let runScript = Column(CodingKeys.runScript)
         static let runExclusive = Column(CodingKeys.runExclusive)
-        static let archiveScript = Column(CodingKeys.archiveScript)
         static let lastMergeMethod = Column(CodingKeys.lastMergeMethod)
         static let commitPrompt = Column(CodingKeys.commitPrompt)
         static let createPRPrompt = Column(CodingKeys.createPRPrompt)

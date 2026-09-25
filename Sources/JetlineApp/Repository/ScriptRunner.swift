@@ -1,13 +1,13 @@
 import Foundation
 
-/// One-shot shell script runner. Used for setup and archive scripts where
+/// One-shot shell script runner. Used for setup scripts where
 /// we want a synchronous result (success/failure + captured output) rather
 /// than a long-running process the user controls.
 ///
 /// We invoke through the user's interactive login shell so scripts see the
 /// same startup files as the embedded terminal.
 enum ScriptRunner {
-    /// Env var pointing at the original repo path. Setup/run/archive scripts
+    /// Env var pointing at the original repo path. Setup/run scripts
     /// can read it to copy or symlink files (e.g. `.env`).
     static let rootPathEnvKey = "JETLINE_ROOT_PATH"
 

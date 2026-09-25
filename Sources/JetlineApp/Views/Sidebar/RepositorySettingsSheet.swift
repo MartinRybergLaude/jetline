@@ -188,15 +188,6 @@ struct RepositorySettingsSheet: View {
             ) {
                 Toggle("", isOn: $draft.runExclusive).labelsHidden()
             }
-            scriptEditor(
-                title: "Archive script",
-                help: "Runs when a workspace is deleted, before git removes the worktree. Use it to clean up build artefacts.",
-                placeholder: "rm -rf node_modules",
-                text: Binding(
-                    get: { draft.archiveScript ?? "" },
-                    set: { draft.archiveScript = $0.isEmpty ? nil : $0 }
-                )
-            )
         } header: {
             Text("Scripts")
         }

@@ -357,5 +357,19 @@ enum Schema {
                 WHERE terminalFontFamily NOT IN ('', 'SF Mono')
                 """)
         }
+
+        // Workspaces are deleted outright now, not archived. Archived rows
+        // are forgotten (their chats with them); worktrees left on disk
+        // stay untouched.
+        migrator.registerMigration("v26_drop_workspace_archive") { db in
+            try db.execute(sql: """
+                DELETE FROM chat_threads WHERE workspaceId IN
+                    (SELECT id FROM workspaces WHERE archivedAt IS NOT NULL)
+                """)
+            try db.execute(sql: "DELETE FROM workspaces WHERE archivedAt IS NOT NULL")
+            try db.alter(table: "workspaces") { t in t.drop(column: "archivedAt") }
+            try db.alter(table: "repositories") { t in t.drop(column: "archiveScript") }
+            try db.alter(table: "app_settings") { t in t.drop(column: "deleteWorktreeOnMerge") }
+        }
     }
 }

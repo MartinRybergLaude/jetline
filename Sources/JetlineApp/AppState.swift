@@ -248,6 +248,15 @@ final class AppState: ObservableObject {
         if let workspaces = workspacesByRepo[id] {
             for ws in workspaces { detachWorkspace(ws.id) }
         }
+        if let repo {
+            // Chats have no foreign key to cascade from (see `chat_threads`).
+            let workspaceIds = [repositoryBaseWorkspaceId(for: repo)] + (workspacesByRepo[id] ?? []).map(\.id)
+            Task { [weak self] in
+                for workspaceId in workspaceIds {
+                    await self?.deleteChats(workspaceId: workspaceId, repoPath: repo.path)
+                }
+            }
+        }
         try? Repositories.remove(id: id)
         repositories.removeAll { $0.id == id }
         workspacesByRepo.removeValue(forKey: id)
@@ -522,7 +531,7 @@ final class AppState: ObservableObject {
             ) else {
                 return false
             }
-            archiveWorkspaceRecordsForOverriddenWorktree(
+            deleteWorkspaceRecordsForOverriddenWorktree(
                 repoId: repo.id,
                 branchName: branch,
                 worktreePath: path
@@ -543,7 +552,7 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func archiveWorkspaceRecordsForOverriddenWorktree(
+    private func deleteWorkspaceRecordsForOverriddenWorktree(
         repoId: String,
         branchName: String,
         worktreePath: String
@@ -554,13 +563,14 @@ final class AppState: ObservableObject {
         guard !matches.isEmpty else { return }
 
         let ids = Set(matches.map(\.id))
+        let repoPath = repositories.first(where: { $0.id == repoId })?.path
         for ws in matches {
             detachWorkspace(ws.id)
-            try? Workspaces.archive(id: ws.id)
-            try? PRSnapshots.remove(workspaceId: ws.id)
+            Task { [weak self] in await self?.deleteChats(workspaceId: ws.id, repoPath: repoPath) }
+            try? Workspaces.delete(id: ws.id)
             activityLog.record(
                 .lifecycle,
-                "Archived workspace \(ws.name) because its worktree was overridden",
+                "Deleted workspace \(ws.name) because its worktree was overridden",
                 repoId: repoId,
                 workspaceId: ws.id
             )
@@ -616,101 +626,44 @@ final class AppState: ObservableObject {
         workspaceState(for: workspaceId).setupController
     }
 
-    func archiveWorkspace(_ workspace: Workspace, removeWorktree: Bool) async {
+    /// Remove the worktree and its branch, the workspace's chats and its
+    /// row.
+    func deleteWorkspace(_ workspace: Workspace) async {
         // Stop tabs/run/setup controllers first; otherwise they can keep
         // writing to a worktree that is about to disappear.
         detachWorkspace(workspace.id)
 
         let repo = repositories.first(where: { $0.id == workspace.repositoryId })
         if let repo {
-            if let archive = repo.trimmedArchiveScript {
-                _ = await ScriptRunner.run(
-                    archive,
-                    cwd: workspace.worktreePath,
-                    env: ScriptRunner.defaultEnv(repoPath: repo.path)
-                )
-            }
-            if removeWorktree {
-                // Checkpoint refs live in the shared repository, not the
-                // worktree, so they'd outlive it.
-                for threadId in ChatStore.threadIds(workspaceId: workspace.id) {
-                    await Checkpointer.deleteRefs(worktree: repo.path, thread: threadId)
-                }
-                try? await WorktreeOps.remove(
-                    repoPath: repo.path,
-                    worktreePath: workspace.worktreePath,
-                    branchName: workspace.branchName,
-                    force: true
-                )
-            }
+            try? await WorktreeOps.remove(
+                repoPath: repo.path,
+                worktreePath: workspace.worktreePath,
+                branchName: workspace.branchName,
+                force: true
+            )
         }
-        try? Workspaces.archive(id: workspace.id)
-        try? PRSnapshots.remove(workspaceId: workspace.id)
+        await deleteChats(workspaceId: workspace.id, repoPath: repo?.path)
+        try? Workspaces.delete(id: workspace.id)
         reassignSelection(afterClosing: workspace.id)
         workspacesByRepo[workspace.repositoryId]?.removeAll { $0.id == workspace.id }
         activityLog.record(
             .lifecycle,
-            "Archived workspace \(workspace.name)\(removeWorktree ? " (worktree removed)" : "")",
+            "Deleted workspace \(workspace.name)",
             repoId: workspace.repositoryId,
             workspaceId: workspace.id
         )
+        prTracker.sync()
     }
 
-    /// Archived rows whose worktree still exists on disk — the restorable
-    /// set. Rows pointing at a deleted worktree are pruned here, so every
-    /// consumer sees only rows `restoreArchivedWorkspace` can actually
-    /// reattach.
-    func archivedWorkspaces(for repoId: String) -> [Workspace] {
-        let rows = (try? Workspaces.archivedForRepository(repoId)) ?? []
-        return rows.filter { ws in
-            let alive = FileManager.default.fileExists(atPath: ws.worktreePath)
-            if !alive { try? Workspaces.delete(id: ws.id) }
-            return alive
+    /// Drop a workspace's chats and their checkpoint refs, which live in
+    /// the shared repository and would outlive the worktree.
+    private func deleteChats(workspaceId: String, repoPath: String?) async {
+        if let repoPath {
+            for threadId in ChatStore.threadIds(workspaceId: workspaceId) {
+                await Checkpointer.deleteRefs(worktree: repoPath, thread: threadId)
+            }
         }
-    }
-
-    /// Restore an archived workspace, falling back to a fresh import of its
-    /// branch when the worktree vanished between listing and click.
-    func restoreOrImportWorkspace(_ archived: Workspace, in repo: Repository) async {
-        if await restoreArchivedWorkspace(archived) { return }
-        await importBranchAsWorkspace(
-            in: repo,
-            branchName: archived.branchName,
-            baseBranch: archived.baseBranch,
-            name: archived.name
-        )
-    }
-
-    /// Reattach an archived workspace (auto-archived on merge). Worktree
-    /// and local branch are still on disk because `archiveWorkspace` runs
-    /// with `removeWorktree: false` for the merge path. If the worktree
-    /// directory has been manually deleted, drop the stale row and return
-    /// `false` so the caller can fall back to a fresh import.
-    @discardableResult
-    func restoreArchivedWorkspace(_ workspace: Workspace) async -> Bool {
-        guard FileManager.default.fileExists(atPath: workspace.worktreePath) else {
-            try? Workspaces.delete(id: workspace.id)
-            return false
-        }
-        do {
-            try Workspaces.unarchive(id: workspace.id)
-        } catch {
-            await presentError(error.localizedDescription)
-            return false
-        }
-        var restored = workspace
-        restored.archivedAt = nil
-        restored.lastActiveAt = Date()
-        workspacesByRepo[workspace.repositoryId, default: []].insert(restored, at: 0)
-        activityLog.record(
-            .lifecycle,
-            "Restored workspace \(restored.name) (\(restored.branchName))",
-            repoId: restored.repositoryId,
-            workspaceId: restored.id
-        )
-        prTracker.kick(repoId: workspace.repositoryId)
-        selectWorkspace(restored.id)
-        return true
+        ChatStore.deleteThreads(workspaceId: workspaceId)
     }
 
     /// Compute the prefix prepended to a fresh workspace's branch name.
@@ -1927,13 +1880,14 @@ final class AppState: ObservableObject {
         guard workspaceById(workspace.id) != nil else { return }
 
         detachWorkspace(workspace.id)
-        try? Workspaces.archive(id: workspace.id)
-        try? PRSnapshots.remove(workspaceId: workspace.id)
+        let repoPath = repositories.first(where: { $0.id == workspace.repositoryId })?.path
+        Task { [weak self] in await self?.deleteChats(workspaceId: workspace.id, repoPath: repoPath) }
+        try? Workspaces.delete(id: workspace.id)
         reassignSelection(afterClosing: workspace.id)
         workspacesByRepo[workspace.repositoryId]?.removeAll { $0.id == workspace.id }
         activityLog.record(
             .lifecycle,
-            "Archived workspace \(workspace.name) because its worktree is missing",
+            "Deleted workspace \(workspace.name) because its worktree is missing",
             repoId: workspace.repositoryId,
             workspaceId: workspace.id
         )

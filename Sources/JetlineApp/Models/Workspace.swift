@@ -18,7 +18,6 @@ struct Workspace: Codable, Identifiable, Hashable, FetchableRecord, PersistableR
     var agent: AgentKind
     var createdAt: Date
     var lastActiveAt: Date
-    var archivedAt: Date?
     /// Manual sidebar ordering within the repository section. Lower = nearer
     /// the top. New workspaces are inserted below the current min so they
     /// land at the top; reorders rewrite the column with 0…n-1 values.
@@ -63,7 +62,6 @@ struct Workspace: Codable, Identifiable, Hashable, FetchableRecord, PersistableR
         static let agent = Column(CodingKeys.agent)
         static let createdAt = Column(CodingKeys.createdAt)
         static let lastActiveAt = Column(CodingKeys.lastActiveAt)
-        static let archivedAt = Column(CodingKeys.archivedAt)
         static let sortIndex = Column(CodingKeys.sortIndex)
     }
 

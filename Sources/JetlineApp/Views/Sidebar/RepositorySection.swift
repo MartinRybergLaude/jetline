@@ -210,7 +210,7 @@ struct RepositorySection: View {
             .onEnded { value in
                 guard case .second(true, .some(let dragValue)) = value else { return }
                 // Re-resolve the row by id — the array may have shifted
-                // under the drag (poll-driven archive, new workspace).
+                // under the drag (poll-driven delete, new workspace).
                 guard let from = workspaces.firstIndex(where: { $0.id == ws.id }) else { return }
                 let dest = dropDestination(from: from, translation: dragValue.translation.height)
                 guard dest != from, dest != from + 1 else { return }

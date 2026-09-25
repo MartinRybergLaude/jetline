@@ -6,8 +6,8 @@ import Foundation
 /// Names are drawn from a fixed list of star names. Uniqueness is scoped to
 /// one repo's worktree folder, and the filesystem is the source of truth: a
 /// name is free exactly when no directory with that name exists. That
-/// automatically accounts for active workspaces, archived-but-kept worktrees,
-/// and stray leftovers — and frees a name the moment its worktree is deleted.
+/// automatically accounts for active workspaces and stray leftovers, and
+/// frees a name the moment its worktree is deleted.
 enum WorktreeNamer {
     /// Pick a free star name in `folder`. Creates nothing on disk — the
     /// caller's `git worktree add` materializes the directory. Two concurrent

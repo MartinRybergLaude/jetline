@@ -12,9 +12,7 @@ struct WorkspaceRow: View {
             workspace: workspace,
             workspaceState: state.workspaceState(for: workspace.id),
             isSelected: state.selectedWorkspaceId == workspace.id,
-            onArchive: { keepWorktree in
-                Task { await state.archiveWorkspace(workspace, removeWorktree: !keepWorktree) }
-            },
+            onDelete: { Task { await state.deleteWorkspace(workspace) } },
             onClose: { state.closeWorkspace(workspace.id) }
         )
     }
@@ -24,7 +22,7 @@ private struct WorkspaceRowContent: View {
     let workspace: Workspace
     let workspaceState: WorkspaceState
     let isSelected: Bool
-    let onArchive: (_ keepWorktree: Bool) -> Void
+    let onDelete: () -> Void
     let onClose: () -> Void
 
     var body: some View {
@@ -64,8 +62,7 @@ private struct WorkspaceRowContent: View {
                 Button("Close workspace") { onClose() }
             }
             Divider()
-            Button("Archive (keep worktree)") { onArchive(true) }
-            Button("Delete worktree…", role: .destructive) { onArchive(false) }
+            Button("Delete workspace", role: .destructive) { onDelete() }
         }
     }
 
@@ -150,7 +147,7 @@ struct PRStatusIcon: View {
             case "OPEN":   return .open
             case "CLOSED": return .closed
             // Merged falls through to nil — workspace is expected to be
-            // auto-archived shortly after a merge is detected.
+            // auto-deleted shortly after a merge is detected.
             default:       return nil
             }
         }

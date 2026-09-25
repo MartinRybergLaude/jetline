@@ -2,32 +2,32 @@ import XCTest
 @testable import JetlineApp
 
 final class MergeCleanupPolicyTests: XCTestCase {
-    func testMergedBeforeWorkspaceCreationDoesNotArchive() {
+    func testMergedBeforeWorkspaceCreationDoesNotDelete() {
         let workspace = makeWorkspace(createdAt: date("2026-06-30T12:00:00Z"))
         let pr = makePR(state: "MERGED", mergedAt: date("2026-06-30T11:59:59Z"))
 
-        XCTAssertFalse(MergeCleanupPolicy.shouldArchive(workspace: workspace, pr: pr))
+        XCTAssertFalse(MergeCleanupPolicy.shouldDelete(workspace: workspace, pr: pr))
     }
 
-    func testMergedAfterWorkspaceCreationArchives() {
+    func testMergedAfterWorkspaceCreationDeletes() {
         let workspace = makeWorkspace(createdAt: date("2026-06-30T12:00:00Z"))
         let pr = makePR(state: "MERGED", mergedAt: date("2026-06-30T12:00:01Z"))
 
-        XCTAssertTrue(MergeCleanupPolicy.shouldArchive(workspace: workspace, pr: pr))
+        XCTAssertTrue(MergeCleanupPolicy.shouldDelete(workspace: workspace, pr: pr))
     }
 
-    func testMergedWithoutMergedAtDoesNotArchive() {
+    func testMergedWithoutMergedAtDoesNotDelete() {
         let workspace = makeWorkspace(createdAt: date("2026-06-30T12:00:00Z"))
         let pr = makePR(state: "MERGED", mergedAt: nil)
 
-        XCTAssertFalse(MergeCleanupPolicy.shouldArchive(workspace: workspace, pr: pr))
+        XCTAssertFalse(MergeCleanupPolicy.shouldDelete(workspace: workspace, pr: pr))
     }
 
-    func testOpenPRDoesNotArchive() {
+    func testOpenPRDoesNotDelete() {
         let workspace = makeWorkspace(createdAt: date("2026-06-30T12:00:00Z"))
         let pr = makePR(state: "OPEN", mergedAt: date("2026-06-30T12:00:01Z"))
 
-        XCTAssertFalse(MergeCleanupPolicy.shouldArchive(workspace: workspace, pr: pr))
+        XCTAssertFalse(MergeCleanupPolicy.shouldDelete(workspace: workspace, pr: pr))
     }
 
     func testPullRequestDecodesOldSnapshotWithoutTimestamps() throws {

@@ -16,22 +16,16 @@ struct ImportBranchPane: View {
     @State private var selectedRef: String?
     @State private var name: String = ""
     @State private var importing: Bool = false
-    /// Archived workspaces for this repo, keyed by their local branch name.
-    /// A row whose branch is in this dict renders the "Merged" badge and
-    /// routes Import → `restoreOrImportWorkspace` instead of fresh import.
-    @State private var archivedByBranch: [String: Workspace] = [:]
 
     private static let recentWindow: TimeInterval = 90 * 24 * 60 * 60
 
     private enum RowStatus {
         case fresh
-        case merged
         case active
 
         var badgeText: String? {
             switch self {
             case .fresh:  return nil
-            case .merged: return "Merged"
             case .active: return "Already imported"
             }
         }
@@ -79,8 +73,7 @@ struct ImportBranchPane: View {
         .task { await refresh() }
         .onChange(of: selectedRef) { _, new in
             // Pre-fill the name field for the picked branch. Only meaningful
-            // for `.fresh` rows (the field is hidden for `.merged` and the
-            // Import button is disabled for `.active`).
+            // for `.fresh` rows (the Import button is disabled for `.active`).
             guard let new,
                   let row = branches.first(where: { $0.ref == new }) else { return }
             name = defaultName(for: row.ref)
@@ -91,15 +84,12 @@ struct ImportBranchPane: View {
         guard let ref = selectedRef, !importing else { return false }
         switch status(for: ref) {
         case .active: return false
-        case .merged: return true
         case .fresh:  return !trimmedName.isEmpty
         }
     }
 
     private var importButtonLabel: String {
-        if importing { return "Importing…" }
-        if let ref = selectedRef, status(for: ref) == .merged { return "Restore" }
-        return "Import"
+        importing ? "Importing…" : "Import"
     }
 
     /// Single-lookup form for spots outside the list. The list itself uses
@@ -112,7 +102,6 @@ struct ImportBranchPane: View {
     private func status(for ref: String, imported: Set<String>) -> RowStatus {
         let local = repository.localName(forRemoteRef: ref)
         if imported.contains(local) { return .active }
-        if archivedByBranch[local] != nil { return .merged }
         return .fresh
     }
 
@@ -195,8 +184,7 @@ struct ImportBranchPane: View {
         }
         .padding(.vertical, 2)
         // Only `.active` rows are unselectable, so they're the only ones
-        // that get dimmed. `.merged` rows look normal because clicking
-        // them does something useful (restore).
+        // that get dimmed.
         .opacity(status == .active ? 0.55 : 1)
         .contentShape(Rectangle())
     }
@@ -241,15 +229,6 @@ struct ImportBranchPane: View {
     private func refresh() async {
         refreshing = true
         defer { refreshing = false }
-        // Archived rows first — synchronous, and independent of the remote
-        // listing below. Rows are newest-first, so the most recently active
-        // workspace wins if two archived rows share a branch.
-        let archived = state.archivedWorkspaces(for: repository.id)
-        archivedByBranch = Dictionary(
-            archived.map { ($0.branchName, $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
-
         let raw = await WorktreeOps.listRemoteBranches(
             repoPath: repository.path,
             remote: repository.remoteOrigin
@@ -262,16 +241,11 @@ struct ImportBranchPane: View {
         importing = true
         defer { importing = false }
 
-        let local = repository.localName(forRemoteRef: ref)
-        if let archived = archivedByBranch[local] {
-            await state.restoreOrImportWorkspace(archived, in: repository)
-        } else {
-            await state.createWorkspaceFromBranch(
-                in: repository,
-                remoteRef: ref,
-                name: trimmedName
-            )
-        }
+        await state.createWorkspaceFromBranch(
+            in: repository,
+            remoteRef: ref,
+            name: trimmedName
+        )
         dismiss()
     }
 }

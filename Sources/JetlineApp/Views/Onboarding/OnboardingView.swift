@@ -213,7 +213,7 @@ private struct ToolsPage: View {
                 icon: "terminal.fill",
                 tint: .readableGreen,
                 title: "Setup and run scripts",
-                detail: "Configure per-repo setup, run, and archive scripts; they spawn alongside your agent in a dedicated panel."
+                detail: "Configure per-repo setup and run scripts; they spawn alongside your agent in a dedicated panel."
             )
         }
     }

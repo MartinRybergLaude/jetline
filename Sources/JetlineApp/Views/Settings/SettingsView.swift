@@ -37,7 +37,6 @@ private struct GeneralSettingsView: View {
                     Text(kind.displayName).tag(kind)
                 }
             }
-            Toggle("Delete worktrees after merge", isOn: bindingDeleteWorktreeOnMerge)
         }
         .formStyle(.grouped)
         .scrollIndicators(.visible)
@@ -49,17 +48,6 @@ private struct GeneralSettingsView: View {
             set: { newValue in
                 var s = state.settings
                 s.defaultAgent = newValue
-                state.saveSettings(s)
-            }
-        )
-    }
-
-    private var bindingDeleteWorktreeOnMerge: Binding<Bool> {
-        Binding(
-            get: { state.settings.deleteWorktreeOnMerge },
-            set: { newValue in
-                var s = state.settings
-                s.deleteWorktreeOnMerge = newValue
                 state.saveSettings(s)
             }
         )
