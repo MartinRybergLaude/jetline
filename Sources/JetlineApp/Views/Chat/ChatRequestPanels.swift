@@ -66,7 +66,7 @@ private struct ApprovalPanel: View {
             if let detail = displayDetail {
                 ScrollView {
                     Text(detail)
-                        .font(.system(size: 14, design: .monospaced))
+                        .monoFont(size: 14)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(8)
@@ -204,7 +204,7 @@ private struct QuestionsPanel: View {
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("\(number)")
-                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                    .monoFont(size: 13, weight: .semibold)
                     .foregroundStyle(.secondary)
                     .frame(width: 16)
                 VStack(alignment: .leading, spacing: 1) {

@@ -85,7 +85,7 @@ private struct ActivityRow: View {
                 .frame(width: 6, height: 6)
                 .alignmentGuide(.firstTextBaseline) { d in d[VerticalAlignment.center] + 3 }
             Text(Self.timeFormatter.string(from: event.timestamp))
-                .font(.system(size: 11, design: .monospaced))
+                .monoFont(size: 11)
                 .foregroundStyle(.secondary)
                 .frame(width: 64, alignment: .leading)
             Text(repoName ?? "—")

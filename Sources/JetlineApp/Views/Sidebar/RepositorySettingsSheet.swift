@@ -64,7 +64,7 @@ struct RepositorySettingsSheet: View {
         Section {
             LabeledContent("Path") {
                 Text(repository.path)
-                    .font(.system(.body, design: .monospaced))
+                    .monoFont(.body)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -293,7 +293,7 @@ struct RepositorySettingsSheet: View {
             }
             ZStack(alignment: .topLeading) {
                 TextEditor(text: text)
-                    .font(.system(.callout, design: .monospaced))
+                    .monoFont(.callout)
                     .scrollContentBackground(.hidden)
                     .scrollIndicators(.visible)
                     .padding(.horizontal, 6)
@@ -311,7 +311,7 @@ struct RepositorySettingsSheet: View {
                     // textContainerInset (zero on macOS 15+), so the
                     // placeholder lines up with where the user types.
                     Text(placeholder)
-                        .font(.system(.callout, design: .monospaced))
+                        .monoFont(.callout)
                         .foregroundStyle(.tertiary)
                         .padding(.horizontal, 11)
                         .padding(.vertical, 7)
@@ -380,7 +380,7 @@ private struct BranchPrefixField: View {
                     Text("Preview:")
                         .foregroundStyle(.secondary)
                     Text(previewBranch)
-                        .font(.system(.body, design: .monospaced))
+                        .monoFont(.body)
                 }
             }
 

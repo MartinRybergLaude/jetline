@@ -89,11 +89,19 @@ actor ChatFileIndex {
 struct ChatComposer: View {
     @EnvironmentObject private var state: AppState
     let session: ChatSession
+    /// Completion popup state; ChatView draws the list above the timeline.
+    let popup: ComposerPopup
 
     @State private var height: CGFloat = ComposerTextView.minHeight
     @State private var completion: ComposerCompletion?
-    @State private var suggestions: [Suggestion] = []
-    @State private var highlighted = 0
+    private var suggestions: [Suggestion] {
+        get { popup.items }
+        nonmutating set { popup.items = newValue }
+    }
+    private var highlighted: Int {
+        get { popup.highlighted }
+        nonmutating set { popup.highlighted = newValue }
+    }
     @State private var replacement: ComposerTextView.Replacement?
     @State private var previewedImage: URL?
 
@@ -128,12 +136,11 @@ struct ChatComposer: View {
                     // lines up with the text above.
                     .padding(.leading, -8)
             }
-            .overlay(alignment: .topLeading) {
-                if !suggestions.isEmpty {
-                    suggestionList
-                        .alignmentGuide(.top) { $0[.bottom] + 6 }
-                }
-            }
+        }
+        .onAppear { popup.onAccept = { accept($0) } }
+        .onDisappear {
+            popup.items = []
+            popup.onAccept = nil
         }
     }
 
@@ -153,7 +160,7 @@ struct ChatComposer: View {
             RuntimeModeMenu(session: session)
             if session.supportsRemoteControl { RemoteControlMenu(session: session) }
             Spacer()
-            if let usage = session.usage { ContextMeter(usage: usage) }
+            UsageMeter(usage: session.usage, limits: AgentRateLimits.shared.windows[session.provider] ?? [])
             if session.isWorking && session.draft.nonBlank == nil && session.draftImages.isEmpty {
                 Button(action: session.interrupt) {
                     Image(systemName: "stop.circle.fill").font(.system(size: 24))
@@ -225,38 +232,12 @@ struct ChatComposer: View {
 
     // MARK: Completion
 
-    private var suggestionList: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(suggestions.enumerated()), id: \.element.id) { index, suggestion in
-                HStack(spacing: 8) {
-                    Text(suggestion.title)
-                        .font(.system(size: 14, design: completion?.kind == .file ? .monospaced : .default))
-                        .lineLimit(1)
-                        .truncationMode(.head)
-                    if let detail = suggestion.detail {
-                        Text(detail).font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(index == highlighted ? Color.accentColor.opacity(0.18) : .clear)
-                .contentShape(Rectangle())
-                .onTapGesture { accept(suggestion) }
-            }
-        }
-        .padding(.vertical, 4)
-        .frame(maxWidth: 520, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.25), lineWidth: 0.5))
-        .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
-    }
-
     private func updateCompletion(caret: Int) {
         let detected = ComposerCompletion.detect(in: session.draft, caret: caret)
         guard detected != completion else { return }
         completion = detected
         highlighted = 0
+        popup.showsPaths = detected?.kind == .file
         guard let detected else {
             suggestions = []
             return
@@ -265,7 +246,8 @@ struct ChatComposer: View {
         case .command:
             let q = detected.query.lowercased()
             suggestions = session.commands
-                .filter { q.isEmpty || $0.name.lowercased().contains(q) }
+                // Underscored commands are the CLI's internal plumbing.
+                .filter { !$0.name.hasPrefix("_") && (q.isEmpty || $0.name.lowercased().contains(q)) }
                 .sorted { ($0.name.lowercased().hasPrefix(q) ? 0 : 1, $0.name) < ($1.name.lowercased().hasPrefix(q) ? 0 : 1, $1.name) }
                 .prefix(8)
                 .map { Suggestion(insertion: "/" + $0.name, title: "/" + $0.name, detail: $0.description.nonBlank) }
@@ -548,36 +530,125 @@ private extension View {
     }
 }
 
-private struct ContextMeter: View {
-    let usage: AgentTokenUsage
+/// Context fill as a ring; opens a popover with the numbers and the
+/// plan's usage limits.
+private struct UsageMeter: View {
+    let usage: AgentTokenUsage?
+    let limits: [AgentRateLimit]
+    @State private var showing = false
 
     var body: some View {
-        let fraction = usage.contextWindow.map { min(1, Double(usage.contextTokens) / Double(max($0, 1))) }
-        HStack(spacing: 4) {
-            if let fraction {
-                ZStack {
-                    Circle().stroke(Color.secondary.opacity(0.25), lineWidth: 2)
-                    Circle()
-                        .trim(from: 0, to: fraction)
-                        .stroke(fraction > 0.85 ? Color.orange : Color.secondary, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
+        if usage != nil || !limits.isEmpty {
+            Button { showing.toggle() } label: {
+                Ring(fraction: contextFraction ?? 0, lineWidth: 2.5)
+                    .frame(width: 18, height: 18)
+                    .padding(4)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Context and usage")
+            .popover(isPresented: $showing, arrowEdge: .top) {
+                UsagePopover(usage: usage, contextFraction: contextFraction, limits: limits)
+            }
+        }
+    }
+
+    private var contextFraction: Double? {
+        guard let usage, let window = usage.contextWindow else { return nil }
+        return min(1, Double(usage.contextTokens) / Double(max(window, 1)))
+    }
+}
+
+private struct Ring: View {
+    let fraction: Double
+    let lineWidth: CGFloat
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(Color.secondary.opacity(0.25), lineWidth: lineWidth)
+            Circle()
+                .trim(from: 0, to: fraction)
+                .stroke(UsageTint.color(fraction), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
+    }
+}
+
+private enum UsageTint {
+    static func color(_ fraction: Double, normal: Color = .secondary) -> Color {
+        fraction > 0.9 ? .red : fraction > 0.75 ? .orange : normal
+    }
+}
+
+private struct UsagePopover: View {
+    let usage: AgentTokenUsage?
+    let contextFraction: Double?
+    let limits: [AgentRateLimit]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if let usage {
+                UsageRow(
+                    title: "Context",
+                    fraction: contextFraction,
+                    detail: contextDetail(usage)
+                )
+            }
+            if usage != nil && !limits.isEmpty { Divider() }
+            ForEach(limits) { limit in
+                UsageRow(title: limit.name, fraction: limit.used, detail: resetText(limit.resetsAt))
+            }
+        }
+        .padding(16)
+        .frame(width: 260)
+    }
+
+    private func contextDetail(_ usage: AgentTokenUsage) -> String {
+        let used = Self.tokens(usage.contextTokens)
+        guard let window = usage.contextWindow else { return "\(used) tokens" }
+        return "\(used) of \(Self.tokens(window)) tokens"
+    }
+
+    private func resetText(_ date: Date?) -> String? {
+        guard let date else { return nil }
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) {
+            return "Resets \(date.formatted(date: .omitted, time: .shortened))"
+        }
+        return "Resets \(date.formatted(.dateTime.weekday(.abbreviated).hour().minute()))"
+    }
+
+    private static func tokens(_ n: Int) -> String {
+        n >= 1000 ? "\(n / 1000)k" : "\(n)"
+    }
+}
+
+private struct UsageRow: View {
+    let title: String
+    let fraction: Double?
+    let detail: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title).font(.system(size: 13, weight: .medium))
+                Spacer()
+                if let fraction {
+                    Text("\(Int((fraction * 100).rounded()))%")
+                        .font(.system(size: 13).monospacedDigit())
+                        .foregroundStyle(.secondary)
                 }
-                .frame(width: 11, height: 11)
-                Text("\(Int((fraction * 100).rounded()))%")
-                    .font(.system(size: 12, design: .monospaced))
+            }
+            if let fraction {
+                ProgressView(value: fraction)
+                    .progressViewStyle(.linear)
+                    .tint(UsageTint.color(fraction, normal: .accentColor))
+            }
+            if let detail {
+                Text(detail)
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
         }
-        .help(helpText)
-    }
-
-    private var helpText: String {
-        let used = Self.format(usage.contextTokens)
-        guard let window = usage.contextWindow else { return "\(used) tokens in context" }
-        return "\(used) of \(Self.format(window)) tokens in context"
-    }
-
-    private static func format(_ n: Int) -> String {
-        n >= 1000 ? "\(n / 1000)k" : "\(n)"
     }
 }

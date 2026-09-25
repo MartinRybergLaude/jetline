@@ -4,11 +4,24 @@ import SwiftUI
 struct ChatView: View {
     @EnvironmentObject private var state: AppState
     let session: ChatSession
+    @State private var popup = ComposerPopup()
 
     var body: some View {
         VStack(spacing: 0) {
             ChatTimelineView(session: session)
                 .overlay(alignment: .topTrailing) { floatingActions }
+                // Here rather than on the composer: the timeline is an
+                // AppKit view, which draws over any SwiftUI content that
+                // spills onto it from below.
+                .overlay(alignment: .bottom) {
+                    if !popup.items.isEmpty {
+                        ComposerSuggestionList(popup: popup)
+                            .frame(maxWidth: 720, alignment: .leading)
+                            .padding(.horizontal, 24)
+                            .padding(.bottom, 8)
+                            .frame(maxWidth: .infinity)
+                    }
+                }
             Divider()
             bottom
                 .frame(maxWidth: 720)
@@ -70,7 +83,7 @@ struct ChatView: View {
             if let request = session.requests.first {
                 ChatRequestPanel(session: session, request: request)
             } else {
-                ChatComposer(session: session)
+                ChatComposer(session: session, popup: popup)
                     .disabled(session.isReverting)
             }
         }
@@ -134,7 +147,7 @@ private struct TodoStrip: View {
                 HStack(spacing: 6) {
                     Image(systemName: "checklist")
                     Text("\(done)/\(todos.count)")
-                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                        .monoFont(size: 13, weight: .semibold)
                     Text(current?.text ?? (done == todos.count ? "All steps done" : "Plan"))
                         .lineLimit(1)
                     Spacer()

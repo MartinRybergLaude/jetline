@@ -22,7 +22,9 @@ final class AppState: ObservableObject {
     /// Lagging selection used by the inspector so heavy right-column panels
     /// don't rebuild in the same pass as terminal/workspace navigation.
     @Published var inspectorWorkspaceId: String?
-    @Published var settings: AppSettings = AppSettings()
+    @Published var settings: AppSettings = AppSettings() {
+        willSet { MonoFont.family = newValue.monospaceFontFamily }
+    }
     /// Per-repo GitHub metadata (owner/name + allowed merge methods),
     /// resolved on the first PR poll and reused for the app's lifetime.
     /// Drives the merge confirmation dialog's button set.
@@ -1979,7 +1981,7 @@ final class AppState: ObservableObject {
         for ws in workspaceStates.values {
             for session in ws.sessions {
                 session.emulator.updateFont(
-                    family: s.terminalFontFamily,
+                    family: MonoFont.terminalFamily(s.monospaceFontFamily),
                     size: s.terminalFontSize
                 )
             }

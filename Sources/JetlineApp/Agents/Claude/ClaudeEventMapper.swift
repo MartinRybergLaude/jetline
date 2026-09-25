@@ -306,8 +306,40 @@ struct ClaudeEventMapper {
     /// result arrive, so without a notice the chat just spins. Accounts
     /// with overage keep running through a rejection.
     private mutating func mapRateLimit(_ message: JSONValue) -> [AgentEvent] {
-        guard let info = message["rate_limit_info"], let turnId,
-              info["status"]?.string == "rejected" else { return [] }
+        guard let info = message["rate_limit_info"] else { return [] }
+        var events: [AgentEvent] = []
+        let windows = Self.rateLimits(info)
+        if !windows.isEmpty { events.append(.rateLimits(windows)) }
+        return events + rejection(info)
+    }
+
+    /// `unifiedWindows`' per-window utilization, keyed by window type.
+    static func rateLimits(_ info: JSONValue) -> [AgentRateLimit] {
+        guard let windows = info["unifiedWindows"]?.object else { return [] }
+        return windows.compactMap { key, window in
+            guard let used = window["utilization"]?.double else { return nil }
+            return AgentRateLimit(
+                id: key,
+                name: limitName(key),
+                used: min(1, max(0, used)),
+                resetsAt: window["resetsAt"]?.int.map { Date(timeIntervalSince1970: TimeInterval($0)) }
+            )
+        }
+        .sorted { $0.id < $1.id }
+    }
+
+    private static func limitName(_ type: String) -> String {
+        switch type {
+        case "five_hour": return "5-hour limit"
+        case "seven_day": return "Weekly limit"
+        case "seven_day_opus": return "Weekly Opus limit"
+        case "seven_day_sonnet": return "Weekly Sonnet limit"
+        default: return windowName(type).prefix(1).uppercased() + windowName(type).dropFirst() + " limit"
+        }
+    }
+
+    private mutating func rejection(_ info: JSONValue) -> [AgentEvent] {
+        guard let turnId, info["status"]?.string == "rejected" else { return [] }
         let overage = ["allowed", "allowed_warning"].contains(info["overageStatus"]?.string ?? "")
             || info["isUsingOverage"]?.bool == true
         guard !overage else { return [] }

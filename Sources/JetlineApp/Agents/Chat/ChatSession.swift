@@ -601,6 +601,9 @@ final class ChatSession: Identifiable {
         case let .usage(usage):
             self.usage = usage
 
+        case let .rateLimits(windows):
+            AgentRateLimits.shared.merge(windows, for: provider)
+
         case let .runtimeModeChanged(mode):
             if runtimeMode != mode {
                 runtimeMode = mode

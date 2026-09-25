@@ -10,6 +10,8 @@ struct MarkdownStyle: Hashable {
     var blockSpacing: CGFloat = 8
     /// Family for non-code text; `nil` → system font.
     var fontFamily: String?
+    /// Family for code; `nil` → system monospaced font.
+    var monoFamily: String?
     /// Table text size; `nil` → `bodySize`.
     var tableBodySize: CGFloat?
     /// Extra leading between wrapped lines.
@@ -32,9 +34,12 @@ struct MarkdownStyle: Hashable {
 struct MarkdownView: View {
     let blocks: [MarkdownBlock]
     var style: MarkdownStyle = .comment
+    @Environment(\.monoFontFamily) private var monoFamily
 
     var body: some View {
-        VStack(alignment: .leading, spacing: style.blockSpacing) {
+        var style = style
+        style.monoFamily = monoFamily
+        return VStack(alignment: .leading, spacing: style.blockSpacing) {
             ForEach(blocks.indices, id: \.self) { index in
                 MarkdownBlockView(block: blocks[index], style: style)
             }
@@ -120,7 +125,7 @@ private struct CodeBlockView: View {
         VStack(alignment: .leading, spacing: 0) {
             if let language, !language.isEmpty {
                 Text(language)
-                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .font(.mono(size: 9, weight: .medium, family: style.monoFamily))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 8)
                     .padding(.top, 5)
@@ -130,7 +135,7 @@ private struct CodeBlockView: View {
             // reading code in a review comment for.
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(code)
-                    .font(.system(size: style.codeSize, design: .monospaced))
+                    .font(.mono(size: style.codeSize, family: style.monoFamily))
                     .textSelection(.enabled)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 6)
@@ -173,7 +178,7 @@ private struct MarkdownListView: View {
                 .foregroundStyle(checked ? Color.accentColor : .secondary)
         } else if list.ordered {
             Text("\(list.start + index).")
-                .font(.system(size: style.bodySize, design: .monospaced))
+                .font(.mono(size: style.bodySize, family: style.monoFamily))
                 .foregroundStyle(.secondary)
         } else {
             Text("•")
@@ -432,7 +437,7 @@ enum MarkdownInlineCache {
         // `weight` is tagged by hand rather than interpolated: `Font.Weight`
         // isn't `CustomStringConvertible`, so `String(describing:)` falls back
         // to reflection and dominates the cost of a cache hit.
-        let key = "\(size)|\(style.codeSize)|\(style.fontFamily ?? "")|\(weight == nil ? 0 : 1)|\(source)" as NSString
+        let key = "\(size)|\(style.codeSize)|\(style.fontFamily ?? "")|\(style.monoFamily ?? "")|\(weight == nil ? 0 : 1)|\(source)" as NSString
         if let hit = cache.object(forKey: key) { return hit.value }
         let value = render(source, style: style, size: size, weight: weight)
         cache.setObject(Box(value), forKey: key, cost: source.utf8.count)
@@ -456,7 +461,7 @@ enum MarkdownInlineCache {
         let runs = attributed.runs.map { ($0.range, $0.inlinePresentationIntent ?? [], $0.link) }
         for (range, intent, link) in runs {
             var font: Font = intent.contains(.code)
-                ? .system(size: style.codeSize, design: .monospaced)
+                ? .mono(size: style.codeSize, family: style.monoFamily)
                 : .chat(size: size, family: style.fontFamily)
             if let weight { font = font.weight(weight) }
             if intent.contains(.stronglyEmphasized) { font = font.bold() }

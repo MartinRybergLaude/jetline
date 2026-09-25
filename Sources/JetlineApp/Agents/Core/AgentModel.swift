@@ -329,6 +329,28 @@ struct AgentTokenUsage: Codable, Sendable, Equatable {
     var contextWindow: Int?
 }
 
+/// One usage window of the account's plan: Claude's 5-hour and weekly
+/// limits, Codex's primary and secondary ones.
+struct AgentRateLimit: Sendable, Equatable, Identifiable {
+    /// The window's key ("five_hour", "seven_day", "primary", ...).
+    var id: String
+    var name: String
+    /// Share of the window used, 0–1.
+    var used: Double
+    var resetsAt: Date?
+
+    /// "5-hour limit" or "Weekly limit" for a window of this many minutes.
+    static func name(minutes: Int) -> String {
+        switch minutes {
+        case 300: return "5-hour limit"
+        case 10_080: return "Weekly limit"
+        case let m where m % 1_440 == 0: return "\(m / 1_440)-day limit"
+        case let m where m % 60 == 0: return "\(m / 60)-hour limit"
+        default: return "\(minutes)-minute limit"
+        }
+    }
+}
+
 // MARK: - Requests
 
 /// Something that blocks the agent until the user answers.
@@ -422,6 +444,8 @@ enum AgentEvent: Sendable, Equatable {
     case requestClosed(id: String)
     case todos([AgentTodo])
     case usage(AgentTokenUsage)
+    /// Windows to merge into the known ones, by id.
+    case rateLimits([AgentRateLimit])
     /// The agent's permission mode changed underneath us (an approval that
     /// carried "allow all edits", leaving plan mode, ...).
     case runtimeModeChanged(AgentRuntimeMode)

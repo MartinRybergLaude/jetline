@@ -33,7 +33,7 @@ private enum ChatColors {
 enum ChatFonts {
     static func text(size: CGFloat, family: String?, weight: NSFont.Weight? = nil, bold: Bool = false, italic: Bool = false) -> NSFont {
         let base: NSFont
-        if let family, let custom = NSFontManager.shared.font(withFamily: family, traits: [], weight: managerWeight(weight), size: size) {
+        if let family, let custom = NSFontManager.shared.font(withFamily: family, traits: [], weight: MonoFont.managerWeight(weight), size: size) {
             base = custom
         } else {
             base = .systemFont(ofSize: size, weight: weight ?? .regular)
@@ -41,8 +41,14 @@ enum ChatFonts {
         return styled(base, bold: bold, italic: italic)
     }
 
-    static func mono(size: CGFloat, weight: NSFont.Weight? = nil, bold: Bool = false, italic: Bool = false) -> NSFont {
-        styled(.monospacedSystemFont(ofSize: size, weight: weight ?? .regular), bold: bold, italic: italic)
+    static func mono(size: CGFloat, family: String?, weight: NSFont.Weight? = nil, bold: Bool = false, italic: Bool = false) -> NSFont {
+        styled(MonoFont.ns(size: size, weight: weight ?? .regular, family: family), bold: bold, italic: italic)
+    }
+
+    /// Code in `style`, optically matched to its text at `size`.
+    static func code(size: CGFloat, style: MarkdownStyle, weight: NSFont.Weight? = nil, bold: Bool = false, italic: Bool = false) -> NSFont {
+        let matched = MonoFont.matchedSize(size, textFamily: style.fontFamily, monoFamily: style.monoFamily)
+        return mono(size: matched, family: style.monoFamily, weight: weight, bold: bold, italic: italic)
     }
 
     private static func styled(_ font: NSFont, bold: Bool, italic: Bool) -> NSFont {
@@ -52,16 +58,6 @@ enum ChatFonts {
         guard !traits.isEmpty else { return font }
         let descriptor = font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union(traits))
         return NSFont(descriptor: descriptor, size: font.pointSize) ?? font
-    }
-
-    /// `NSFontManager`'s 0–15 weight scale.
-    private static func managerWeight(_ weight: NSFont.Weight?) -> Int {
-        switch weight {
-        case .medium?: return 6
-        case .semibold?: return 8
-        case .bold?, .heavy?, .black?: return 9
-        default: return 5
-        }
     }
 
     static func lineHeight(_ font: NSFont) -> CGFloat {
@@ -92,7 +88,7 @@ enum ChatInline {
         weight: NSFont.Weight? = nil,
         secondary: Bool = false
     ) -> NSAttributedString {
-        let key = "\(size)|\(style.codeSize)|\(style.fontFamily ?? "")|\(weight?.rawValue ?? 0)|\(secondary ? 1 : 0)|\(source)" as NSString
+        let key = "\(size)|\(style.codeSize)|\(style.fontFamily ?? "")|\(style.monoFamily ?? "")|\(weight?.rawValue ?? 0)|\(secondary ? 1 : 0)|\(source)" as NSString
         if let hit = cache.object(forKey: key) { return hit.value }
         let value = render(source, style: style, size: size, weight: weight, secondary: secondary)
         cache.setObject(Box(value), forKey: key, cost: source.utf8.count)
@@ -112,7 +108,7 @@ enum ChatInline {
             let italic = intent.contains(.emphasized)
             var attributes: [NSAttributedString.Key: Any] = [.foregroundColor: color]
             if intent.contains(.code) {
-                attributes[.font] = ChatFonts.mono(size: style.codeSize, weight: weight, bold: bold, italic: italic)
+                attributes[.font] = ChatFonts.code(size: style.codeSize, style: style, weight: weight, bold: bold, italic: italic)
                 attributes[.backgroundColor] = NSColor.secondary(0.18)
             } else {
                 attributes[.font] = ChatFonts.text(size: size, family: style.fontFamily, weight: weight, bold: bold, italic: italic)
@@ -342,7 +338,7 @@ enum ChatMarkdown {
             }
             if list.ordered {
                 return NSAttributedString(string: "\(list.start + index).", attributes: [
-                    .font: ChatFonts.mono(size: style.bodySize),
+                    .font: ChatFonts.code(size: style.bodySize, style: style),
                     .foregroundColor: NSColor.secondaryLabelColor,
                 ])
             }
@@ -353,12 +349,12 @@ enum ChatMarkdown {
             var parts: [ChatNode] = []
             if let language, !language.isEmpty {
                 parts.append(BoxNode(
-                    LabelNode(language, font: .monospacedSystemFont(ofSize: 9, weight: .medium), color: .secondaryLabelColor),
+                    LabelNode(language, font: MonoFont.ns(size: 9, weight: .medium, family: style.monoFamily), color: .secondaryLabelColor),
                     padding: NSEdgeInsets(top: 5, left: 8, bottom: 0, right: 8)
                 ))
             }
             let text = NSAttributedString(string: code, attributes: [
-                .font: ChatFonts.mono(size: style.codeSize),
+                .font: ChatFonts.code(size: style.codeSize, style: style),
                 .foregroundColor: NSColor.labelColor,
             ])
             // Scrolls rather than wraps: a wrapped code line loses its

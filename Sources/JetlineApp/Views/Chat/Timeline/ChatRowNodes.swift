@@ -77,7 +77,7 @@ enum ChatRowNodes {
     }
 
     private static func mono(_ size: CGFloat, _ weight: NSFont.Weight = .regular) -> NSFont {
-        .monospacedSystemFont(ofSize: size, weight: weight)
+        MonoFont.ns(size: size, weight: weight)
     }
 
     private static func string(_ text: String, _ font: NSFont, _ color: NSColor = .labelColor) -> NSAttributedString {
@@ -379,7 +379,7 @@ enum ChatRowNodes {
         let clipped = lines.count > maxLines && !host.isExpanded(key, default: false)
         let shown = clipped ? lines.suffix(maxLines).joined(separator: "\n") : text
         var parts: [ChatNode] = [
-            HScrollNode(BoxNode(TextNode(string(shown, mono(13)), wraps: false), padding: NSEdgeInsets(h: 8, v: 8), hug: true)),
+            HScrollNode(BoxNode(TextNode(string(shown, mono(14)), wraps: false), padding: NSEdgeInsets(h: 8, v: 8), hug: true)),
         ]
         if clipped {
             let link = ClickNode(LabelNode("Show all \(lines.count) lines", font: font(13), color: .linkColor), pointingCursor: true) { [weak host] in
@@ -397,7 +397,7 @@ enum ChatRowNodes {
         paragraph.firstLineHeadIndent = 8
         paragraph.headIndent = 8
         let text = NSMutableAttributedString()
-        let font = mono(13)
+        let font = mono(14)
         for (index, line) in lines.enumerated() {
             let raw = String(line)
             let kind = DiffLineTint.kind(ofRawLine: raw)
@@ -428,7 +428,7 @@ enum ChatRowNodes {
             if line.hasPrefix("+++") || line.hasPrefix("---") { continue }
             if line.hasPrefix("+") { adds += 1 } else if line.hasPrefix("-") { dels += 1 }
         }
-        return counts(adds: adds, dels: dels, font: mono(13, .medium), showZero: false)
+        return counts(adds: adds, dels: dels, font: mono(14, .medium), showZero: false)
     }
 
     private static func counts(adds: Int, dels: Int, font: NSFont, showZero: Bool) -> NSAttributedString? {
@@ -505,10 +505,11 @@ enum ChatRowNodes {
         switch footer {
         case let .status(since, until, activity, agent):
             let suffix = activity.map { " · " + describe($0, agent: agent) } ?? ""
+            // Inset so the spark centers under the reply's 24pt copy button.
             return BoxNode(HStackNode([
                 SparkNode(side: 16, color: .controlAccentColor, animating: until == nil),
                 ElapsedNode(since: since, until: until, suffix: suffix, font: font(14), color: .secondaryLabelColor),
-            ], spacing: 10, flexible: [1]), height: 18)
+            ], spacing: 10, flexible: [1]), padding: NSEdgeInsets(top: 0, left: 4, bottom: 0, right: 0), height: 18)
         case let .changes(stat, from, to):
             return changedFiles(stat: stat, from: from, to: to, row: row, host: host)
         case .interrupted:
@@ -540,10 +541,10 @@ enum ChatRowNodes {
         let key = "files:" + row
         let expanded = host.isExpanded(key, default: false)
         var headerItems: [ChatNode] = [
-            SymbolNode("doc.on.doc", size: 14),
+            SymbolNode("doc", size: 14),
             LabelNode(stat.files == 1 ? "1 file changed" : "\(stat.files) files changed", font: font(14), color: .secondaryLabelColor),
         ]
-        if let counts = counts(adds: stat.additions, dels: stat.deletions, font: mono(13, .medium), showZero: true) {
+        if let counts = counts(adds: stat.additions, dels: stat.deletions, font: mono(14, .medium), showZero: true) {
             headerItems.append(LabelNode(counts))
         }
         headerItems.append(FillNode())
@@ -575,7 +576,7 @@ enum ChatRowNodes {
             LabelNode(file.path, font: font(14), truncation: .byTruncatingMiddle),
             FillNode(),
         ]
-        if let counts = counts(adds: file.additions, dels: file.deletions, font: mono(13), showZero: false) {
+        if let counts = counts(adds: file.additions, dels: file.deletions, font: mono(14), showZero: false) {
             items.append(LabelNode(counts))
         }
         let line = ClickNode(BoxNode(

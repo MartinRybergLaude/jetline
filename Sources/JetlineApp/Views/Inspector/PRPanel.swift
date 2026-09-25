@@ -417,7 +417,7 @@ private struct PRHeaderCard: View {
         HStack(spacing: 6) {
             statePill
             Text("#\(pr.number)")
-                .font(.system(.caption, design: .monospaced))
+                .monoFont(.caption)
                 .foregroundStyle(.secondary)
             Spacer(minLength: 0)
             RefreshButton(isRefreshing: isRefreshing, help: "Refresh pull request") {
@@ -432,7 +432,7 @@ private struct PRHeaderCard: View {
                 Image(systemName: "arrow.triangle.branch")
                     .font(.system(size: 9))
                 Text("\(pr.headRefName) → \(pr.baseRefName)")
-                    .font(.system(.caption, design: .monospaced))
+                    .monoFont(.caption)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
@@ -612,7 +612,7 @@ private struct ChecksSection: View {
                     Spacer()
                     if !checks.isEmpty {
                         Text(summary)
-                            .font(.system(.caption, design: .monospaced))
+                            .monoFont(.caption)
                     }
                 }
                 .foregroundStyle(.secondary)
@@ -631,7 +631,7 @@ private struct ChecksSection: View {
                     ForEach(grouped, id: \.workflow) { group in
                         if !group.workflow.isEmpty {
                             Text(group.workflow)
-                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                .monoFont(size: 10, weight: .medium)
                                 .foregroundStyle(.secondary)
                                 .padding(.top, 6)
                                 .padding(.bottom, 2)
@@ -703,7 +703,7 @@ private struct CheckRow: View {
         HStack(spacing: 6) {
             statusIcon
             Text(run.name)
-                .font(.system(.caption, design: .monospaced))
+                .monoFont(.caption)
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer()

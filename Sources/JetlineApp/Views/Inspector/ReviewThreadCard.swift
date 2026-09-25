@@ -76,7 +76,7 @@ struct ReviewThreadCard: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Text(thread.location)
-                    .font(.system(size: 11, design: .monospaced))
+                    .monoFont(size: 11)
                     .lineLimit(1)
                     .truncationMode(.head)
                 Spacer(minLength: 4)
@@ -85,7 +85,7 @@ struct ReviewThreadCard: View {
                     pill("RESOLVED", color: .readableGreen)
                 } else {
                     Text("\(thread.comments.count)")
-                        .font(.system(size: 10, design: .monospaced))
+                        .monoFont(size: 10)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -97,7 +97,7 @@ struct ReviewThreadCard: View {
 
     private func pill(_ text: String, color: Color) -> some View {
         Text(text)
-            .font(.system(size: 9, weight: .bold, design: .monospaced))
+            .monoFont(size: 9, weight: .bold)
             .foregroundStyle(color)
             .padding(.horizontal, 4)
             .padding(.vertical, 1)
@@ -268,7 +268,7 @@ private struct ThreadDiffHunk: View {
                     withAnimation(.easeInOut(duration: 0.15)) { showAll = true }
                 } label: {
                     Text("⌃ \(hidden) more line\(hidden == 1 ? "" : "s")")
-                        .font(.system(size: 10, design: .monospaced))
+                        .monoFont(size: 10)
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
@@ -298,7 +298,7 @@ private struct ThreadDiffHunk: View {
     private func line(_ text: String) -> some View {
         let kind = DiffLineTint.kind(ofRawLine: text)
         return Text(text.isEmpty ? " " : text)
-            .font(.system(size: 10.5, design: .monospaced))
+            .monoFont(size: 10.5)
             .foregroundStyle(kind == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
             .padding(.horizontal, 6)
             .padding(.vertical, 1)

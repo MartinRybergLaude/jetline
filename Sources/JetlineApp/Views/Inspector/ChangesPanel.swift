@@ -128,7 +128,7 @@ private struct ChangesPanelContent: View {
             Spacer()
             trailing()
         }
-        .font(.system(.caption, design: .monospaced))
+        .monoFont(.caption)
         .padding(.vertical, 3)
         .contentShape(Rectangle())
     }
@@ -144,6 +144,6 @@ private struct ChangesPanelContent: View {
             Text("−\(snap.totalDeletions)")
                 .foregroundStyle(.red)
         }
-        .font(.system(.caption, design: .monospaced))
+        .monoFont(.caption)
     }
 }

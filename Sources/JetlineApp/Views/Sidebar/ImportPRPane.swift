@@ -178,7 +178,7 @@ struct ImportPRPane: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text("#\(pr.number)")
-                        .font(.system(.body, design: .monospaced))
+                        .monoFont(.body)
                         .foregroundStyle(.secondary)
                     Text(pr.title)
                         .lineLimit(1)

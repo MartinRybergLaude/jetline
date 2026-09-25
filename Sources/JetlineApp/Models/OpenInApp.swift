@@ -9,6 +9,7 @@ enum OpenInApp: String, Codable, CaseIterable, DatabaseValueConvertible, Hashabl
     case ghostty
     case xcode
     case zed
+    case zedDev
     case vscode
     case cursor
     case androidStudio
@@ -22,6 +23,7 @@ enum OpenInApp: String, Codable, CaseIterable, DatabaseValueConvertible, Hashabl
         case .ghostty: return "Ghostty"
         case .xcode: return "Xcode"
         case .zed: return "Zed"
+        case .zedDev: return "Zed Dev"
         case .vscode: return "VS Code"
         case .cursor: return "Cursor"
         case .androidStudio: return "Android Studio"
@@ -37,6 +39,7 @@ enum OpenInApp: String, Codable, CaseIterable, DatabaseValueConvertible, Hashabl
         case .ghostty: return "com.mitchellh.ghostty"
         case .xcode: return "com.apple.dt.Xcode"
         case .zed: return "dev.zed.Zed"
+        case .zedDev: return "dev.zed.Zed-Dev"
         case .vscode: return "com.microsoft.VSCode"
         case .cursor: return "com.todesktop.230313mzl4w4u92"
         case .androidStudio: return "com.google.android.studio"

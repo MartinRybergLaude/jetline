@@ -12,9 +12,11 @@ import SwiftUI
 /// editor does.
 struct DiffTextView: NSViewRepresentable {
     let lines: [FileDiffLine]
+    @Environment(\.monoFontFamily) private var monoFamily
 
     final class Coordinator {
         var lines: [FileDiffLine]?
+        var monoFamily: String?
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -24,9 +26,10 @@ struct DiffTextView: NSViewRepresentable {
     }
 
     func updateNSView(_ container: DiffContainerView, context: Context) {
-        guard context.coordinator.lines != lines else { return }
+        guard context.coordinator.lines != lines || context.coordinator.monoFamily != monoFamily else { return }
         let isFirstLoad = context.coordinator.lines == nil
         context.coordinator.lines = lines
+        context.coordinator.monoFamily = monoFamily
         container.apply(lines, scrollToFirstChange: isFirstLoad)
     }
 }
@@ -111,8 +114,39 @@ final class DiffContainerView: NSView {
 /// Colors and metrics shared by the text view and its gutter.
 @MainActor
 private enum DiffStyle {
-    static let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-    static let gutterFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+    private struct Fonts {
+        let family: String?
+        let font: NSFont
+        let gutterFont: NSFont
+        let baselineOffset: CGFloat
+        let gutterTextHeight: CGFloat
+    }
+
+    /// Rebuilt when the monospace font setting changes; the gutter reads
+    /// these for every line it draws.
+    private static var cached: Fonts?
+    private static var fonts: Fonts {
+        if let cached, cached.family == MonoFont.family { return cached }
+        let font = MonoFont.ns(size: 12)
+        let gutterFont = MonoFont.ns(size: 11)
+        let layout = NSLayoutManager()
+        let fonts = Fonts(
+            family: MonoFont.family,
+            font: font,
+            gutterFont: gutterFont,
+            // Fixed line height puts the slack above the glyphs; lift them
+            // to the middle of the row.
+            baselineOffset: (lineHeight - layout.defaultLineHeight(for: font)) / 2,
+            gutterTextHeight: layout.defaultLineHeight(for: gutterFont)
+        )
+        cached = fonts
+        return fonts
+    }
+
+    static var font: NSFont { fonts.font }
+    static var gutterFont: NSFont { fonts.gutterFont }
+    static var baselineOffset: CGFloat { fonts.baselineOffset }
+    static var gutterTextHeight: CGFloat { fonts.gutterTextHeight }
     static let lineHeight: CGFloat = 17
 
     static let paragraph: NSParagraphStyle = {
@@ -120,12 +154,6 @@ private enum DiffStyle {
         style.minimumLineHeight = lineHeight
         style.maximumLineHeight = lineHeight
         return style
-    }()
-
-    /// Fixed line height puts the slack above the glyphs; lift them to the
-    /// middle of the row.
-    static let baselineOffset: CGFloat = {
-        (lineHeight - NSLayoutManager().defaultLineHeight(for: font)) / 2
     }()
 
     static func background(_ line: FileDiffLine) -> NSColor? {
@@ -136,8 +164,6 @@ private enum DiffStyle {
         guard let color = DiffLineTint.markerColor(kind) else { return nil }
         return (kind == .addition ? "+" : "−", color)
     }
-
-    static let gutterTextHeight = NSLayoutManager().defaultLineHeight(for: gutterFont)
 }
 
 final class DiffNSTextView: NSTextView {

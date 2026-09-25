@@ -11,11 +11,12 @@ import AppKit
 struct ChatTimelineView: View {
     let session: ChatSession
     @Environment(\.chatFontFamily) private var fontFamily
+    @Environment(\.monoFontFamily) private var monoFamily
     @State private var isAtBottom = true
     @State private var handle = ChatTimelineHandle()
 
     var body: some View {
-        ChatTimelineRepresentable(session: session, fontFamily: fontFamily, handle: handle, isAtBottom: $isAtBottom)
+        ChatTimelineRepresentable(session: session, fontFamily: fontFamily, monoFamily: monoFamily, handle: handle, isAtBottom: $isAtBottom)
             .id(session.id)
             .overlay(alignment: .top) {
                 if session.turns.isEmpty {
@@ -57,6 +58,7 @@ final class ChatTimelineHandle {
 private struct ChatTimelineRepresentable: NSViewRepresentable {
     let session: ChatSession
     let fontFamily: String?
+    let monoFamily: String?
     let handle: ChatTimelineHandle
     @Binding var isAtBottom: Bool
 
@@ -83,7 +85,7 @@ private struct ChatTimelineRepresentable: NSViewRepresentable {
                 if binding.wrappedValue != value { binding.wrappedValue = value }
             }
         }
-        controller.setFontFamily(fontFamily)
+        controller.setFontFamilies(text: fontFamily, mono: monoFamily)
     }
 }
 
@@ -141,6 +143,7 @@ final class ChatTimelineController: NSObject, NSTableViewDataSource, NSTableView
 
     private(set) var markdownStyle = MarkdownStyle.chat()
     private var fontFamily: String?
+    private var monoFamily: String?
     private var styleVersion = 0
 
     private var columnWidth: CGFloat = -1
@@ -226,10 +229,11 @@ final class ChatTimelineController: NSObject, NSTableViewDataSource, NSTableView
         preservingPosition { noteHeights(IndexSet(integersIn: 0..<rows.count)) }
     }
 
-    func setFontFamily(_ family: String?) {
-        guard family != fontFamily || styleVersion == 0 else { return }
+    func setFontFamilies(text family: String?, mono: String?) {
+        guard family != fontFamily || mono != monoFamily || styleVersion == 0 else { return }
         fontFamily = family
-        markdownStyle = .chat(fontFamily: family)
+        monoFamily = mono
+        markdownStyle = .chat(fontFamily: family, monoFamily: mono)
         styleVersion += 1
         guard loaded else { return }
         preservingPosition {

@@ -72,7 +72,7 @@ final class PTYSession: ObservableObject, Identifiable {
             )
             fellBackToShell = spec.fellBackToShell
             emulator.spawn(executable: spec.executable, args: spec.args, cwd: cwd, env: spec.env)
-            emulator.updateFont(family: settings.terminalFontFamily, size: settings.terminalFontSize)
+            emulator.updateFont(family: MonoFont.terminalFamily(settings.monospaceFontFamily), size: settings.terminalFontSize)
         } catch {
             lastError = error.localizedDescription
             hasStarted = false

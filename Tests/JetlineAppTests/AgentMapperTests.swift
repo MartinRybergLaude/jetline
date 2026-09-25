@@ -94,6 +94,20 @@ final class ClaudeEventMapperTests: XCTestCase {
         XCTAssertEqual(ClaudeEventMapper.outcome(of: result), .failed(message: "Claude's API is overloaded (529). Try again shortly."))
     }
 
+    func testRateLimitEventReportsEachWindow() {
+        let info: JSONValue = [
+            "status": "allowed", "rateLimitType": "five_hour",
+            "unifiedWindows": [
+                "seven_day": ["utilization": .double(0.35), "resetsAt": 1790640000],
+                "five_hour": ["utilization": .double(0.14), "resetsAt": 1790331000],
+            ],
+        ]
+        XCTAssertEqual(ClaudeEventMapper.rateLimits(info), [
+            AgentRateLimit(id: "five_hour", name: "5-hour limit", used: 0.14, resetsAt: Date(timeIntervalSince1970: 1790331000)),
+            AgentRateLimit(id: "seven_day", name: "Weekly limit", used: 0.35, resetsAt: Date(timeIntervalSince1970: 1790640000)),
+        ])
+    }
+
     func testDiagnosticErrorsStayHiddenAndAbortsAreInterrupts() {
         let aborted: JSONValue = [
             "type": "result", "subtype": "error_during_execution", "is_error": true,
@@ -172,6 +186,17 @@ final class ClaudeEventMapperTests: XCTestCase {
 }
 
 final class CodexEventMapperTests: XCTestCase {
+    func testRateLimitSnapshotReportsPrimaryAndSecondary() {
+        let snapshot: JSONValue = [
+            "primary": ["usedPercent": 12, "windowDurationMins": 300, "resetsAt": 1790331000],
+            "secondary": ["usedPercent": 40, "windowDurationMins": 10080],
+        ]
+        XCTAssertEqual(CodexEventMapper.rateLimits(snapshot), [
+            AgentRateLimit(id: "primary", name: "5-hour limit", used: 0.12, resetsAt: Date(timeIntervalSince1970: 1790331000)),
+            AgentRateLimit(id: "secondary", name: "Weekly limit", used: 0.4, resetsAt: nil),
+        ])
+    }
+
     func testApprovalsInterruptAndResumeTranscript() throws {
         var mapper = CodexEventMapper()
         var events: [AgentEvent] = []

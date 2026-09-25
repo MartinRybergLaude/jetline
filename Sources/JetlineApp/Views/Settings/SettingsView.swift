@@ -10,14 +10,14 @@ struct SettingsView: View {
 
     var body: some View {
         TabView {
+            AppearanceSettingsView()
+                .tabItem { Label("Appearance", systemImage: "paintpalette") }
             GeneralSettingsView()
                 .tabItem { Label("General", systemImage: "gearshape") }
             AgentsSettingsView()
                 .tabItem { Label("Agents", systemImage: "sparkles") }
             GitActionsSettingsView()
                 .tabItem { Label("Git Actions", systemImage: "arrow.triangle.branch") }
-            TerminalSettingsView()
-                .tabItem { Label("Terminal", systemImage: "terminal") }
         }
         .frame(width: 580, height: 520)
         .onChange(of: appearsActive, initial: true) { _, active in
@@ -37,11 +37,6 @@ private struct GeneralSettingsView: View {
                     Text(kind.displayName).tag(kind)
                 }
             }
-            Picker("Theme", selection: bindingTheme) {
-                Text("System").tag(AppSettings.Theme.system)
-                Text("Light").tag(AppSettings.Theme.light)
-                Text("Dark").tag(AppSettings.Theme.dark)
-            }
             Toggle("Delete worktrees after merge", isOn: bindingDeleteWorktreeOnMerge)
         }
         .formStyle(.grouped)
@@ -54,17 +49,6 @@ private struct GeneralSettingsView: View {
             set: { newValue in
                 var s = state.settings
                 s.defaultAgent = newValue
-                state.saveSettings(s)
-            }
-        )
-    }
-
-    private var bindingTheme: Binding<AppSettings.Theme> {
-        Binding(
-            get: { state.settings.theme },
-            set: { newValue in
-                var s = state.settings
-                s.theme = newValue
                 state.saveSettings(s)
             }
         )
@@ -98,13 +82,6 @@ private struct AgentsSettingsView: View {
                     }
                 }
                 .disabled(state.settings.agentInterface != .chat)
-                Picker("Assistant message font", selection: bindingChatFont) {
-                    Text("System").tag(String?.none)
-                    Divider()
-                    ForEach(fontFamilies, id: \.self) { family in
-                        Text(family).tag(String?.some(family))
-                    }
-                }
             } footer: {
                 Text("Chat drives the agent CLI directly and shows the conversation, tool calls, diffs and approvals in Jetline's own UI. The other interface stays available from the new-tab menu.")
                     .font(.caption)
@@ -148,21 +125,6 @@ private struct AgentsSettingsView: View {
             set: { newValue in
                 var s = state.settings
                 s.agentInterface = newValue
-                state.saveSettings(s)
-            }
-        )
-    }
-
-    private let fontFamilies = NSFontManager.shared.availableFontFamilies
-        .filter { !$0.hasPrefix(".") }
-        .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
-
-    private var bindingChatFont: Binding<String?> {
-        Binding(
-            get: { state.settings.chatFontFamily },
-            set: { newValue in
-                var s = state.settings
-                s.chatFontFamily = newValue
                 state.saveSettings(s)
             }
         )
@@ -223,49 +185,69 @@ private struct BinaryPathField: View {
     }
 }
 
-private struct TerminalSettingsView: View {
+private struct AppearanceSettingsView: View {
     @EnvironmentObject private var state: AppState
 
     var body: some View {
         Form {
-            TextField("Font family",
-                      text: bindingFont)
-            HStack {
-                Text("Font size")
-                Slider(value: bindingFontSize, in: 9...20, step: 1)
-                Text("\(Int(state.settings.terminalFontSize))pt")
-                    .frame(width: 36, alignment: .trailing)
-                    .font(.system(.caption, design: .monospaced))
+            Section {
+                Picker("Theme", selection: binding(\.theme)) {
+                    Text("System").tag(AppSettings.Theme.system)
+                    Text("Light").tag(AppSettings.Theme.light)
+                    Text("Dark").tag(AppSettings.Theme.dark)
+                }
             }
-            HStack {
-                Text("Horizontal padding")
-                Slider(value: bindingPaddingX, in: 0...40, step: 1)
-                Text("\(state.settings.terminalPaddingX)pt")
-                    .frame(width: 36, alignment: .trailing)
-                    .font(.system(.caption, design: .monospaced))
+            Section {
+                Picker("Assistant message font", selection: binding(\.chatFontFamily)) {
+                    Text("System").tag(String?.none)
+                    Divider()
+                    ForEach(Self.fontFamilies, id: \.self) { family in
+                        Text(family).tag(String?.some(family))
+                    }
+                }
+                Picker("Monospace font", selection: binding(\.monospaceFontFamily)) {
+                    Text("SF Mono").tag(String?.none)
+                    Divider()
+                    ForEach(MonoFont.installedFamilies, id: \.self) { family in
+                        Text(family).tag(String?.some(family))
+                    }
+                }
+            } footer: {
+                Text("The monospace font is used by the terminal, diffs, code in chats and everywhere else text is monospaced.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Terminal") {
+                HStack {
+                    Text("Font size")
+                    Slider(value: binding(\.terminalFontSize), in: 9...20, step: 1)
+                    Text("\(Int(state.settings.terminalFontSize))pt")
+                        .frame(width: 36, alignment: .trailing)
+                        .monoFont(.caption)
+                }
+                HStack {
+                    Text("Horizontal padding")
+                    Slider(value: bindingPaddingX, in: 0...40, step: 1)
+                    Text("\(state.settings.terminalPaddingX)pt")
+                        .frame(width: 36, alignment: .trailing)
+                        .monoFont(.caption)
+                }
             }
         }
         .formStyle(.grouped)
         .scrollIndicators(.visible)
     }
 
-    private var bindingFont: Binding<String> {
-        Binding(
-            get: { state.settings.terminalFontFamily },
-            set: { newValue in
-                var s = state.settings
-                s.terminalFontFamily = newValue
-                state.saveSettings(s)
-            }
-        )
-    }
+    private static let fontFamilies = NSFontManager.shared.availableFontFamilies
+        .filter { !$0.hasPrefix(".") }
+        .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
 
-    private var bindingFontSize: Binding<Double> {
+    private func binding<Value>(_ keyPath: WritableKeyPath<AppSettings, Value>) -> Binding<Value> {
         Binding(
-            get: { state.settings.terminalFontSize },
+            get: { state.settings[keyPath: keyPath] },
             set: { newValue in
                 var s = state.settings
-                s.terminalFontSize = newValue
+                s[keyPath: keyPath] = newValue
                 state.saveSettings(s)
             }
         )

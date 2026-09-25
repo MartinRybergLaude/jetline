@@ -177,7 +177,7 @@ struct ImportBranchPane: View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(row.ref)
-                    .font(.system(.body, design: .monospaced))
+                    .monoFont(.body)
                     .foregroundStyle(status == .active ? .secondary : .primary)
                 Text(row.subtitle)
                     .font(.caption)

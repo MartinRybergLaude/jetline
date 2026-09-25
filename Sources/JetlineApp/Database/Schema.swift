@@ -345,5 +345,17 @@ enum Schema {
                 t.add(column: "createdAt", .datetime)
             }
         }
+
+        // Replaces the terminal-only `terminalFontFamily` (left in place,
+        // unused) with one monospace family for the whole app.
+        migrator.registerMigration("v25_monospace_font") { db in
+            try db.alter(table: "app_settings") { t in
+                t.add(column: "monospaceFontFamily", .text)
+            }
+            try db.execute(sql: """
+                UPDATE app_settings SET monospaceFontFamily = terminalFontFamily
+                WHERE terminalFontFamily NOT IN ('', 'SF Mono')
+                """)
+        }
     }
 }

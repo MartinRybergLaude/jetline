@@ -76,7 +76,7 @@ struct FileDiffView: View {
                 FileStatusBadge(status: entry.status)
             }
             Text(tab.path)
-                .font(.system(.callout, design: .monospaced))
+                .monoFont(.callout)
                 .lineLimit(1)
                 .truncationMode(.head)
                 .textSelection(.enabled)
@@ -89,7 +89,7 @@ struct FileDiffView: View {
                     Text("+\(entry.additions)").foregroundStyle(Color.readableGreen)
                     Text("−\(entry.deletions)").foregroundStyle(.red)
                 }
-                .font(.system(.caption, design: .monospaced))
+                .monoFont(.caption)
             }
         }
         .padding(.horizontal, 12)
@@ -198,7 +198,7 @@ struct FileStatusBadge: View {
 
     var body: some View {
         Text(status.rawValue)
-            .font(.system(size: 9, weight: .bold, design: .monospaced))
+            .monoFont(size: 9, weight: .bold)
             .foregroundStyle(.white)
             .padding(.horizontal, 4)
             .padding(.vertical, 1)

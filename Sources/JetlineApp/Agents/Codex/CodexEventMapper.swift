@@ -86,6 +86,10 @@ struct CodexEventMapper {
                   let last = usage["last"]?["totalTokens"]?.int else { return [] }
             return [.usage(AgentTokenUsage(contextTokens: last, contextWindow: usage["modelContextWindow"]?.int))]
 
+        case "account/rateLimits/updated":
+            let windows = Self.rateLimits(params["rateLimits"])
+            return windows.isEmpty ? [] : [.rateLimits(windows)]
+
         case "serverRequest/resolved":
             guard let id = params["requestId"] else { return [] }
             return [.requestClosed(id: CodexProvider.requestKey(id))]
@@ -317,5 +321,20 @@ struct CodexEventMapper {
             id: "notice-\(UUID().uuidString)", turnId: turnId,
             status: .completed, content: .notice(.init(level: level, text: text))
         ))
+    }
+
+    /// A `RateLimitSnapshot`'s primary and secondary windows. A sparse
+    /// update can leave either out; the session keeps the last one seen.
+    static func rateLimits(_ snapshot: JSONValue?) -> [AgentRateLimit] {
+        guard let snapshot else { return [] }
+        return ["primary", "secondary"].compactMap { key in
+            guard let window = snapshot[key], let used = window["usedPercent"]?.double else { return nil }
+            return AgentRateLimit(
+                id: key,
+                name: window["windowDurationMins"]?.int.map(AgentRateLimit.name(minutes:)) ?? (key == "primary" ? "Usage limit" : "Secondary limit"),
+                used: min(1, max(0, used / 100)),
+                resetsAt: window["resetsAt"]?.int.map { Date(timeIntervalSince1970: TimeInterval($0)) }
+            )
+        }
     }
 }

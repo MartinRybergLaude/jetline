@@ -116,6 +116,12 @@ actor CodexProvider: AgentProvider {
             cliVersion: version
         )))
         if let model { continuation.yield(.modelChanged(model)) }
+        // Updates only arrive as turns spend usage; read where it stands now.
+        Task { [weak self] in
+            guard let self, let result = try? await self.request("account/rateLimits/read", .null, timeout: .seconds(15)) else { return }
+            let windows = CodexEventMapper.rateLimits(result["rateLimits"])
+            if !windows.isEmpty { self.continuation.yield(.rateLimits(windows)) }
+        }
     }
 
     private func openThread(resume: AgentResumeCursor?) async throws -> (id: String, model: String?) {

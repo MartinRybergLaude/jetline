@@ -10,7 +10,9 @@ struct AppSettings: Codable, FetchableRecord, PersistableRecord {
     var claudeBinaryPath: String?
     var codexBinaryPath: String?
     var mistralBinaryPath: String?
-    var terminalFontFamily: String = "SF Mono"
+    /// Monospace family for the terminal, diffs, chat code and every other
+    /// monospaced label. `nil` → the system monospaced font (SF Mono).
+    var monospaceFontFamily: String?
     var terminalFontSize: Double = 13
     /// Horizontal padding *inside* the terminal area, in points, applied as a
     /// host-side surface inset in `TerminalDropContainer` (libghostty's

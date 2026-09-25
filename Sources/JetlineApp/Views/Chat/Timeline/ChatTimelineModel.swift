@@ -75,9 +75,12 @@ final class ChatTimelineModel {
     static let workSpacing: CGFloat = 20
     /// Above the status row, so it reads apart from the reply.
     static let statusSpacing: CGFloat = 26
+    /// Above a turn's outcome card, below the reply's copy/time bar.
+    static let outcomeSpacing: CGFloat = 12
     static let topPadding: CGFloat = 52
     static let bottomPadding: CGFloat = 20
     private static let statusPrefix = "status-"
+    private static let outcomePrefix = "outcome-"
 
     private let session: ChatSession
     private var turns: [ChatTurn] = []
@@ -185,7 +188,7 @@ final class ChatTimelineModel {
         if turn.status != .running { markReplyEnd(&rows) }
 
         let footerId = Self.statusPrefix + turn.id
-        let outcomeId = "outcome-" + turn.id
+        let outcomeId = Self.outcomePrefix + turn.id
         if turn.status == .running {
             add(footerId, .footer(.status(
                 since: turn.startedAt,
@@ -259,6 +262,11 @@ final class ChatTimelineModel {
             if case .user = rows[index].content { gap += Self.turnSpacing - Self.itemSpacing }
             if let next, next.id.hasPrefix(Self.statusPrefix) {
                 gap = Self.statusSpacing
+                rows[index].gapClearsBar = true
+            } else if let next, next.id.hasPrefix(Self.outcomePrefix), case .assistant = rows[index].content {
+                // Without its status row (an earlier turn's is dropped) the
+                // outcome card would sit in the reply's hover bar.
+                gap = Self.outcomeSpacing
                 rows[index].gapClearsBar = true
             }
             rows[index].gap = gap

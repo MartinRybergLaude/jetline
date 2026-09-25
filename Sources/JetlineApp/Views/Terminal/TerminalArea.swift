@@ -479,7 +479,7 @@ private struct ChangesPill: View {
                 Text("−\(dels)").foregroundStyle(.red)
             }
         }
-        .font(.system(size: 11, weight: .medium, design: .monospaced))
+        .monoFont(size: 11, weight: .medium)
     }
 }
 

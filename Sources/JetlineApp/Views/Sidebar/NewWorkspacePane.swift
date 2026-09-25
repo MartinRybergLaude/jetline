@@ -20,7 +20,7 @@ struct NewWorkspacePane: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("Base branch").font(.caption).foregroundStyle(.secondary)
-                Text(repository.defaultBranch).font(.system(.body, design: .monospaced))
+                Text(repository.defaultBranch).monoFont(.body)
             }
 
             Spacer()

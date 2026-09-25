@@ -59,10 +59,10 @@ enum ChatSegment: Identifiable {
 
 extension MarkdownStyle {
     /// Chat body text: larger than the inspector's comment style.
-    static func chat(fontFamily: String? = nil) -> MarkdownStyle {
+    static func chat(fontFamily: String? = nil, monoFamily: String? = nil) -> MarkdownStyle {
         MarkdownStyle(
             bodySize: 15, codeSize: 14, blockSpacing: 12,
-            fontFamily: fontFamily, tableBodySize: 14, lineSpacing: 3, spaciousTables: true
+            fontFamily: fontFamily, monoFamily: monoFamily, tableBodySize: 14, lineSpacing: 3, spaciousTables: true
         )
     }
 }
@@ -83,7 +83,7 @@ struct InlineDiffView: View {
                     let raw = String(line)
                     let kind = DiffLineTint.kind(ofRawLine: raw)
                     Text(raw.isEmpty ? " " : raw)
-                        .font(.system(size: 13, design: .monospaced))
+                        .monoFont(size: 14)
                         .foregroundStyle(kind == nil ? Color.secondary : Color.primary)
                         .padding(.horizontal, 8)
                         .frame(maxWidth: .infinity, alignment: .leading)
