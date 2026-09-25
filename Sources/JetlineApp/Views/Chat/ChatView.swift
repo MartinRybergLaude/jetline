@@ -24,7 +24,9 @@ struct ChatView: View {
                     }
                 }
             VStack(spacing: 0) {
-                Divider()
+                // Not `Divider()`: it renders lighter in the inspector's
+                // column, and the merge footer's line there continues this one.
+                Hairline()
                 bottom
                     .frame(maxWidth: 720)
                     .padding(.horizontal, 24)

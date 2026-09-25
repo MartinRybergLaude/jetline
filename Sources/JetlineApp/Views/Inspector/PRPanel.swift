@@ -224,10 +224,13 @@ private struct MergeSection: View {
         // As tall as the chat composer's bar beside it, divider included,
         // so the two dividers sit on one line.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-        .safeAreaInset(edge: .top, spacing: 0) { Divider() }
+        .safeAreaInset(edge: .top, spacing: 0) { Hairline() }
         .frame(minHeight: slot?.composerBarHeight)
         .fixedSize(horizontal: false, vertical: true)
         .background(Color(nsColor: .textBackgroundColor))
+        // White on white beside the chat composer: mark where the inspector
+        // column starts.
+        .overlay(alignment: .leading) { Hairline(orientation: .vertical) }
         .mergeConfirmation(
             workspace: workspace,
             method: pendingMethod,
