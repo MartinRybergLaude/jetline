@@ -23,7 +23,8 @@ actor ClaudeProvider: AgentProvider {
         steering: false,
         conversationRevert: true,
         planMode: true,
-        imageInput: true
+        imageInput: true,
+        remoteControl: true
     )
     nonisolated let events: AsyncStream<AgentEvent>
     private let continuation: AsyncStream<AgentEvent>.Continuation
@@ -48,6 +49,10 @@ actor ClaudeProvider: AgentProvider {
     /// Set when an interrupt had to kill the process: the next message
     /// respawns it with `--resume`.
     private var needsRespawn = false
+    /// Uuids of the messages we sent, whose replay echoes we already show.
+    private var sentMessageIds: Set<String> = []
+    /// Remote Control's session name while it's on; restored on respawn.
+    private var remoteControlName: String??
 
     private struct PermissionRequest {
         var toolName: String
@@ -103,7 +108,10 @@ actor ClaudeProvider: AgentProvider {
             // Lets `set_permission_mode` switch to bypassPermissions later
             // without it being the starting mode.
             "--allow-dangerously-skip-permissions",
-            "--thinking-display", "summarized"
+            "--thinking-display", "summarized",
+            // Echoes every user message as it starts, so messages sent from
+            // claude.ai over Remote Control show up here too.
+            "--replay-user-messages"
         ]
         if let model = config.model { args += ["--model", model] }
         if let effort = config.effort { args += ["--effort", effort] }
@@ -141,6 +149,14 @@ actor ClaudeProvider: AgentProvider {
         }
         if let fork { self.sessionId = fork.forkAs }
         continuation.yield(.ready(sessionInfo(from: response)))
+        if let name = remoteControlName {
+            do {
+                continuation.yield(.remoteControl(.restarted(try await enableRemoteControl(name: name))))
+            } catch {
+                remoteControlName = nil
+                continuation.yield(.remoteControl(.failed(error.localizedDescription)))
+            }
+        }
     }
 
     func stop() async {
@@ -173,6 +189,10 @@ actor ClaudeProvider: AgentProvider {
             if let id = message["request_id"]?.string, permissionRequests.removeValue(forKey: id) != nil {
                 continuation.yield(.requestClosed(id: id))
             }
+        case "user" where message["isReplay"]?.bool == true:
+            handleReplay(message)
+        case "system" where message["subtype"]?.string == "bridge_state":
+            handleBridgeState(message)
         default:
             openSyntheticTurnIfNeeded(for: message)
             let turnId = mapper.turnId
@@ -201,6 +221,57 @@ actor ClaudeProvider: AgentProvider {
         mapper.turnId = turnId
         anchors.append(.init(turnId: turnId, lastMessageId: anchors.last?.lastMessageId))
         continuation.yield(.turnStarted(id: turnId))
+    }
+
+    /// A user message starting. Ours are on screen already; any other came
+    /// in over Remote Control and starts a turn of its own.
+    private func handleReplay(_ message: JSONValue) {
+        let uuid = message["uuid"]?.string
+        if let uuid, sentMessageIds.remove(uuid) != nil { return }
+        guard message["parent_tool_use_id"]?.string == nil,
+              message["isSynthetic"]?.bool != true else { return }
+        let content = message["message"]?["content"]
+        let blocks = content?.array ?? []
+        let text = content?.string ?? blocks
+            .compactMap { $0["type"]?.string == "text" ? $0["text"]?.string : nil }
+            .joined(separator: "\n\n")
+        let images = blocks.compactMap(Self.saveImageBlock)
+        guard !text.isEmpty || !images.isEmpty else { return }
+        openSyntheticTurnIfNeeded(for: message)
+        guard let turnId = activeTurnId else { return }
+        continuation.yield(.item(AgentItem(
+            id: "user-\(uuid ?? UUID().uuidString.lowercased())",
+            turnId: turnId,
+            status: .completed,
+            content: .userMessage(.init(text: text, images: images))
+        )))
+        recordAnchor(message, turnId: turnId)
+    }
+
+    /// Writes a base64 image block (a photo sent from the Claude app) to a
+    /// file next to pasted images, for the chat to show.
+    private static func saveImageBlock(_ block: JSONValue) -> String? {
+        guard block["type"]?.string == "image",
+              block["source"]?["type"]?.string == "base64",
+              let base64 = block["source"]?["data"]?.string,
+              let data = Data(base64Encoded: base64) else { return nil }
+        let ext: String
+        switch block["source"]?["media_type"]?.string {
+        case "image/jpeg": ext = "jpg"
+        case "image/gif": ext = "gif"
+        case "image/webp": ext = "webp"
+        default: ext = "png"
+        }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("jetline-chat-images", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("remote-\(UUID().uuidString.prefix(8)).\(ext)")
+        return (try? data.write(to: url)) != nil ? url.path : nil
+    }
+
+    private func handleBridgeState(_ message: JSONValue) {
+        guard remoteControlName != nil, message["state"]?.string == "failed" else { return }
+        remoteControlName = nil
+        continuation.yield(.remoteControl(.failed(message["detail"]?.string ?? "Remote Control disconnected.")))
     }
 
     /// Top-level transcript messages carry a `uuid`; the last one of a turn
@@ -426,8 +497,11 @@ actor ClaudeProvider: AgentProvider {
         // when the final content block is text.
         var content: [JSONValue] = input.images.compactMap(Self.imageBlock)
         content.append(["type": "text", "text": .string(input.text)])
+        let messageId = UUID().uuidString.lowercased()
+        sentMessageIds.insert(messageId)
         let message: JSONValue = [
             "type": "user",
+            "uuid": .string(messageId),
             "session_id": "",
             "message": ["role": "user", "content": .array(content)],
             "parent_tool_use_id": nil
@@ -584,6 +658,30 @@ actor ClaudeProvider: AgentProvider {
         guard process != nil else { return }
         _ = try await control(["subtype": "set_model", "model": .optional(model)])
         if let model { continuation.yield(.modelChanged(model)) }
+    }
+
+    // MARK: - Remote Control
+
+    func setRemoteControl(_ enabled: Bool, name: String?) async throws -> URL? {
+        guard enabled else {
+            remoteControlName = nil
+            if process != nil { _ = try await control(["subtype": "remote_control", "enabled": false]) }
+            return nil
+        }
+        if process == nil || needsRespawn {
+            guard config != nil, !stopping else { throw AgentError.notRunning }
+            try await spawn(resume: true)
+        }
+        let url = try await enableRemoteControl(name: name)
+        remoteControlName = .some(name)
+        return url
+    }
+
+    private func enableRemoteControl(name: String?) async throws -> URL? {
+        var request: [String: JSONValue] = ["subtype": "remote_control", "enabled": true]
+        if let name { request["name"] = .string(name) }
+        let response = try await control(.object(request), timeout: .seconds(30))
+        return response["session_url"]?.string.flatMap(URL.init(string:))
     }
 
     // MARK: - Mapping helpers

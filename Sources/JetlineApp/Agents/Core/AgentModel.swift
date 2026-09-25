@@ -160,6 +160,17 @@ struct AgentCapabilities: Sendable, Hashable {
     var conversationRevert: Bool
     var planMode: Bool
     var imageInput: Bool
+    /// The conversation can be continued from claude.ai or the Claude
+    /// mobile app while it runs here.
+    var remoteControl: Bool = false
+}
+
+/// Remote Control's link to claude.ai, as the provider reports it.
+enum AgentRemoteControlStatus: Sendable, Equatable {
+    /// Turned back on by the provider itself (after a respawn), under a
+    /// new link.
+    case restarted(URL?)
+    case failed(String)
 }
 
 // MARK: - Turn input
@@ -418,6 +429,7 @@ enum AgentEvent: Sendable, Equatable {
     case modelChanged(String)
     /// New resume state to persist (after a turn, a revert, a fork).
     case resumeUpdated(AgentResumeCursor)
+    case remoteControl(AgentRemoteControlStatus)
     case exited(AgentExit)
 }
 

@@ -622,6 +622,10 @@ actor CodexProvider: AgentProvider {
         if let model { continuation.yield(.modelChanged(model)) }
     }
 
+    func setRemoteControl(_ enabled: Bool, name: String?) async throws -> URL? {
+        throw AgentError.unsupported("Remote Control")
+    }
+
     // MARK: - Mapping helpers
 
     struct Policy {

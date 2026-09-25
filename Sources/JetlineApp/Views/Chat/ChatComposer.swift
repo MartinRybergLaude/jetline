@@ -1,4 +1,5 @@
 import SwiftUI
+import QuickLook
 import AppKit
 
 /// A `/command` or `@file` token being typed at the caret.
@@ -94,6 +95,7 @@ struct ChatComposer: View {
     @State private var suggestions: [Suggestion] = []
     @State private var highlighted = 0
     @State private var replacement: ComposerTextView.Replacement?
+    @State private var previewedImage: URL?
 
     struct Suggestion: Identifiable, Equatable {
         var id: String { insertion }
@@ -149,6 +151,7 @@ struct ChatComposer: View {
             ModelMenu(session: session)
             EffortMenu(session: session)
             RuntimeModeMenu(session: session)
+            if session.supportsRemoteControl { RemoteControlMenu(session: session) }
             Spacer()
             if let usage = session.usage { ContextMeter(usage: usage) }
             if session.isWorking && session.draft.nonBlank == nil && session.draftImages.isEmpty {
@@ -201,7 +204,9 @@ struct ChatComposer: View {
     private var attachmentsRow: some View {
         HStack(spacing: 8) {
             ForEach(session.draftImages, id: \.self) { url in
-                AttachmentThumbnail(url: url, size: 52)
+                AttachmentThumbnail(url: url, size: 72)
+                    .onTapGesture { previewedImage = url }
+                    .help("Quick Look")
                     .overlay(alignment: .topTrailing) {
                         Button {
                             session.draftImages.removeAll { $0 == url }
@@ -215,6 +220,7 @@ struct ChatComposer: View {
                     }
             }
         }
+        .quickLookPreview($previewedImage, in: session.draftImages)
     }
 
     // MARK: Completion
@@ -425,13 +431,64 @@ private struct RuntimeModeMenu: View {
     }
 }
 
+/// Remote Control: continue the chat from the Claude app or claude.ai.
+private struct RemoteControlMenu: View {
+    let session: ChatSession
+
+    var body: some View {
+        Menu {
+            switch session.remoteControl {
+            case .off:
+                Button("Turn On Remote Control") { session.setRemoteControl(true) }
+            case .starting:
+                Text("Connecting…")
+                Button("Cancel") { session.setRemoteControl(false) }
+            case let .on(url):
+                if let url {
+                    Button("Open in Browser") { NSWorkspace.shared.open(url) }
+                    Button("Copy Link") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(url.absoluteString, forType: .string)
+                    }
+                    Divider()
+                }
+                Button("Turn Off Remote Control") { session.setRemoteControl(false) }
+            case let .failed(message):
+                Text(message)
+                Button("Try Again") { session.setRemoteControl(true) }
+            }
+        } label: {
+            Label(label, systemImage: "iphone")
+        }
+        .pillMenu(tint: tint)
+        .help("Continue this chat from the Claude app or claude.ai")
+    }
+
+    private var label: String {
+        switch session.remoteControl {
+        case .off, .failed: return "Remote"
+        case .starting: return "Connecting…"
+        case .on: return "Remote on"
+        }
+    }
+
+    private var tint: PillTint? {
+        switch session.remoteControl {
+        case .on: return .accent
+        case .failed: return .red
+        case .off, .starting: return nil
+        }
+    }
+}
+
 enum PillTint {
-    case red, yellow
+    case red, yellow, accent
 
     var foreground: Color {
         switch self {
         case .red: return Color(nsColor: .pillRed)
         case .yellow: return Color(nsColor: .pillYellow)
+        case .accent: return .accentColor
         }
     }
 
@@ -439,6 +496,7 @@ enum PillTint {
         switch self {
         case .red: return Color.red.opacity(0.14)
         case .yellow: return Color.yellow.opacity(0.22)
+        case .accent: return Color.accentColor.opacity(0.16)
         }
     }
 }

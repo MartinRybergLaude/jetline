@@ -126,6 +126,16 @@ final class ChatSession: Identifiable {
     private(set) var interactionMode: AgentInteractionMode
 
     private(set) var connection: Connection = .disconnected
+    /// Remote Control: continuing this chat from claude.ai or the Claude
+    /// app. Not kept across restarts.
+    private(set) var remoteControl: RemoteControl = .off
+
+    enum RemoteControl: Equatable {
+        case off
+        case starting
+        case on(URL?)
+        case failed(String)
+    }
     private(set) var turns: [ChatTurn] = []
     private(set) var requests: [AgentRequest] = []
     private(set) var todos: [AgentTodo] = []
@@ -223,6 +233,7 @@ final class ChatSession: Identifiable {
     }
 
     var canRevert: Bool { capabilities?.conversationRevert ?? true }
+    var supportsRemoteControl: Bool { provider == .claude }
 
     /// The timeline item a request is about (the tool call awaiting
     /// approval), so the prompt can show its diff or command.
@@ -451,6 +462,31 @@ final class ChatSession: Identifiable {
         }
     }
 
+    // MARK: - Remote Control
+
+    func setRemoteControl(_ enabled: Bool) {
+        if enabled {
+            if case .on = remoteControl { return }
+            if remoteControl == .starting { return }
+            remoteControl = .starting
+        } else {
+            remoteControl = .off
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.ensureConnected()
+                let url = try await self.agent?.setRemoteControl(enabled, name: enabled ? self.title : nil)
+                // Turned off again while starting.
+                guard enabled, self.remoteControl == .starting else { return }
+                self.remoteControl = .on(url)
+            } catch {
+                guard enabled else { return }
+                self.remoteControl = .failed(error.localizedDescription)
+            }
+        }
+    }
+
     // MARK: - Revert
 
     /// Put the worktree back to before `turn` and drop it (and everything
@@ -584,6 +620,12 @@ final class ChatSession: Identifiable {
             resume = cursor
             persistThread()
 
+        case let .remoteControl(status):
+            switch status {
+            case let .restarted(url): remoteControl = .on(url)
+            case let .failed(message): remoteControl = .failed(message)
+            }
+
         case let .turnCompleted(providerId, outcome):
             if let turn = turn(forProviderId: providerId, create: false) {
                 finish(turn, outcome: outcome)
@@ -591,6 +633,7 @@ final class ChatSession: Identifiable {
 
         case let .exited(exit):
             agent = nil
+            remoteControl = .off
             eventTask = nil
             requests.removeAll()
             let message = exit.stderr.nonBlank.map { Self.lastLines($0, count: 6) } ?? "exit status \(exit.status)"

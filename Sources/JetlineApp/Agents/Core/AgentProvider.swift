@@ -40,6 +40,10 @@ protocol AgentProvider: Actor {
     func setRuntimeMode(_ mode: AgentRuntimeMode) async throws
     func setModel(_ model: String?) async throws
 
+    /// Turn Remote Control on (returning the session's claude.ai link) or
+    /// off.
+    func setRemoteControl(_ enabled: Bool, name: String?) async throws -> URL?
+
     /// Terminate the process. Emits `.exited` with `expected: true`.
     func stop() async
 }

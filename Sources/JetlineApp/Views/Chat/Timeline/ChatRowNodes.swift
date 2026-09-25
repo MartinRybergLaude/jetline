@@ -91,7 +91,9 @@ enum ChatRowNodes {
     private static func user(text: String, images: [String], timestamp: Date?, revert: (() -> Void)?) -> HoverNode {
         var parts: [ChatNode] = []
         if !images.isEmpty {
-            parts.append(HStackNode(images.map { ThumbNode(path: $0, side: 64) }, spacing: 6))
+            // One image shows large; several share the row.
+            let side: CGFloat = images.count == 1 ? 280 : 160
+            parts.append(HStackNode(images.map { ThumbNode(path: $0, gallery: images, maxSide: side) }, spacing: 8))
         }
         if !text.isEmpty {
             let paragraph = NSMutableParagraphStyle()
@@ -122,23 +124,25 @@ enum ChatRowNodes {
     private static func actionBar(timestampFirst: Bool, text: String, timestamp: Date?, revert: (() -> Void)?) -> ChatNode {
         let time: ChatNode? = timestamp.map { date in
             let label = LabelNode(
-                string(format(date), .monospacedDigitSystemFont(ofSize: 11, weight: .regular), .secondaryLabelColor),
+                string(format(date), .monospacedDigitSystemFont(ofSize: 12, weight: .regular), .secondaryLabelColor),
                 toolTip: date.formatted(date: .complete, time: .shortened)
             )
+            // Digits sit above the line box's descender space; lift the
+            // box so they center on the icons.
             let padding = timestampFirst
-                ? NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 4)
-                : NSEdgeInsets(top: 0, left: 4, bottom: 0, right: 0)
+                ? NSEdgeInsets(top: 0, left: 0, bottom: 1.5, right: 4)
+                : NSEdgeInsets(top: 0, left: 4, bottom: 1.5, right: 0)
             return BoxNode(label, padding: padding, hug: true)
         }
         var items: [ChatNode] = []
         if timestampFirst, let time { items.append(time) }
-        if let revert {
-            items.append(IconButtonNode("arrow.uturn.backward", help: "Revert to before this message", action: revert))
-        }
         items.append(IconButtonNode("doc.on.doc", help: "Copy", flashSymbol: "checkmark") {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
         })
+        if let revert {
+            items.append(IconButtonNode("arrow.uturn.backward", help: "Revert to before this message", action: revert))
+        }
         if !timestampFirst, let time { items.append(time) }
         return HStackNode(items, spacing: 2)
     }
@@ -502,7 +506,7 @@ enum ChatRowNodes {
         case let .status(since, until, activity, agent):
             let suffix = activity.map { " · " + describe($0, agent: agent) } ?? ""
             return BoxNode(HStackNode([
-                SparkNode(side: 16, color: agent == .claude ? .claudeSpark : .controlAccentColor, animating: until == nil),
+                SparkNode(side: 16, color: .controlAccentColor, animating: until == nil),
                 ElapsedNode(since: since, until: until, suffix: suffix, font: font(14), color: .secondaryLabelColor),
             ], spacing: 10, flexible: [1]), height: 18)
         case let .changes(stat, from, to):

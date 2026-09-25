@@ -1,4 +1,5 @@
 import AppKit
+import Quartz
 
 // The chat timeline is plain AppKit, laid out by hand. Each row's content is
 // described as a tree of nodes. A node measures itself at a width (memoized,
@@ -573,39 +574,100 @@ final class SparkNode: ChatNode {
     }
 }
 
-/// Image file shown aspect-filled in a rounded, outlined square.
-final class ChatThumbView: ChatContainerView {
+/// Image file in a rounded, outlined frame. A click opens it, and the
+/// images beside it, in Quick Look.
+final class ChatThumbView: ChatContainerView, @preconcurrency QLPreviewPanelDataSource {
     var path = ""
+    /// The message's images, for paging in Quick Look.
+    var gallery: [String] = []
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    override func mouseDown(with event: NSEvent) {}
+
+    override func mouseUp(with event: NSEvent) {
+        guard bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        window?.makeFirstResponder(self)
+        guard let panel = QLPreviewPanel.shared() else { return }
+        if panel.isVisible {
+            panel.reloadData()
+            panel.currentPreviewItemIndex = gallery.firstIndex(of: path) ?? 0
+        } else {
+            panel.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    override func keyDown(with event: NSEvent) {
+        // Space toggles the preview, as in Finder.
+        guard event.charactersIgnoringModifiers == " ", let panel = QLPreviewPanel.shared() else {
+            super.keyDown(with: event)
+            return
+        }
+        if panel.isVisible { panel.orderOut(nil) } else { panel.makeKeyAndOrderFront(nil) }
+    }
+
+    override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { true }
+
+    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        panel.dataSource = self
+        panel.currentPreviewItemIndex = gallery.firstIndex(of: path) ?? 0
+    }
+
+    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        panel.dataSource = nil
+    }
+
+    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int { gallery.count }
+
+    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
+        URL(fileURLWithPath: gallery[index]) as NSURL
+    }
 }
 
 final class ThumbNode: ChatNode {
     let path: String
-    let side: CGFloat
+    let gallery: [String]
+    /// The longest side; the image keeps its aspect ratio within it.
+    let maxSide: CGFloat
 
-    init(path: String, side: CGFloat) {
+    init(path: String, gallery: [String], maxSide: CGFloat) {
         self.path = path
-        self.side = side
+        self.gallery = gallery
+        self.maxSide = maxSide
     }
 
     private static let cache = NSCache<NSString, NSImage>()
 
-    override func measure(_ width: CGFloat) -> CGSize { CGSize(width: side, height: side) }
+    private var image: NSImage? {
+        if let hit = Self.cache.object(forKey: path as NSString) { return hit }
+        guard let image = NSImage(contentsOfFile: path) else { return nil }
+        Self.cache.setObject(image, forKey: path as NSString)
+        return image
+    }
+
+    override func measure(_ width: CGFloat) -> CGSize {
+        let limit = min(maxSide, width)
+        guard let image, image.size.width > 0, image.size.height > 0 else { return CGSize(width: limit, height: limit) }
+        let scale = limit / max(image.size.width, image.size.height)
+        // Very thin images still get a clickable frame.
+        return CGSize(width: max(48, (image.size.width * scale).rounded()), height: max(48, (image.size.height * scale).rounded()))
+    }
+
     override var viewType: NSView.Type { ChatThumbView.self }
     override func makeView() -> NSView { ChatThumbView() }
     override func configure(_ view: NSView, size: CGSize) {
         guard let view = view as? ChatThumbView else { return }
-        view.setStyle(fill: .quaternaryLabelColor, border: NSColor.secondaryLabelColor.withAlphaComponent(0.25), borderWidth: 0.5, cornerRadius: 6, clips: true)
+        view.setStyle(fill: .quaternaryLabelColor, border: NSColor.secondaryLabelColor.withAlphaComponent(0.25), borderWidth: 0.5, cornerRadius: 8, clips: true)
+        view.gallery = gallery
         guard view.path != path else { return }
         view.path = path
-        let image: NSImage?
-        if let hit = Self.cache.object(forKey: path as NSString) {
-            image = hit
-        } else {
-            image = NSImage(contentsOfFile: path)
-            if let image { Self.cache.setObject(image, forKey: path as NSString) }
-        }
         view.layer?.contents = image
         view.layer?.contentsGravity = .resizeAspectFill
+        view.toolTip = (path as NSString).lastPathComponent
     }
 }
 

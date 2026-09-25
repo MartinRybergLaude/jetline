@@ -71,6 +71,8 @@ struct ChatRow: Equatable {
 final class ChatTimelineModel {
     static let turnSpacing: CGFloat = 40
     static let itemSpacing: CGFloat = 26
+    /// Around tool call groups, whose one-line headers need less air.
+    static let workSpacing: CGFloat = 20
     /// Above the status row, so it reads apart from the reply.
     static let statusSpacing: CGFloat = 26
     static let topPadding: CGFloat = 52
@@ -237,7 +239,8 @@ final class ChatTimelineModel {
         rows[last].content = .assistant(text: text, timestamp: timestamp, streaming: streaming, copyText: texts.reversed().joined(separator: "\n\n"))
     }
 
-    /// Items within a turn sit `itemSpacing` apart, turns `turnSpacing`. A
+    /// Items within a turn sit `itemSpacing` apart (`workSpacing` next to a
+    /// tool call group), turns `turnSpacing`. A
     /// user message gets the turn gap below it too.
     private func applyGaps(_ rows: inout [ChatRow]) {
         for index in rows.indices {
@@ -246,7 +249,7 @@ final class ChatTimelineModel {
             var gap: CGFloat = 0
             if let next {
                 if next.turnId == rows[index].turnId {
-                    gap = Self.itemSpacing
+                    gap = rows[index].reuseKind == "work" || next.reuseKind == "work" ? Self.workSpacing : Self.itemSpacing
                 } else if case .spacer = next.content {
                     gap = 0
                 } else {
