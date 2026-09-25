@@ -17,7 +17,6 @@ final class TabToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
     private let slot: TabSlot
     private let state: AppState
 
-    private var title: NSToolbarItem?
     private var git: NSMenuToolbarItem?
     private var gitBusy: NSToolbarItem?
     private var openIn: NSMenuToolbarItem?
@@ -30,17 +29,15 @@ final class TabToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
     private var pulseTimer: Timer?
     private var pulseDim = false
 
-    private static let titleID = NSToolbarItem.Identifier("jetline.title")
     private static let gitID = NSToolbarItem.Identifier("jetline.git")
     private static let gitBusyID = NSToolbarItem.Identifier("jetline.gitBusy")
     private static let openInID = NSToolbarItem.Identifier("jetline.openIn")
     private static let runID = NSToolbarItem.Identifier("jetline.run")
     private static let runBusyID = NSToolbarItem.Identifier("jetline.runBusy")
 
-    init(slot: TabSlot, state: AppState, environment: @escaping (AnyView) -> AnyView) {
+    init(slot: TabSlot, state: AppState) {
         self.slot = slot
         self.state = state
-        self.environment = environment
         super.init()
         toolbar.delegate = self
         toolbar.displayMode = .iconOnly
@@ -52,14 +49,12 @@ final class TabToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
         refresh()
     }
 
-    private let environment: (AnyView) -> AnyView
-
     // MARK: - NSToolbarDelegate
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [
             .toggleSidebar, .sidebarTrackingSeparator,
-            Self.titleID, .flexibleSpace,
+            .flexibleSpace,
             Self.gitID, Self.gitBusyID, Self.openInID, Self.runID, Self.runBusyID,
             .inspectorTrackingSeparator, .flexibleSpace, .toggleInspector,
         ]
@@ -76,14 +71,6 @@ final class TabToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
     ) -> NSToolbarItem? {
         let item: NSToolbarItem
         switch id {
-        case Self.titleID:
-            item = NSToolbarItem(itemIdentifier: id)
-            let host = NSHostingView(rootView: environment(AnyView(WorkspaceTitleItem(slot: slot))))
-            host.sizingOptions = [.intrinsicContentSize]
-            item.view = host
-            // Text, not a control: no glass capsule.
-            item.isBordered = false
-            title = item
         case Self.gitID:
             let menuItem = menuItem(id, label: "Git", action: #selector(triggerPrimaryGitAction))
             git = menuItem
@@ -158,18 +145,16 @@ final class TabToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
             DispatchQueue.main.async { self?.scheduleRefresh() }
         }
 
-        // For the Window menu and the Dock; the title item shows it here.
+        // For the Window menu and the Dock; the window hides its title.
         let windowTitle = workspace?.name ?? "Jetline"
         if let window = slot.window, window.title != windowTitle { window.title = windowTitle }
         guard let workspace, let ws else {
-            for item in [title, git, gitBusy, openIn, run, runBusy] {
+            for item in [git, gitBusy, openIn, run, runBusy] {
                 item?.setHiddenIfNeeded(true)
             }
             stopPulse()
             return
         }
-
-        title?.setHiddenIfNeeded(false)
 
         refreshGit(workspace: workspace, ws: ws)
         refreshOpenIn()
@@ -492,71 +477,5 @@ private enum RunImage {
         }
         cache[key] = image
         return image
-    }
-}
-
-/// Workspace name over its branch and diff stats, where the window title
-/// would be.
-private struct WorkspaceTitleItem: View {
-    @EnvironmentObject private var state: AppState
-    let slot: TabSlot
-
-    var body: some View {
-        if let id = slot.workspaceId, let workspace = state.workspaceById(id) {
-            WorkspaceTitleBar(
-                name: workspace.name,
-                branch: workspace.branchName,
-                stats: state.workspaceState(for: id).diff
-            )
-        } else {
-            // Something to measure while the item is hidden.
-            Color.clear.frame(width: 1, height: 1)
-        }
-    }
-}
-
-/// Matches the system title styling — name in headline weight on top,
-/// branch in secondary subheadline below — and adds a coloured diff pill
-/// alongside the branch.
-private struct WorkspaceTitleBar: View {
-    let name: String
-    let branch: String
-    let stats: DiffSnapshot?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(name)
-                .font(.headline)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            HStack(spacing: 8) {
-                Text(branch)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                if let stats, !stats.isEmpty {
-                    ChangesPill(adds: stats.totalAdditions, dels: stats.totalDeletions)
-                }
-            }
-        }
-        .padding(.leading, 8)
-    }
-}
-
-private struct ChangesPill: View {
-    let adds: Int
-    let dels: Int
-
-    var body: some View {
-        HStack(spacing: 4) {
-            if adds > 0 {
-                Text("+\(adds)").foregroundStyle(Color.readableGreen)
-            }
-            if dels > 0 {
-                Text("−\(dels)").foregroundStyle(.red)
-            }
-        }
-        .monoFont(size: 11, weight: .medium)
     }
 }

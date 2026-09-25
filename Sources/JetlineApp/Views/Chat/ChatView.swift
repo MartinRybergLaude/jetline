@@ -3,6 +3,7 @@ import SwiftUI
 /// Main-area content of a chat tab.
 struct ChatView: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.tabSlot) private var slot
     let session: ChatSession
     @State private var popup = ComposerPopup()
 
@@ -28,6 +29,7 @@ struct ChatView: View {
                 .padding(.horizontal, 24)
                 .padding(.vertical, 12)
                 .frame(maxWidth: .infinity)
+                .onGeometryChange(for: CGFloat.self, of: \.size.height) { slot?.composerBarHeight = $0 }
         }
         .background(Color(nsColor: .textBackgroundColor))
         // A fixed floor, independent of content. Otherwise the detail
@@ -39,6 +41,7 @@ struct ChatView: View {
         .clipped()
         .environment(\.chatFontFamily, state.settings.chatFontFamily)
         .onAppear { session.connectIfNeeded() }
+        .onDisappear { slot?.composerBarHeight = nil }
     }
 
     // MARK: Floating actions

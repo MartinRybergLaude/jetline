@@ -142,6 +142,7 @@ private struct PRPanelContent: View {
 /// landing it.
 private struct MergeSection: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.tabSlot) private var slot
     let workspace: Workspace
     let pr: PullRequest
     let readiness: MergeReadiness
@@ -181,6 +182,7 @@ private struct MergeSection: View {
                 HStack(spacing: 6) {
                     Button { primaryAction() } label: { label }
                         .buttonStyle(.glassProminent)
+                        .buttonBorderShape(.capsule)
                         .tint(mode == .merge ? .readableGreen : .accentColor)
                         .disabled(isBusy || defaultMethod == nil)
 
@@ -198,6 +200,7 @@ private struct MergeSection: View {
                         // a second tinted button beside the first would read
                         // as two ways to merge rather than one.
                         .buttonStyle(.glass)
+                        .buttonBorderShape(.capsule)
                         .frame(maxHeight: .infinity)
                         .help("Other merge strategies")
                         .popover(isPresented: $showingAlternates, arrowEdge: .bottom) {
@@ -222,8 +225,11 @@ private struct MergeSection: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
         }
-        // No bar of its own: `safeAreaBar` fades the checks list out under
-        // the buttons, the way the inspector's top edge does.
+        // As tall as the chat composer's bar beside it, so the two dividers
+        // sit on one line.
+        .frame(maxWidth: .infinity, minHeight: slot?.composerBarHeight)
+        .background(Color(nsColor: .textBackgroundColor))
+        .overlay(alignment: .top) { Divider() }
         .mergeConfirmation(
             workspace: workspace,
             method: pendingMethod,

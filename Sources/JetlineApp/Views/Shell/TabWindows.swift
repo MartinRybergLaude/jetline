@@ -38,6 +38,10 @@ final class TabSlot {
     /// The toolbar's Merge asks for confirmation, which the tab's content
     /// presents.
     var pendingMerge = false
+    /// Height of the chat composer's bar below its divider, while a chat
+    /// is showing, so the inspector's merge footer can match it and the
+    /// two dividers line up.
+    var composerBarHeight: CGFloat?
     @ObservationIgnored fileprivate var toolbar: TabToolbar?
 
     fileprivate func retire() {
@@ -327,11 +331,11 @@ final class MainWindowCoordinator: NSObject, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.tabbingMode = .preferred
         window.tabbingIdentifier = Self.tabbingIdentifier
-        let toolbar = TabToolbar(slot: slot, state: state, environment: environment)
+        let toolbar = TabToolbar(slot: slot, state: state)
         slot.toolbar = toolbar
         window.toolbar = toolbar.toolbar
         window.toolbarStyle = .unified
-        // The toolbar's title item stands in for it.
+        // All of the titlebar goes to the toolbar's items.
         window.titleVisibility = .hidden
         window.collectionBehavior.insert(.fullScreenPrimary)
         window.delegate = self
@@ -794,4 +798,10 @@ enum MenuFirstShortcutMonitor {
             return event
         }
     }
+}
+
+extension EnvironmentValues {
+    /// The tab window a view is in, for views that share state across its
+    /// columns.
+    @Entry var tabSlot: TabSlot?
 }

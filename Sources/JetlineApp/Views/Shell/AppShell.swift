@@ -40,6 +40,7 @@ final class TabSplitController: NSSplitViewController {
         // (`TabToolbar`).
         let content = NSHostingController(rootView: environment(AnyView(
             TabContentRoot(slot: slot, coordinator: coordinator)
+                .environment(\.tabSlot, slot)
         )))
         content.sizingOptions = []
         content.sceneBridgingOptions = []
@@ -48,6 +49,7 @@ final class TabSplitController: NSSplitViewController {
 
         let inspector = NSHostingController(rootView: environment(AnyView(
             InspectorView()
+                .environment(\.tabSlot, slot)
                 // Wider than it looks like it needs: every panel here is
                 // monospaced content that truncates badly — diff lines,
                 // branch refs, check names — so 320 spent most of its time
