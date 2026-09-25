@@ -392,12 +392,14 @@ private struct EffortMenu: View {
 
 private struct RuntimeModeMenu: View {
     let session: ChatSession
+    @EnvironmentObject private var state: AppState
 
     var body: some View {
         Menu {
             ForEach(AgentRuntimeMode.allCases, id: \.self) { mode in
                 Button {
                     session.setRuntimeMode(mode)
+                    state.rememberChatRuntimeMode(mode)
                 } label: {
                     if mode == session.runtimeMode {
                         Label(mode.displayName, systemImage: "checkmark")

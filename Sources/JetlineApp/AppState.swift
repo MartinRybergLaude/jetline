@@ -1041,6 +1041,14 @@ final class AppState: ObservableObject {
         saveSettings(s)
     }
 
+    /// Remember a chat's permission mode as the default for new chats.
+    func rememberChatRuntimeMode(_ mode: AgentRuntimeMode) {
+        guard settings.chatRuntimeMode != mode else { return }
+        var s = settings
+        s.chatRuntimeMode = mode
+        saveSettings(s)
+    }
+
     /// Stop every chat's agent process. Chats run in their own sessions
     /// (see `JSONLineProcess`), so nothing else would signal them on quit.
     func shutdownAgents() async {
