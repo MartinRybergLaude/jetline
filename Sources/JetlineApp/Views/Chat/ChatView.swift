@@ -36,14 +36,9 @@ struct ChatView: View {
             .onGeometryChange(for: CGFloat.self, of: \.size.height) { slot?.composerBarHeight = $0 }
         }
         .background(Color(nsColor: .textBackgroundColor))
-        // A fixed floor, independent of content. Otherwise the detail
-        // column's minimum is derived from whatever the lazy timeline and
-        // composer currently lay out, which shifts as a divider drag
-        // squeezes them; NSSplitView then re-runs constraints every pass
-        // and AppKit aborts with `_postWindowNeedsUpdateConstraints`.
-        .frame(minWidth: 320, maxWidth: .infinity)
+        // The column's width floor is `TabContentRoot`'s, not the content's.
+        .frame(maxWidth: .infinity)
         .clipped()
-        .environment(\.chatFontFamily, state.settings.chatFontFamily)
         .onAppear { session.connectIfNeeded() }
         .onDisappear { slot?.composerBarHeight = nil }
     }

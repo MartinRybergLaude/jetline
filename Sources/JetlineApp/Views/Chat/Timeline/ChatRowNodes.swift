@@ -285,7 +285,7 @@ enum ChatRowNodes {
             }
             return (live ? "Running" : "Ran", parts)
         case let .fileChange(change):
-            let paths = change.edits.map { relative($0.path, cwd: host.cwd) }.joined(separator: ", ").nonBlank ?? "a file"
+            let paths = change.edits.map { $0.path.relative(to: host.cwd) }.joined(separator: ", ").nonBlank ?? "a file"
             var parts = [label(paths)]
             if let counts = diffCounts(change.edits.first?.diff) {
                 parts.append((LabelNode(counts), false))
@@ -340,7 +340,7 @@ enum ChatRowNodes {
                 guard let diff = edit.diff, !diff.isEmpty else { return nil }
                 var stack: [ChatNode] = []
                 if change.edits.count > 1 {
-                    stack.append(LabelNode(relative(edit.path, cwd: host.cwd), font: font(13, .medium)))
+                    stack.append(LabelNode(edit.path.relative(to: host.cwd), font: font(13, .medium)))
                 }
                 stack.append(inlineDiff(diff))
                 return VStackNode(stack, spacing: 2)
@@ -439,10 +439,6 @@ enum ChatRowNodes {
             out.append(string("−\(dels)", font, .systemRed))
         }
         return out.length > 0 ? out : nil
-    }
-
-    private static func relative(_ path: String, cwd: String) -> String {
-        path.hasPrefix(cwd + "/") ? String(path.dropFirst(cwd.count + 1)) : path
     }
 
     private static func firstLine(_ text: String) -> String {
@@ -606,21 +602,10 @@ enum ChatRowNodes {
 
     /// Coloured one-letter status chip, as `FileStatusBadge` draws it.
     private static func statusBadge(_ status: FileDiff.Status) -> ChatNode {
-        let color: NSColor = {
-            switch status {
-            case .added: return .systemGreen
-            case .deleted: return .systemRed
-            case .modified: return .systemBlue
-            case .renamed: return .systemOrange
-            case .copied: return .systemPurple
-            case .typeChange: return .systemGray
-            case .unknown: return .secondaryLabelColor
-            }
-        }()
         return BoxNode(
             LabelNode(status.rawValue, font: mono(9, .bold), color: .white),
             padding: NSEdgeInsets(top: 1, left: 4, bottom: 1, right: 4),
-            fill: color,
+            fill: status.badgeColor,
             radius: 3,
             hug: true,
             toolTip: status.label

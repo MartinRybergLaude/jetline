@@ -15,9 +15,7 @@ actor CodexProvider: AgentProvider {
     nonisolated let capabilities = AgentCapabilities(
         liveModelSwitch: true,
         steering: true,
-        conversationRevert: true,
-        planMode: true,
-        imageInput: true
+        conversationRevert: true
     )
     nonisolated let events: AsyncStream<AgentEvent>
     private let continuation: AsyncStream<AgentEvent>.Continuation
@@ -34,7 +32,7 @@ actor CodexProvider: AgentProvider {
     private var defaultModel: String?
 
     private var nextRequestId: Int64 = 1
-    private var pending: [Int64: CheckedContinuation<JSONValue, Error>] = [:]
+    private var pending = PendingReplies<Int64>()
     /// Server requests awaiting the user, by request key.
     private var serverRequests: [String: ServerRequest] = [:]
 
@@ -213,11 +211,11 @@ actor CodexProvider: AgentProvider {
         switch (method, id) {
         case let (nil, id?):
             // Response to one of our requests.
-            guard let key = id.int.map(Int64.init), let cont = pending.removeValue(forKey: key) else { return }
+            guard let key = id.int.map(Int64.init) else { return }
             if let error = message["error"] {
-                cont.resume(throwing: AgentError.requestFailed(error["message"]?.string ?? "Codex request failed"))
+                pending.resolve(key, with: .failure(AgentError.requestFailed(error["message"]?.string ?? "Codex request failed")))
             } else {
-                cont.resume(returning: message["result"] ?? .null)
+                pending.resolve(key, with: .success(message["result"] ?? .null))
             }
         case let (method?, id?):
             handleServerRequest(id: id, method: method, params: message["params"] ?? .null)
@@ -295,10 +293,7 @@ actor CodexProvider: AgentProvider {
     private func processEnded(_ ended: JSONLineProcess, status: Int32) {
         guard ended === process else { return }
         process = nil
-        for (_, cont) in pending {
-            cont.resume(throwing: AgentError.notRunning)
-        }
-        pending.removeAll()
+        pending.failAll(AgentError.notRunning)
         closeAllRequests()
         continuation.yield(.exited(AgentExit(status: status, stderr: ended.stderrTail, expected: stopping)))
         continuation.finish()
@@ -317,7 +312,7 @@ actor CodexProvider: AgentProvider {
         }
         defer { timeoutTask.cancel() }
         return try await withCheckedThrowingContinuation { cont in
-            pending[id] = cont
+            pending.add(id, cont)
             Task {
                 do {
                     try await process.send(message)
@@ -329,7 +324,7 @@ actor CodexProvider: AgentProvider {
     }
 
     private func failRequest(_ id: Int64, _ error: Error) {
-        pending.removeValue(forKey: id)?.resume(throwing: error)
+        pending.resolve(id, with: .failure(error))
     }
 
     private func notify(_ method: String, _ params: JSONValue?) async throws {
@@ -375,7 +370,7 @@ actor CodexProvider: AgentProvider {
             kind = .approval(AgentApproval(
                 category: .fileChange,
                 title: paths.count == 1 ? "Apply this change?" : "Apply these changes?",
-                detail: paths.map { $0.hasPrefix(root + "/") ? String($0.dropFirst(root.count + 1)) : $0 }
+                detail: paths.map { $0.relative(to: root) }
                     .joined(separator: "\n").nonBlank ?? params["grantRoot"]?.string,
                 reason: params["reason"]?.string,
                 allowsSessionScope: true
@@ -693,11 +688,6 @@ actor CodexProvider: AgentProvider {
     }
 
     private func emitNotice(_ level: AgentItem.Notice.Level, _ text: String) {
-        continuation.yield(.item(AgentItem(
-            id: "notice-\(UUID().uuidString)",
-            turnId: activeTurnId,
-            status: .completed,
-            content: .notice(.init(level: level, text: text))
-        )))
+        continuation.yield(.item(.notice(level, text, turnId: activeTurnId)))
     }
 }

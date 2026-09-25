@@ -32,7 +32,7 @@ private struct GeneralSettingsView: View {
 
     var body: some View {
         Form {
-            Picker("Default agent", selection: bindingDefaultAgent) {
+            Picker("Default agent", selection: state.settingsBinding(\.defaultAgent)) {
                 ForEach(Workspace.AgentKind.allCases, id: \.self) { kind in
                     Text(kind.displayName).tag(kind)
                 }
@@ -40,17 +40,6 @@ private struct GeneralSettingsView: View {
         }
         .formStyle(.grouped)
         .scrollIndicators(.visible)
-    }
-
-    private var bindingDefaultAgent: Binding<Workspace.AgentKind> {
-        Binding(
-            get: { state.settings.defaultAgent },
-            set: { newValue in
-                var s = state.settings
-                s.defaultAgent = newValue
-                state.saveSettings(s)
-            }
-        )
     }
 }
 
@@ -60,11 +49,11 @@ private struct AgentsSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Picker("Open Claude Code and Codex in", selection: bindingInterface) {
+                Picker("Open Claude Code and Codex in", selection: state.settingsBinding(\.agentInterface)) {
                     Text("Terminal").tag(AppSettings.AgentInterface.terminal)
                     Text("Chat").tag(AppSettings.AgentInterface.chat)
                 }
-                Picker("New chats start in", selection: bindingChatMode) {
+                Picker("New chats start in", selection: state.settingsBinding(\.chatRuntimeMode)) {
                     ForEach(AgentRuntimeMode.allCases, id: \.self) { mode in
                         Text("\(mode.displayName) — \(mode.summary)").tag(mode)
                     }
@@ -105,28 +94,6 @@ private struct AgentsSettingsView: View {
         }
         .formStyle(.grouped)
         .scrollIndicators(.visible)
-    }
-
-    private var bindingInterface: Binding<AppSettings.AgentInterface> {
-        Binding(
-            get: { state.settings.agentInterface },
-            set: { newValue in
-                var s = state.settings
-                s.agentInterface = newValue
-                state.saveSettings(s)
-            }
-        )
-    }
-
-    private var bindingChatMode: Binding<AgentRuntimeMode> {
-        Binding(
-            get: { state.settings.chatRuntimeMode },
-            set: { newValue in
-                var s = state.settings
-                s.chatRuntimeMode = newValue
-                state.saveSettings(s)
-            }
-        )
     }
 
     private func bindingPath(_ keyPath: WritableKeyPath<AppSettings, String?>) -> Binding<String> {
@@ -179,21 +146,21 @@ private struct AppearanceSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Picker("Theme", selection: binding(\.theme)) {
+                Picker("Theme", selection: state.settingsBinding(\.theme)) {
                     Text("System").tag(AppSettings.Theme.system)
                     Text("Light").tag(AppSettings.Theme.light)
                     Text("Dark").tag(AppSettings.Theme.dark)
                 }
             }
             Section {
-                Picker("Assistant message font", selection: binding(\.chatFontFamily)) {
+                Picker("Assistant message font", selection: state.settingsBinding(\.chatFontFamily)) {
                     Text("System").tag(String?.none)
                     Divider()
                     ForEach(Self.fontFamilies, id: \.self) { family in
                         Text(family).tag(String?.some(family))
                     }
                 }
-                Picker("Monospace font", selection: binding(\.monospaceFontFamily)) {
+                Picker("Monospace font", selection: state.settingsBinding(\.monospaceFontFamily)) {
                     Text("SF Mono").tag(String?.none)
                     Divider()
                     ForEach(MonoFont.installedFamilies, id: \.self) { family in
@@ -208,7 +175,7 @@ private struct AppearanceSettingsView: View {
             Section("Terminal") {
                 HStack {
                     Text("Font size")
-                    Slider(value: binding(\.terminalFontSize), in: 9...20, step: 1)
+                    Slider(value: state.settingsBinding(\.terminalFontSize), in: 9...20, step: 1)
                     Text("\(Int(state.settings.terminalFontSize))pt")
                         .frame(width: 36, alignment: .trailing)
                         .monoFont(.caption)
@@ -230,17 +197,6 @@ private struct AppearanceSettingsView: View {
         .filter { !$0.hasPrefix(".") }
         .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
 
-    private func binding<Value>(_ keyPath: WritableKeyPath<AppSettings, Value>) -> Binding<Value> {
-        Binding(
-            get: { state.settings[keyPath: keyPath] },
-            set: { newValue in
-                var s = state.settings
-                s[keyPath: keyPath] = newValue
-                state.saveSettings(s)
-            }
-        )
-    }
-
     private var bindingPaddingX: Binding<Double> {
         Binding(
             get: { Double(state.settings.terminalPaddingX) },
@@ -248,6 +204,20 @@ private struct AppearanceSettingsView: View {
                 var s = state.settings
                 s.terminalPaddingX = Int(newValue.rounded())
                 state.saveSettings(s)
+            }
+        )
+    }
+}
+
+extension AppState {
+    /// A binding that saves the settings on every write.
+    func settingsBinding<Value>(_ keyPath: WritableKeyPath<AppSettings, Value>) -> Binding<Value> {
+        Binding(
+            get: { self.settings[keyPath: keyPath] },
+            set: { newValue in
+                var s = self.settings
+                s[keyPath: keyPath] = newValue
+                self.saveSettings(s)
             }
         )
     }

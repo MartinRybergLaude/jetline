@@ -1,25 +1,49 @@
 import SwiftUI
 import AppKit
 
+/// The font families picked under Settings → Appearance, mirrored from
+/// `AppSettings` by `AppState`. Observable: a SwiftUI view that reads them
+/// redraws when one changes, and AppKit code reads the same values.
+@MainActor @Observable
+final class FontSettings {
+    static let shared = FontSettings()
+
+    /// `AppSettings.monospaceFontFamily`; `nil` → SF Mono.
+    private(set) var mono: String?
+    /// `AppSettings.chatFontFamily`; `nil` → the system font.
+    private(set) var chat: String?
+
+    /// Only assigns what changed, so unrelated settings edits don't redraw
+    /// every view that reads a family.
+    func apply(_ settings: AppSettings) {
+        if mono != settings.monospaceFontFamily { mono = settings.monospaceFontFamily }
+        if chat != settings.chatFontFamily { chat = settings.chatFontFamily }
+    }
+}
+
 /// The monospace font picked under Settings → Appearance, used by the
 /// terminal, diffs, code in the chat and every other monospaced label.
 /// `nil` → the system monospaced font (SF Mono).
 @MainActor
 enum MonoFont {
-    /// Mirrors `AppSettings.monospaceFontFamily` for AppKit code that can't
-    /// read the SwiftUI environment. Set by `AppState` whenever settings load
-    /// or change.
-    static var family: String?
+    static var family: String? { FontSettings.shared.mono }
 
     /// Family name handed to libghostty, which resolves SF Mono by name.
     static func terminalFamily(_ family: String?) -> String { family ?? "SF Mono" }
 
     static func ns(size: CGFloat, weight: NSFont.Weight = .regular, family: String? = MonoFont.family) -> NSFont {
-        if let family, let custom = NSFontManager.shared.font(withFamily: family, traits: [], weight: managerWeight(weight), size: size) {
-            return custom
-        }
-        return .monospacedSystemFont(ofSize: size, weight: weight)
+        guard let family else { return .monospacedSystemFont(ofSize: size, weight: weight) }
+        let key = "\(family)|\(size)|\(weight.rawValue)"
+        if let cached = customFonts[key] { return cached }
+        let font = NSFontManager.shared.font(withFamily: family, traits: [], weight: managerWeight(weight), size: size)
+            ?? .monospacedSystemFont(ofSize: size, weight: weight)
+        customFonts[key] = font
+        return font
     }
+
+    /// Family lookups by `NSFontManager` search the installed fonts; the
+    /// chat timeline asks for the same few per text node.
+    private static var customFonts: [String: NSFont] = [:]
 
     /// Point size at which `monoFamily` has the same x-height as
     /// `textFamily` at `size`. Monospace faces run taller and wider than
@@ -61,11 +85,6 @@ enum MonoFont {
     }
 }
 
-extension EnvironmentValues {
-    /// `AppSettings.monospaceFontFamily`, injected at each scene root.
-    @Entry var monoFontFamily: String?
-}
-
 extension Font {
     static func mono(size: CGFloat, weight: Font.Weight = .regular, family: String?) -> Font {
         guard let family else { return .system(size: size, weight: weight, design: .monospaced) }
@@ -74,12 +93,11 @@ extension Font {
 }
 
 private struct MonoFontModifier: ViewModifier {
-    @Environment(\.monoFontFamily) private var family
     let size: CGFloat
     let weight: Font.Weight
 
     func body(content: Content) -> some View {
-        content.font(.mono(size: size, weight: weight, family: family))
+        content.font(.mono(size: size, weight: weight, family: MonoFont.family))
     }
 }
 

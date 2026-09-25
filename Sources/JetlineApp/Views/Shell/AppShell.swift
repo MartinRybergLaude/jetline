@@ -28,26 +28,21 @@ final class TabSplitController: NSSplitViewController {
     ) {
         self.coordinator = coordinator
 
-        let sidebar = NSHostingController(rootView: environment(AnyView(SidebarView())))
-        sidebar.sizingOptions = []
-        sidebar.sceneBridgingOptions = []
-        sidebar.view.frame.size.width = 260
+        let sidebar = Self.host(environment(AnyView(SidebarView())), width: 260)
         sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
         sidebarItem.minimumThickness = MainWindowCoordinator.sidebarMinimum
         sidebarItem.maximumThickness = 320
 
         // Nothing bridged: the toolbar and the window title are AppKit's
         // (`TabToolbar`).
-        let content = NSHostingController(rootView: environment(AnyView(
+        let content = Self.host(environment(AnyView(
             TabContentRoot(slot: slot, coordinator: coordinator)
                 .environment(\.tabSlot, slot)
         )))
-        content.sizingOptions = []
-        content.sceneBridgingOptions = []
         contentItem = NSSplitViewItem(viewController: content)
         contentItem.minimumThickness = MainWindowCoordinator.contentMinimum
 
-        let inspector = NSHostingController(rootView: environment(AnyView(
+        let inspector = Self.host(environment(AnyView(
             InspectorView()
                 .environment(\.tabSlot, slot)
                 // Wider than it looks like it needs: every panel here is
@@ -56,10 +51,7 @@ final class TabSplitController: NSSplitViewController {
                 // showing ellipses. 240 stays the floor for people who want
                 // the terminal back.
                 .frame(minWidth: MainWindowCoordinator.inspectorMinimum, maxWidth: .infinity)
-        )))
-        inspector.sizingOptions = []
-        inspector.sceneBridgingOptions = []
-        inspector.view.frame.size.width = 420
+        )), width: 420)
         inspectorItem = NSSplitViewItem(inspectorWithViewController: inspector)
         inspectorItem.minimumThickness = MainWindowCoordinator.inspectorMinimum
         inspectorItem.maximumThickness = 600
@@ -69,6 +61,7 @@ final class TabSplitController: NSSplitViewController {
         addSplitViewItem(sidebarItem)
         addSplitViewItem(contentItem)
         addSplitViewItem(inspectorItem)
+        silenceTitlebarSeparators()
 
         // Collapses the coordinator didn't ask for — a divider dragged shut,
         // a pane auto-collapsed by a window resize — are shared with the
@@ -85,6 +78,33 @@ final class TabSplitController: NSSplitViewController {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    private static func host(_ view: AnyView, width: CGFloat? = nil) -> NSHostingController<AnyView> {
+        let host = NSHostingController(rootView: view)
+        host.sizingOptions = []
+        host.sceneBridgingOptions = []
+        if let width { host.view.frame.size.width = width }
+        return host
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        silenceTitlebarSeparators()
+    }
+
+    /// Silences AppKit's own hairline under the toolbar, which we draw in
+    /// SwiftUI instead (`Hairline` at the top of the content and inspector
+    /// columns). `.automatic` lands on "no line" for the detail column of a
+    /// freshly launched window and only draws one once toggling the inspector
+    /// rebuilds a split item; neither `.line` on the item nor
+    /// `NSWindow.titlebarSeparatorStyle` (an item's own style wins) fixes
+    /// that, so take AppKit out of the decision. The sidebar keeps
+    /// `.automatic`, where it works — its list is a scroll view, the case the
+    /// automatic behaviour is built around.
+    private func silenceTitlebarSeparators() {
+        contentItem.titlebarSeparatorStyle = .none
+        inspectorItem.titlebarSeparatorStyle = .none
+    }
 
     // The toolbar's sidebar / inspector buttons and the View menu land here.
     // Route them through the coordinator so every tab window follows.
@@ -114,15 +134,17 @@ private struct TabContentRoot: View {
     var body: some View {
         VStack(spacing: 0) {
             // Stands in for the titlebar separator AppKit won't draw
-            // reliably — see `WindowChromeView.silenceTitlebarSeparators`.
+            // reliably — see `TabSplitController.silenceTitlebarSeparators`.
             Hairline()
             SlotContent(slot: slot)
         }
         // Report a fixed floor instead of whatever the tab's content wants
         // (a chat's composer row alone is wider than this), so the columns
-        // always fit the window.
+        // always fit the window. A content-derived minimum would also shift
+        // as a divider drag squeezes the lazy chat timeline; NSSplitView then
+        // re-runs constraints every pass and AppKit aborts with
+        // `_postWindowNeedsUpdateConstraints`.
         .frame(minWidth: MainWindowCoordinator.contentMinimum, maxWidth: .infinity)
-        .background(WindowChromeSetup())
         // App-level sheets belong to the visible tab only — every tab window
         // observes the same state.
         .sheet(item: selectedOnly($state.repoPendingWorkspaceCreation)) { repo in
@@ -141,53 +163,6 @@ private struct TabContentRoot: View {
             get: { slot.isSelected ? binding.wrappedValue : nil },
             set: { binding.wrappedValue = $0 }
         )
-    }
-}
-
-/// Window chrome SwiftUI doesn't expose: the titlebar separator.
-private struct WindowChromeSetup: NSViewRepresentable {
-    func makeNSView(context: Context) -> WindowChromeView { WindowChromeView() }
-
-    // Re-applied on every update rather than once at mount, and again after
-    // a hop: the split view isn't installed on the first pass.
-    func updateNSView(_ view: WindowChromeView, context: Context) {
-        view.silenceTitlebarSeparators()
-        DispatchQueue.main.async { view.silenceTitlebarSeparators() }
-    }
-}
-
-private final class WindowChromeView: NSView {
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        guard window != nil else { return }
-        silenceTitlebarSeparators()
-        // The split view isn't built yet on the first pass through here.
-        DispatchQueue.main.async { [weak self] in self?.silenceTitlebarSeparators() }
-    }
-
-    /// Silences AppKit's own hairline under the toolbar, which we draw in
-    /// SwiftUI instead (`Hairline` at the top of the content and inspector
-    /// columns). `.automatic` decides per split item and on a freshly
-    /// launched window it lands on "no line" for the detail column — the
-    /// hairline only turns up once toggling the inspector rebuilds a split
-    /// item. Nothing short of that changes its mind: not `.line` on the item,
-    /// not `NSWindow.titlebarSeparatorStyle` (an item's own style wins), not a
-    /// forced layout, toolbar reassignment or resize. So take AppKit out of
-    /// the decision entirely. The sidebar keeps `.automatic`, where it works —
-    /// its list is a scroll view, the case the automatic behaviour is built
-    /// around.
-    func silenceTitlebarSeparators() {
-        guard let root = window?.contentView else { return }
-        func walk(_ view: NSView) {
-            if let split = view as? NSSplitView,
-               let controller = split.delegate as? NSSplitViewController {
-                for item in controller.splitViewItems where item.behavior != .sidebar {
-                    item.titlebarSeparatorStyle = .none
-                }
-            }
-            view.subviews.forEach(walk)
-        }
-        walk(root)
     }
 }
 

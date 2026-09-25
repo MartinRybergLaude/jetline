@@ -49,26 +49,17 @@ final class WorkspaceState {
     /// Drives the inspector's spinner.
     var isRefreshingPR: Bool = false
     var sessions: [PTYSession] = []
-    var activeSessionId: String?
     /// Full-file diff tabs opened from the inspector's changes panel. They
     /// share the tab strip with the sessions but live apart from them —
     /// a diff tab has no process behind it.
     var diffTabs: [DiffTab] = []
-    /// When set, the main area shows this diff tab instead of the active
-    /// session. Selecting any session clears it.
-    var activeDiffTabId: String?
     /// Native chats (the chat-UI alternative to agent TUI sessions). They
     /// survive relaunches: open chats are restored from the database the
     /// first time the workspace is activated.
     var chats: [ChatSession] = []
-    /// When set, the main area shows this chat. Selecting a session or a
-    /// diff tab clears it.
-    var activeChatId: String?
-    /// New-tab pages: what the tab bar's `+` opens, where the user picks
-    /// what the tab becomes. Nothing runs behind one.
-    var launcherTabs: [String] = []
-    /// When set, the main area shows this new-tab page.
-    var activeLauncherId: String?
+    /// The tab the main area is showing. New-tab pages (`TabRef.launcher`)
+    /// live only here and in `tabOrder`: nothing runs behind one.
+    var activeTab: TabRef?
     /// Strip order across sessions and diff tabs, which the strip shows as
     /// one list. Every open, close and reorder in `AppState` keeps it in step
     /// with `sessions` and `diffTabs`.
@@ -85,19 +76,32 @@ final class WorkspaceState {
         self.id = id
     }
 
-    /// The tab the main area is showing.
-    var activeTab: TabRef? {
-        activeLauncherId.map(TabRef.launcher)
-            ?? activeDiffTabId.map(TabRef.diff)
-            ?? activeChatId.map(TabRef.chat)
-            ?? activeSessionId.map(TabRef.session)
-    }
-
     /// Terminal sessions and chats — the tabs that keep a workspace open.
     var hasAgentTabs: Bool { !sessions.isEmpty || !chats.isEmpty }
 
     var activeChat: ChatSession? {
-        activeChatId.flatMap { id in chats.first { $0.id == id } }
+        guard case .chat(let id) = activeTab else { return nil }
+        return chats.first { $0.id == id }
+    }
+
+    /// Put `tab` in the strip: in `replacing`'s place when that's in the
+    /// strip, else at the end.
+    func insertTab(_ tab: TabRef, replacing: TabRef? = nil) {
+        if let replacing, let index = tabOrder.firstIndex(of: replacing) {
+            tabOrder[index] = tab
+        } else {
+            tabOrder.append(tab)
+        }
+    }
+
+    /// Drop `tab` from the strip. Returns the neighbour that takes over when
+    /// it was the one showing: the tab after it, else the one before.
+    func removeTab(_ tab: TabRef) -> TabRef? {
+        guard let index = tabOrder.firstIndex(of: tab) else { return nil }
+        tabOrder.remove(at: index)
+        guard activeTab == tab else { return nil }
+        activeTab = nil
+        return index < tabOrder.count ? tabOrder[index] : tabOrder.last
     }
 }
 

@@ -10,13 +10,11 @@ import AppKit
 /// then corrected mid-scroll. See `ChatTimelineController`.
 struct ChatTimelineView: View {
     let session: ChatSession
-    @Environment(\.chatFontFamily) private var fontFamily
-    @Environment(\.monoFontFamily) private var monoFamily
     @State private var isAtBottom = true
     @State private var handle = ChatTimelineHandle()
 
     var body: some View {
-        ChatTimelineRepresentable(session: session, fontFamily: fontFamily, monoFamily: monoFamily, handle: handle, isAtBottom: $isAtBottom)
+        ChatTimelineRepresentable(session: session, fontFamily: FontSettings.shared.chat, monoFamily: MonoFont.family, handle: handle, isAtBottom: $isAtBottom)
             .id(session.id)
             .overlay(alignment: .top) {
                 if session.turns.isEmpty {

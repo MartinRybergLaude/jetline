@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 
 extension Bundle {
     /// Resource bundle resolver that places assets under the conventional
@@ -21,4 +21,14 @@ extension Bundle {
 
         return .main
     }()
+}
+
+extension Bundle {
+    /// A PNG from the resource bundle, as a template image.
+    func templateImage(_ name: String) -> NSImage? {
+        guard let url = url(forResource: name, withExtension: "png"),
+              let image = NSImage(contentsOf: url) else { return nil }
+        image.isTemplate = true
+        return image
+    }
 }

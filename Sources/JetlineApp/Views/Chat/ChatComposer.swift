@@ -56,8 +56,13 @@ actor ChatFileIndex {
         return files
     }
 
+    /// Ranks on the actor so a large worktree doesn't block typing.
+    func ranked(in cwd: String, query: String) async -> [String] {
+        Self.rank(await files(in: cwd), query: query)
+    }
+
     /// Subsequence match, preferring hits in the file name and shorter paths.
-    static func rank(_ files: [String], query: String, limit: Int = 8) -> [String] {
+    private static func rank(_ files: [String], query: String, limit: Int = 8) -> [String] {
         guard !query.isEmpty else { return Array(files.prefix(limit)) }
         let q = query.lowercased()
         var scored: [(String, Int)] = []
@@ -87,7 +92,6 @@ actor ChatFileIndex {
 }
 
 struct ChatComposer: View {
-    @EnvironmentObject private var state: AppState
     let session: ChatSession
     /// Completion popup state; ChatView draws the list above the timeline.
     let popup: ComposerPopup
@@ -282,8 +286,7 @@ struct ChatComposer: View {
             let cwd = session.cwd
             let query = detected.query
             Task {
-                let files = await ChatFileIndex.shared.files(in: cwd)
-                let ranked = ChatFileIndex.rank(files, query: query)
+                let ranked = await ChatFileIndex.shared.ranked(in: cwd, query: query)
                 guard completion == detected else { return }
                 suggestions = ranked.map { Suggestion(insertion: "@" + $0, title: $0, detail: nil) }
             }
@@ -539,14 +542,8 @@ private struct PillButtonStyle: ButtonStyle {
         // Fixed height: symbols differ in height (the Full access bolt is
         // taller), which would otherwise resize the pill per mode.
         .imageScale(.small)
-        .frame(height: 28)
-        .padding(.horizontal, 12)
-        // A tinted mode (Full access, high effort) washes the capsule itself
-        // rather than tinting the glass: tinted glass goes gray in an
-        // inactive window, and Full access should read as a warning always.
-        .background(Capsule().fill(tint?.fill ?? .clear))
-        .contentShape(Capsule())
-        .glassEffect(.regular.interactive(), in: Capsule())
+        // Full access should read as a warning even in an inactive window.
+        .glassCapsule(fill: tint?.fill)
     }
 }
 

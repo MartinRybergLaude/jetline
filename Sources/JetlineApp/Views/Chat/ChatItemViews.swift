@@ -62,7 +62,7 @@ extension MarkdownStyle {
     static func chat(fontFamily: String? = nil, monoFamily: String? = nil) -> MarkdownStyle {
         MarkdownStyle(
             bodySize: 15, codeSize: 14, blockSpacing: 12,
-            fontFamily: fontFamily, monoFamily: monoFamily, tableBodySize: 14, lineSpacing: 3, spaciousTables: true
+            fontFamily: fontFamily, monoFamily: monoFamily, tableBodySize: 14, lineSpacing: 3
         )
     }
 }

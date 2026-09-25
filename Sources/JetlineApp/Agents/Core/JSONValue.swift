@@ -20,11 +20,6 @@ enum JSONValue: Sendable, Hashable {
         return nil
     }
 
-    subscript(index: Int) -> JSONValue? {
-        if case let .array(items) = self, items.indices.contains(index) { return items[index] }
-        return nil
-    }
-
     var string: String? {
         if case let .string(s) = self { return s }
         return nil
@@ -115,14 +110,13 @@ enum JSONValue: Sendable, Hashable {
     /// Compact single-line encoding, suitable for NDJSON framing: newlines
     /// inside strings are escaped by the serializer, so the output never
     /// contains a raw `\n`.
-    func serialized(sortedKeys: Bool = false) -> Data {
-        var options: JSONSerialization.WritingOptions = [.fragmentsAllowed, .withoutEscapingSlashes]
-        if sortedKeys { options.insert(.sortedKeys) }
+    func serialized() -> Data {
+        let options: JSONSerialization.WritingOptions = [.fragmentsAllowed, .withoutEscapingSlashes]
         return (try? JSONSerialization.data(withJSONObject: foundationObject, options: options)) ?? Data("null".utf8)
     }
 
-    func serializedString(sortedKeys: Bool = false) -> String {
-        String(decoding: serialized(sortedKeys: sortedKeys), as: UTF8.self)
+    func serializedString() -> String {
+        String(decoding: serialized(), as: UTF8.self)
     }
 
     /// Multi-line rendering for display (tool inputs in the chat timeline).

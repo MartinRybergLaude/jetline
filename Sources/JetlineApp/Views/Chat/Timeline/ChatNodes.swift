@@ -809,7 +809,6 @@ final class BoxNode: ChatNode {
     let borderWidth: CGFloat
     let radius: CGFloat
     let hug: Bool
-    let hidden: Bool
     let toolTip: String?
     let fixedWidth: CGFloat?
     let fixedHeight: CGFloat?
@@ -822,7 +821,6 @@ final class BoxNode: ChatNode {
         borderWidth: CGFloat = 0.5,
         radius: CGFloat = 0,
         hug: Bool = false,
-        hidden: Bool = false,
         toolTip: String? = nil,
         width: CGFloat? = nil,
         height: CGFloat? = nil
@@ -834,7 +832,6 @@ final class BoxNode: ChatNode {
         self.borderWidth = borderWidth
         self.radius = radius
         self.hug = hug
-        self.hidden = hidden
         self.toolTip = toolTip
         fixedWidth = width
         fixedHeight = height
@@ -871,7 +868,6 @@ final class BoxNode: ChatNode {
     override func configure(_ view: NSView, size: CGSize) {
         guard let view = view as? ChatContainerView else { return }
         view.setStyle(fill: fill, border: border, borderWidth: borderWidth, cornerRadius: radius, clips: false)
-        view.isHidden = hidden
         view.toolTip = toolTip
     }
 }

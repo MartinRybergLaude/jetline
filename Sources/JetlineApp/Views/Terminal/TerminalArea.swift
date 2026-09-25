@@ -2,7 +2,6 @@ import SwiftUI
 import AppKit
 
 struct TerminalArea: View {
-    @EnvironmentObject private var state: AppState
     @Environment(\.colorScheme) private var colorScheme
     let workspace: Workspace
     /// Per-workspace state (sessions, diff stats, run/setup controllers).
@@ -82,6 +81,8 @@ struct TerminalArea: View {
         return workspaceState.sessions.first { $0.id == id }
     }
 
+    private static let launcherIcon = NSImage(systemSymbolName: "plus.square.on.square", accessibilityDescription: nil)
+
     private struct NativeTabTitle: Equatable {
         let text: String
         let icon: NSImage?
@@ -105,10 +106,7 @@ struct TerminalArea: View {
                 icon: TabTitle.fileIcon(for: id)
             )
         case .launcher:
-            return NativeTabTitle(
-                text: "New Tab",
-                icon: NSImage(systemSymbolName: "plus.square.on.square", accessibilityDescription: nil)
-            )
+            return NativeTabTitle(text: "New Tab", icon: Self.launcherIcon)
         case nil:
             return NativeTabTitle(text: workspace.name, icon: nil)
         }

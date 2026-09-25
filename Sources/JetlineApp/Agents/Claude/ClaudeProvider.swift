@@ -22,8 +22,6 @@ actor ClaudeProvider: AgentProvider {
         // separate turns, not folded into the running one.
         steering: false,
         conversationRevert: true,
-        planMode: true,
-        imageInput: true,
         remoteControl: true
     )
     nonisolated let events: AsyncStream<AgentEvent>
@@ -38,7 +36,7 @@ actor ClaudeProvider: AgentProvider {
     /// `AgentResumeCursor.turns`).
     private var anchors: [AgentResumeCursor.TurnAnchor] = []
 
-    private var pendingControl: [String: CheckedContinuation<JSONValue, Error>] = [:]
+    private var pendingControl = PendingReplies<String>()
     private var permissionRequests: [String: PermissionRequest] = [:]
     private var requestCounter = 0
 
@@ -293,10 +291,7 @@ actor ClaudeProvider: AgentProvider {
     private func processEnded(_ ended: JSONLineProcess, status: Int32) {
         guard ended === process else { return }
         process = nil
-        for (_, cont) in pendingControl {
-            cont.resume(throwing: AgentError.notRunning)
-        }
-        pendingControl.removeAll()
+        pendingControl.failAll(AgentError.notRunning)
         closeAllRequests()
         if needsRespawn {
             // Killed by a hard interrupt: report the turn as interrupted and
@@ -325,7 +320,7 @@ actor ClaudeProvider: AgentProvider {
         }
         defer { timeoutTask.cancel() }
         return try await withCheckedThrowingContinuation { cont in
-            pendingControl[id] = cont
+            pendingControl.add(id, cont)
             Task {
                 do {
                     try await process.send(envelope)
@@ -337,16 +332,15 @@ actor ClaudeProvider: AgentProvider {
     }
 
     private func failControl(_ id: String, _ error: Error) {
-        pendingControl.removeValue(forKey: id)?.resume(throwing: error)
+        pendingControl.resolve(id, with: .failure(error))
     }
 
     private func handleControlResponse(_ response: JSONValue) {
-        guard let id = response["request_id"]?.string,
-              let cont = pendingControl.removeValue(forKey: id) else { return }
+        guard let id = response["request_id"]?.string else { return }
         if response["subtype"]?.string == "error" {
-            cont.resume(throwing: AgentError.requestFailed(response["error"]?.string ?? "Request failed"))
+            pendingControl.resolve(id, with: .failure(AgentError.requestFailed(response["error"]?.string ?? "Request failed")))
         } else {
-            cont.resume(returning: response["response"] ?? .object([:]))
+            pendingControl.resolve(id, with: .success(response["response"] ?? .object([:])))
         }
     }
 
@@ -767,11 +761,6 @@ actor ClaudeProvider: AgentProvider {
     }
 
     private func emitNotice(_ level: AgentItem.Notice.Level, _ text: String) {
-        continuation.yield(.item(AgentItem(
-            id: "notice-\(UUID().uuidString)",
-            turnId: activeTurnId,
-            status: .completed,
-            content: .notice(.init(level: level, text: text))
-        )))
+        continuation.yield(.item(.notice(level, text, turnId: activeTurnId)))
     }
 }

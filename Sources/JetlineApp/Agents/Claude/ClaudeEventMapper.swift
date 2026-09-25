@@ -44,7 +44,6 @@ struct ClaudeEventMapper {
     private struct Block {
         var itemId: String
         var type: String
-        var parentId: String?
     }
 
     private struct ToolState {
@@ -56,11 +55,6 @@ struct ClaudeEventMapper {
     /// Record that the user declined `toolUseId`, before its result lands.
     mutating func markDeclined(_ toolUseId: String) {
         declinedToolUseIds.insert(toolUseId)
-    }
-
-    /// The tool item for a tool_use id, for approval prompts.
-    func toolItem(_ toolUseId: String) -> AgentItem? {
-        tools[toolUseId]?.item
     }
 
     mutating func map(_ message: JSONValue) -> [AgentEvent] {
@@ -109,7 +103,7 @@ struct ClaudeEventMapper {
             switch type {
             case "text", "thinking":
                 let itemId = "\(messageId ?? "message")#\(index)"
-                blocks[index] = Block(itemId: itemId, type: type, parentId: parentId)
+                blocks[index] = Block(itemId: itemId, type: type)
                 let content: AgentItem.Content = type == "text"
                     ? .assistantMessage(text: block["text"]?.string ?? "")
                     : .reasoning(text: block["thinking"]?.string ?? "")
@@ -119,7 +113,7 @@ struct ClaudeEventMapper {
                 ))]
             case "tool_use", "server_tool_use":
                 guard let toolUseId = block["id"]?.string else { return [] }
-                blocks[index] = Block(itemId: toolUseId, type: "tool_use", parentId: parentId)
+                blocks[index] = Block(itemId: toolUseId, type: "tool_use")
                 let name = block["name"]?.string ?? "tool"
                 return upsertTool(id: toolUseId, name: name, input: .object([:]), parentId: parentId)
             default:
@@ -300,10 +294,7 @@ struct ClaudeEventMapper {
         case "api_retry":
             let attempt = message["attempt"]?.int.map { " (attempt \($0))" } ?? ""
             let id = message["uuid"]?.string ?? UUID().uuidString
-            return [.item(AgentItem(
-                id: id, turnId: turnId, status: .completed,
-                content: .notice(.init(level: .warning, text: "API error, retrying\(attempt)…"))
-            ))]
+            return [.item(.notice(.warning, "API error, retrying\(attempt)…", turnId: turnId, id: id))]
         default:
             return []
         }
@@ -378,10 +369,7 @@ struct ClaudeEventMapper {
             let date = Date(timeIntervalSince1970: TimeInterval(resets))
             text += " It resets \(date.formatted(date: .omitted, time: .shortened))."
         }
-        return [.item(AgentItem(
-            id: "limit-\(key)", turnId: turnId, status: .completed,
-            content: .notice(.init(level: .warning, text: text))
-        ))]
+        return [.item(.notice(.warning, text, turnId: turnId, id: "limit-\(key)"))]
     }
 
     private static func windowName(_ type: String) -> String {
@@ -397,13 +385,6 @@ struct ClaudeEventMapper {
     /// Fold a task tool's result into the task list. Returns the new todos
     /// when it changed. Mirrors T3 Code's `applyClaudeTaskToolResult`.
     private mutating func applyTaskTool(name: String, input: JSONValue, result: JSONValue?) -> [AgentTodo]? {
-        func status(_ value: JSONValue?) -> AgentTodo.Status {
-            switch value?.string {
-            case "completed": return .completed
-            case "in_progress": return .inProgress
-            default: return .pending
-            }
-        }
         func strings(_ value: JSONValue?) -> [String] {
             value?.array?.compactMap { $0.string?.nonBlank } ?? []
         }
@@ -412,18 +393,18 @@ struct ClaudeEventMapper {
             guard let list = result?["tasks"]?.array else { return nil }
             tasks = list.compactMap { task in
                 guard let id = task["id"]?.string?.nonBlank, let subject = task["subject"]?.string?.nonBlank else { return nil }
-                return (id, subject, status(task["status"]), strings(task["blockedBy"]))
+                return (id, subject, AgentTodo.Status(wire: task["status"]?.string), strings(task["blockedBy"]))
             }
         case "TaskCreate":
             guard let id = result?["task"]?["id"]?.string?.nonBlank,
                   let subject = result?["task"]?["subject"]?.string?.nonBlank ?? input["subject"]?.string?.nonBlank else { return nil }
             tasks.removeAll { $0.id == id }
-            tasks.append((id, subject, status(input["status"]), strings(input["blockedBy"])))
+            tasks.append((id, subject, AgentTodo.Status(wire: input["status"]?.string), strings(input["blockedBy"])))
         case "TaskUpdate":
             guard let id = input["taskId"]?.string?.nonBlank ?? result?["taskId"]?.string?.nonBlank,
                   let index = tasks.firstIndex(where: { $0.id == id }) else { return nil }
             if let subject = input["subject"]?.string?.nonBlank { tasks[index].subject = subject }
-            if input["status"]?.string != nil { tasks[index].status = status(input["status"]) }
+            if input["status"]?.string != nil { tasks[index].status = AgentTodo.Status(wire: input["status"]?.string) }
             tasks[index].blockedBy += strings(input["addBlockedBy"]).filter { !tasks[index].blockedBy.contains($0) }
             let removed = Set(strings(input["removeBlockedBy"]))
             tasks[index].blockedBy.removeAll { removed.contains($0) }
@@ -619,13 +600,7 @@ enum ClaudeTools {
         guard let list = input["todos"]?.array else { return nil }
         return list.compactMap { entry in
             guard let text = entry["content"]?.string else { return nil }
-            let status: AgentTodo.Status
-            switch entry["status"]?.string {
-            case "completed": status = .completed
-            case "in_progress": status = .inProgress
-            default: status = .pending
-            }
-            return AgentTodo(text: text, status: status)
+            return AgentTodo(text: text, status: .init(wire: entry["status"]?.string))
         }
     }
 

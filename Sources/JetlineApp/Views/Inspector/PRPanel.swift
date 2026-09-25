@@ -191,7 +191,7 @@ private struct MergeSection: View {
                         Button { showingAlternates.toggle() } label: {
                             Image(systemName: "chevron.down")
                                 .font(.system(size: 11, weight: .semibold))
-                                .frame(width: FooterButtonStyle.height)
+                                .frame(width: GlassCapsule.height)
                         }
                         // Untinted: the chevron only *picks* a strategy, and
                         // a second tinted button beside the first would read
@@ -774,8 +774,6 @@ private struct CheckRow: View {
 /// rather than tinting the glass, which would go gray in an inactive
 /// window.
 private struct FooterButtonStyle: ButtonStyle {
-    static let height: CGFloat = 28
-
     let fill: Color?
     @Environment(\.isEnabled) private var isEnabled
 
@@ -783,11 +781,7 @@ private struct FooterButtonStyle: ButtonStyle {
         configuration.label
             .font(.system(size: 13, weight: fill == nil ? .regular : .medium))
             .foregroundStyle(fill == nil ? Color.primary : .white)
-            .frame(height: Self.height)
-            .padding(.horizontal, fill == nil ? 0 : 12)
-            .background(Capsule().fill(fill ?? .clear))
-            .contentShape(Capsule())
-            .glassEffect(.regular.interactive(), in: Capsule())
+            .glassCapsule(fill: fill, horizontalPadding: fill == nil ? 0 : 12)
             .opacity(isEnabled ? 1 : 0.5)
     }
 }

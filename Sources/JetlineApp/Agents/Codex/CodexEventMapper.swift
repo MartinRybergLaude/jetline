@@ -71,13 +71,7 @@ struct CodexEventMapper {
         case "turn/plan/updated":
             let steps = (params["plan"]?.array ?? []).compactMap { step -> AgentTodo? in
                 guard let text = step["step"]?.string else { return nil }
-                let status: AgentTodo.Status
-                switch step["status"]?.string {
-                case "completed": status = .completed
-                case "inProgress", "in_progress": status = .inProgress
-                default: status = .pending
-                }
-                return AgentTodo(text: text, status: status)
+                return AgentTodo(text: text, status: .init(wire: step["status"]?.string))
             }
             return [.todos(steps)]
 
@@ -317,10 +311,7 @@ struct CodexEventMapper {
     }
 
     private func notice(_ level: AgentItem.Notice.Level, _ text: String, turnId: String?) -> AgentEvent {
-        .item(AgentItem(
-            id: "notice-\(UUID().uuidString)", turnId: turnId,
-            status: .completed, content: .notice(.init(level: level, text: text))
-        ))
+        .item(.notice(level, text, turnId: turnId))
     }
 
     /// A `RateLimitSnapshot`'s primary and secondary windows. A sparse

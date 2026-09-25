@@ -166,17 +166,6 @@ enum ChatMarkdown {
         return VStackNode(spaced: builder.items)
     }
 
-    static func headingSize(_ level: Int, base: CGFloat) -> CGFloat {
-        switch level {
-        case 1: return base + 6
-        case 2: return base + 4
-        case 3: return base + 2
-        case 4: return base + 1
-        case 5: return base
-        default: return base - 1
-        }
-    }
-
     private struct Context {
         var indent: CGFloat = 0
         var quoteBars: [CGFloat] = []
@@ -263,7 +252,7 @@ enum ChatMarkdown {
                     paragraph(inline(text, context), context, gap: gap)
 
                 case let .heading(level, text):
-                    let size = ChatMarkdown.headingSize(level, base: style.bodySize)
+                    let size = style.headingSize(level)
                     paragraph(inline(text, context, size: size, weight: .semibold), context, gap: gap + (level <= 2 ? 2 : 0))
 
                 case let .code(language, text):

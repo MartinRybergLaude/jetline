@@ -12,6 +12,7 @@ final class InspectorTabsAccessory: NSSplitViewItemAccessoryViewController {
     private static let inset: CGFloat = 10
     private var tabs: [InspectorTab] = []
     private var cancellables: Set<AnyCancellable> = []
+    private var trackingGeneration = 0
 
     init(state: AppState) {
         self.state = state
@@ -72,10 +73,17 @@ final class InspectorTabsAccessory: NSSplitViewItemAccessoryViewController {
     /// Rebuilds the segments. Tracks the inspected workspace's PR so the
     /// unresolved-comment count stays current.
     private func reload() {
+        // Every reload arms a fresh observation; only the latest one may
+        // trigger the next, or observers pile up with each state change.
+        trackingGeneration &+= 1
+        let generation = trackingGeneration
         let unresolved = withObservationTracking {
             unresolvedCommentCount
         } onChange: { [weak self] in
-            Task { @MainActor in self?.reload() }
+            Task { @MainActor in
+                guard let self, self.trackingGeneration == generation else { return }
+                self.reload()
+            }
         }
         let tabs = InspectorTab.available(in: state)
         if tabs != self.tabs || control.segmentCount != tabs.count {
@@ -118,10 +126,8 @@ final class InspectorTabsAccessory: NSSplitViewItemAccessoryViewController {
     }
 
     private static let prImage: NSImage? = {
-        guard let url = Bundle.jetlineResources.url(forResource: "PRStateNone", withExtension: "png"),
-              let image = NSImage(contentsOf: url) else { return nil }
-        image.isTemplate = true
-        image.size = NSSize(width: 14, height: 14)
+        let image = Bundle.jetlineResources.templateImage("PRStateNone")
+        image?.size = NSSize(width: 14, height: 14)
         return image
     }()
 }

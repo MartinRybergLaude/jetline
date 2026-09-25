@@ -78,7 +78,9 @@ final class TabWindow: NSWindow {
 
     override func sendEvent(_ event: NSEvent) {
         super.sendEvent(event)
-        if event.type == .leftMouseDown || event.type == .leftMouseUp {
+        // Only the tab bar, above the content area, can reorder tabs.
+        if event.type == .leftMouseDown || event.type == .leftMouseUp,
+           event.locationInWindow.y >= contentLayoutRect.maxY {
             onMouseInteractionEnded?()
         }
     }
@@ -311,7 +313,6 @@ final class MainWindowCoordinator: NSObject, NSWindowDelegate {
             AnyView(
                 view
                     .environmentObject(state)
-                    .environment(\.monoFontFamily, state.settings.monospaceFontFamily)
                     .environment(inspectorUI)
             )
         }
@@ -492,8 +493,8 @@ final class MainWindowCoordinator: NSObject, NSWindowDelegate {
         if makeKey, !window.isKeyWindow {
             window.makeKeyAndOrderFront(nil)
         }
-        if previous !== target, let source = previous?.window {
-            scheduleSplitLayoutCopy(from: source, to: window)
+        if let previous, previous !== target {
+            scheduleSplitLayoutCopy(from: previous, to: target)
         }
     }
 
@@ -519,12 +520,7 @@ final class MainWindowCoordinator: NSObject, NSWindowDelegate {
               let window = observedGroup?.selectedWindow,
               let slot = slot(for: window),
               !slot.isSelected else { return }
-        let previous = selectedSlot
-        if let previous { scheduleSplitLayoutCopy(from: previous.window, to: window) }
-        for s in slots {
-            s.isSelected = s === slot
-        }
-        slot.hasBeenShown = true
+        select(slot, from: selectedSlot, makeKey: false)
         if let tab = slot.tab, let wsId = slot.workspaceId {
             state.selectTab(tab, in: wsId)
         }
@@ -638,28 +634,19 @@ final class MainWindowCoordinator: NSObject, NSWindowDelegate {
 
     // MARK: - Split layout
 
-    /// Each tab window has its own `NavigationSplitView`, so a column the
+    /// Each tab window has its own `TabSplitController`, so a column the
     /// user resized in one tab would snap back when they switch to another.
     /// Carry the divider positions across as the selection moves. Deferred
     /// until the target is the visible tab: the selection change can arrive
     /// mid-layout (AppKit swaps tab windows inside its own display cycle),
     /// and moving a divider from there throws.
-    private func scheduleSplitLayoutCopy(from source: NSWindow, to target: NSWindow) {
-        DispatchQueue.main.async { [weak self, weak source, weak target] in
-            guard let self, let source, let target,
-                  target.tabGroup?.selectedWindow === target else { return }
-            self.copySplitLayout(from: source, to: target)
-        }
-    }
-
-    private func copySplitLayout(from source: NSWindow, to target: NSWindow) {
-        guard let from = source.contentView, let to = target.contentView else { return }
-        let sourceSplits = Self.splitViews(in: from)
-        let targetSplits = Self.splitViews(in: to)
-        guard sourceSplits.count == targetSplits.count else { return }
-        for (s, t) in zip(sourceSplits, targetSplits) {
+    private func scheduleSplitLayoutCopy(from source: TabSlot, to target: TabSlot) {
+        DispatchQueue.main.async { [weak source, weak target] in
+            guard let s = source?.split?.splitView, let target,
+                  let t = target.split?.splitView,
+                  let window = target.window, window.tabGroup?.selectedWindow === window else { return }
             let sv = s.arrangedSubviews, tv = t.arrangedSubviews
-            guard sv.count == tv.count, sv.count > 1 else { continue }
+            guard sv.count == tv.count, sv.count > 1 else { return }
             for i in 0..<(sv.count - 1) where !sv[i].isHidden && !tv[i].isHidden {
                 let position = s.isVertical ? sv[i].frame.maxX : sv[i].frame.maxY
                 let current = t.isVertical ? tv[i].frame.maxX : tv[i].frame.maxY
@@ -668,16 +655,6 @@ final class MainWindowCoordinator: NSObject, NSWindowDelegate {
                 }
             }
         }
-    }
-
-    private static func splitViews(in view: NSView) -> [NSSplitView] {
-        var result: [NSSplitView] = []
-        func walk(_ v: NSView) {
-            if let split = v as? NSSplitView { result.append(split) }
-            v.subviews.forEach(walk)
-        }
-        walk(view)
-        return result
     }
 }
 

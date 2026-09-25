@@ -158,8 +158,6 @@ struct AgentCapabilities: Sendable, Hashable {
     var steering: Bool
     /// The conversation can be truncated back to before a turn.
     var conversationRevert: Bool
-    var planMode: Bool
-    var imageInput: Bool
     /// The conversation can be continued from claude.ai or the Claude
     /// mobile app while it runs here.
     var remoteControl: Bool = false
@@ -297,6 +295,12 @@ struct AgentItem: Codable, Sendable, Identifiable, Equatable {
         }
     }
 
+    static func notice(
+        _ level: Notice.Level, _ text: String, turnId: String?, id: String = "notice-\(UUID().uuidString)"
+    ) -> AgentItem {
+        AgentItem(id: id, turnId: turnId, status: .completed, content: .notice(.init(level: level, text: text)))
+    }
+
     /// Placeholder content for a delta that arrives before its item.
     static func placeholder(id: String, turnId: String?, kind: AgentStreamKind) -> AgentItem? {
         let content: Content
@@ -321,7 +325,18 @@ enum AgentStreamKind: String, Codable, Sendable {
 /// One step of the agent's working checklist (Claude's TodoWrite, Codex's
 /// `turn/plan/updated`).
 struct AgentTodo: Codable, Sendable, Hashable {
-    enum Status: String, Codable, Sendable { case pending, inProgress, completed }
+    enum Status: String, Codable, Sendable {
+        case pending, inProgress, completed
+
+        /// Either CLI's wire value; anything unknown reads as pending.
+        init(wire: String?) {
+            switch wire {
+            case "completed": self = .completed
+            case "inProgress", "in_progress": self = .inProgress
+            default: self = .pending
+            }
+        }
+    }
     var text: String
     var status: Status
 }

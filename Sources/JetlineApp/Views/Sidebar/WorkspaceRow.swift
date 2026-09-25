@@ -195,14 +195,6 @@ struct PRStatusIcon: View {
             .noPR: "PRStateNone",
             .pending: "PRStateNone"
         ]
-        var map: [Kind: NSImage] = [:]
-        for (kind, name) in names {
-            if let url = Bundle.jetlineResources.url(forResource: name, withExtension: "png"),
-               let img = NSImage(contentsOf: url) {
-                img.isTemplate = true
-                map[kind] = img
-            }
-        }
-        return map
+        return names.compactMapValues { Bundle.jetlineResources.templateImage($0) }
     }()
 }

@@ -39,10 +39,10 @@ struct NewTabPage: View {
                             defaultMode: defaultMode(for: agent),
                             openChat: {
                                 guard let provider = AgentProviderKind(agent: agent) else { return }
-                                fill { _ = state.startNewChat(for: workspace, provider: provider) }
+                                state.startNewChat(for: workspace, provider: provider, replacing: .launcher(launcherId))
                             },
                             openTerminal: {
-                                fill { state.startNewTerminal(for: workspace, agent: agent) }
+                                state.startNewTerminal(for: workspace, agent: agent, replacing: .launcher(launcherId))
                             }
                         )
                     }
@@ -53,7 +53,7 @@ struct NewTabPage: View {
                         ForEach(Array(closedChats.enumerated()), id: \.element.id) { index, record in
                             if index > 0 { GroupSeparator(inset: 40) }
                             ReopenRow(record: record) {
-                                fill { state.reopenChat(record, in: workspace) }
+                                state.reopenChat(record, in: workspace, replacing: .launcher(launcherId))
                             }
                         }
                     }
@@ -77,9 +77,6 @@ struct NewTabPage: View {
         return state.settings.opensChat(for: agent) ? .chat : .terminal
     }
 
-    private func fill(_ open: () -> Void) {
-        state.fillLauncherTab(launcherId, in: workspace.id, with: open)
-    }
 
     private func group(_ title: String, @ViewBuilder rows: () -> some View) -> some View {
         VStack(alignment: .leading, spacing: 6) {

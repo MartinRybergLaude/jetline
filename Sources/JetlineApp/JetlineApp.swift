@@ -22,7 +22,6 @@ struct JetlineApp: App {
         Window("Activity Log", id: "activity-log") {
             ActivityLogView()
                 .environmentObject(state)
-                .environment(\.monoFontFamily, state.settings.monospaceFontFamily)
         }
         .defaultSize(width: 720, height: 500)
         .defaultLaunchBehavior(.suppressed)
@@ -158,7 +157,6 @@ struct JetlineApp: App {
         Settings {
             SettingsView()
                 .environmentObject(state)
-                .environment(\.monoFontFamily, state.settings.monospaceFontFamily)
                 .preferredColorScheme(colorScheme(for: state.settings.theme))
         }
     }

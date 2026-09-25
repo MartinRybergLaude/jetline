@@ -99,7 +99,7 @@ private struct ChangesPanelContent: View {
 
     /// Opens the file's full diff as a tab in the main area.
     private func fileRow(_ file: FileDiff) -> some View {
-        let isOpen = workspaceState.activeDiffTabId == file.id
+        let isOpen = workspaceState.activeTab == .diff(file.id)
         return Button {
             state.openDiffTab(path: file.path, mode: mode, in: workspace.id)
         } label: {

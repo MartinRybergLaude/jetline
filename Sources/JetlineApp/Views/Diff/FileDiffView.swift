@@ -202,20 +202,22 @@ struct FileStatusBadge: View {
             .foregroundStyle(.white)
             .padding(.horizontal, 4)
             .padding(.vertical, 1)
-            .background(color)
+            .background(Color(nsColor: status.badgeColor))
             .clipShape(RoundedRectangle(cornerRadius: 3))
             .help(status.label)
     }
+}
 
-    private var color: Color {
-        switch status {
-        case .added: return .green
-        case .deleted: return .red
-        case .modified: return .blue
-        case .renamed: return .orange
-        case .copied: return .purple
-        case .typeChange: return .gray
-        case .unknown: return .secondary
+extension FileDiff.Status {
+    var badgeColor: NSColor {
+        switch self {
+        case .added: return .systemGreen
+        case .deleted: return .systemRed
+        case .modified: return .systemBlue
+        case .renamed: return .systemOrange
+        case .copied: return .systemPurple
+        case .typeChange: return .systemGray
+        case .unknown: return .secondaryLabelColor
         }
     }
 }

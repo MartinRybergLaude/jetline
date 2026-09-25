@@ -14,7 +14,7 @@ final class ComposerPopup {
 
 struct ComposerSuggestionList: View {
     let popup: ComposerPopup
-    @Environment(\.monoFontFamily) private var monoFamily
+    private var monoFamily: String? { MonoFont.family }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {

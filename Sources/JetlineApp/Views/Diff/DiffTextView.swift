@@ -12,7 +12,8 @@ import SwiftUI
 /// editor does.
 struct DiffTextView: NSViewRepresentable {
     let lines: [FileDiffLine]
-    @Environment(\.monoFontFamily) private var monoFamily
+    /// Read by the parent's body, so a font change redraws the diff.
+    var monoFamily: String? = MonoFont.family
 
     final class Coordinator {
         var lines: [FileDiffLine]?

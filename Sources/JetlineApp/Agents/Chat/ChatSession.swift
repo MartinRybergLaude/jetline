@@ -574,7 +574,14 @@ final class ChatSession: Identifiable {
 
     private func handle(_ event: AgentEvent) {
         if case let .delta(itemId, turnId, kind, text) = event {
-            pendingDeltas.append((itemId, turnId, kind, text))
+            // Join a run of chunks for one field, so the flush grows the
+            // item's text once rather than copying it per chunk.
+            if let last = pendingDeltas.indices.last,
+               pendingDeltas[last].itemId == itemId, pendingDeltas[last].kind == kind {
+                pendingDeltas[last].text += text
+            } else {
+                pendingDeltas.append((itemId, turnId, kind, text))
+            }
             scheduleDeltaFlush()
             return
         }

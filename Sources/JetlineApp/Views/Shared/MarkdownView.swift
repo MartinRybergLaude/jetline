@@ -16,13 +16,23 @@ struct MarkdownStyle: Hashable {
     var tableBodySize: CGFloat?
     /// Extra leading between wrapped lines.
     var lineSpacing: CGFloat = 0
-    /// Roomy bordered tables with a shaded header, for reading room (the
-    /// chat), rather than the inspector's dense ones.
-    var spaciousTables = false
 
     static let comment = MarkdownStyle()
     /// Slightly tighter, for the quoted body of an inline review thread.
     static let compact = MarkdownStyle(bodySize: 11.5, codeSize: 10.5, blockSpacing: 6)
+
+    /// GitHub's own heading ramp, rebased on the body size. h5/h6 sit below
+    /// body size, which is what makes deep headings read as labels.
+    func headingSize(_ level: Int) -> CGFloat {
+        switch level {
+        case 1:  return bodySize + 6
+        case 2:  return bodySize + 4
+        case 3:  return bodySize + 2
+        case 4:  return bodySize + 1
+        case 5:  return bodySize
+        default: return bodySize - 1
+        }
+    }
 }
 
 /// Renders parsed markdown blocks as native SwiftUI views.
@@ -34,11 +44,10 @@ struct MarkdownStyle: Hashable {
 struct MarkdownView: View {
     let blocks: [MarkdownBlock]
     var style: MarkdownStyle = .comment
-    @Environment(\.monoFontFamily) private var monoFamily
 
     var body: some View {
         var style = style
-        style.monoFamily = monoFamily
+        style.monoFamily = MonoFont.family
         return VStack(alignment: .leading, spacing: style.blockSpacing) {
             ForEach(blocks.indices, id: \.self) { index in
                 MarkdownBlockView(block: blocks[index], style: style)
@@ -58,7 +67,7 @@ private struct MarkdownBlockView: View {
             inline(text)
 
         case let .heading(level, text):
-            inline(text, size: Self.headingSize(level, base: style.bodySize), weight: .semibold)
+            inline(text, size: style.headingSize(level), weight: .semibold)
                 .padding(.top, level <= 2 ? 2 : 0)
 
         case let .code(language, text):
@@ -100,18 +109,6 @@ private struct MarkdownBlockView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// GitHub's own heading ramp, rebased on the panel's body size. h5/h6 sit
-    /// below body size, which is what makes deep headings read as labels.
-    private static func headingSize(_ level: Int, base: CGFloat) -> CGFloat {
-        switch level {
-        case 1:  return base + 6
-        case 2:  return base + 4
-        case 3:  return base + 2
-        case 4:  return base + 1
-        case 5:  return base
-        default: return base - 1
-        }
-    }
 }
 
 // MARK: - Code
@@ -190,41 +187,11 @@ private struct MarkdownListView: View {
 
 // MARK: - Tables
 
-extension EnvironmentValues {
-    /// Full width of the view a table may grow into beyond its column,
-    /// centred on it. `nil` keeps tables within the column. The chat sets
-    /// this so tables can use the space beside its narrow reading column.
-    @Entry var markdownTableBreakoutWidth: CGFloat?
-}
-
 private struct MarkdownTableView: View {
     let table: MarkdownTable
     let style: MarkdownStyle
-    @Environment(\.markdownTableBreakoutWidth) private var breakoutWidth
-    @State private var contentWidth: CGFloat = 0
-    /// Breathing room between a broken-out table and the view's edges.
-    private static let breakoutMargin: CGFloat = 24
 
     var body: some View {
-        let margin = breakoutWidth == nil ? 0 : Self.breakoutMargin
-        TableBreakoutLayout(contentWidth: contentWidth, limit: breakoutWidth, margin: margin) {
-            // The margin lives inside the scroll view: at rest the table
-            // keeps clear of the view's edges, but scrolled it runs right
-            // up to them instead of being cut off short.
-            scroller.contentMargins(.horizontal, margin, for: .scrollContent)
-        }
-    }
-
-    @ViewBuilder
-    private var scroller: some View {
-        if style.spaciousTables {
-            spaciousScroller
-        } else {
-            compactScroller
-        }
-    }
-
-    private var compactScroller: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             Grid(alignment: .topLeading, horizontalSpacing: 12, verticalSpacing: 5) {
                 GridRow {
@@ -242,51 +209,10 @@ private struct MarkdownTableView: View {
                 }
             }
             .padding(8)
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.secondary.opacity(0.06))
         .clipShape(RoundedRectangle(cornerRadius: 5))
-    }
-
-    /// Rounded, bordered box: shaded header row, a hairline between rows,
-    /// generous cell padding.
-    private var spaciousScroller: some View {
-        let shape = RoundedRectangle(cornerRadius: 8)
-        return ScrollView(.horizontal, showsIndicators: false) {
-            Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
-                GridRow {
-                    ForEach(table.header.indices, id: \.self) { index in
-                        spaciousCell(table.header[index], column: index, weight: .semibold)
-                            .background(Color.secondary.opacity(0.08))
-                    }
-                }
-                ForEach(table.rows.indices, id: \.self) { row in
-                    // Outside a GridRow, so it spans every column.
-                    Divider()
-                    GridRow {
-                        ForEach(table.rows[row].indices, id: \.self) { index in
-                            spaciousCell(table.rows[row][index], column: index, weight: nil)
-                        }
-                    }
-                }
-            }
-            .clipShape(shape)
-            .overlay(shape.strokeBorder(Color.secondary.opacity(0.22), lineWidth: 1))
-            .padding(1)
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
-        }
-    }
-
-    private func spaciousCell(_ source: String, column: Int, weight: Font.Weight?) -> some View {
-        let align = table.alignments[column]
-        return Text(MarkdownInlineCache.attributed(source, style: style, size: tableSize, weight: weight))
-            .lineSpacing(style.lineSpacing)
-            .multilineTextAlignment(align.textAlignment)
-            .modifier(CappedWidth(maxWidth: 480))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: Alignment(horizontal: align.frameAlignment.horizontal, vertical: .top))
-            .gridColumnAlignment(align.frameAlignment.horizontal)
     }
 
     private var tableSize: CGFloat { style.tableBodySize ?? style.bodySize }
@@ -304,36 +230,6 @@ private struct MarkdownTableView: View {
         .multilineTextAlignment(align.textAlignment)
         .modifier(CappedWidth(maxWidth: 280))
         .gridColumnAlignment(align.frameAlignment.horizontal)
-    }
-}
-
-/// Takes the column's width, but lays the table out at its natural width
-/// up to `limit`, centred on the column and overhanging it on both sides.
-/// Wider than that, the table scrolls horizontally.
-private struct TableBreakoutLayout: Layout {
-    let contentWidth: CGFloat
-    let limit: CGFloat?
-    /// Horizontal content margin inside the scroll view, on each side.
-    let margin: CGFloat
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        guard let subview = subviews.first else { return .zero }
-        let width = proposal.width ?? contentWidth
-        let height = subview.sizeThatFits(ProposedViewSize(width: layoutWidth(column: width), height: nil)).height
-        return CGSize(width: width, height: height)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let width = layoutWidth(column: bounds.width)
-        subviews.first?.place(
-            at: CGPoint(x: bounds.midX - width / 2, y: bounds.minY),
-            proposal: ProposedViewSize(width: width, height: nil)
-        )
-    }
-
-    private func layoutWidth(column: CGFloat) -> CGFloat {
-        guard let limit, limit > column else { return column }
-        return min(max(contentWidth, column) + margin * 2, limit)
     }
 }
 

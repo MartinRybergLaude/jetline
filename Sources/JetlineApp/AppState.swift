@@ -28,7 +28,7 @@ final class AppState: ObservableObject {
     /// don't rebuild in the same pass as terminal/workspace navigation.
     @Published var inspectorWorkspaceId: String?
     @Published var settings: AppSettings = AppSettings() {
-        willSet { MonoFont.family = newValue.monospaceFontFamily }
+        willSet { FontSettings.shared.apply(newValue) }
     }
     /// Per-repo GitHub metadata (owner/name + allowed merge methods),
     /// resolved on the first PR poll and reused for the app's lifetime.
@@ -855,38 +855,39 @@ final class AppState: ObservableObject {
         }
     }
 
-    func startNewTerminal(for workspace: Workspace, agent: Workspace.AgentKind) {
+    /// `replacing` is a new-tab page the terminal takes the place of.
+    func startNewTerminal(for workspace: Workspace, agent: Workspace.AgentKind, replacing: TabRef? = nil) {
         noteWorkspaceActivity(workspace.id)
         let session = PTYSession(
             workspaceId: workspace.id,
             agent: agent,
             cwd: workspace.worktreePath
         )
-        addSession(session, to: workspace.id)
+        addSession(session, to: workspace.id, replacing: replacing)
     }
 
-    /// Appends `session` to the end of the strip, shows it, and starts it.
-    private func addSession(_ session: PTYSession, to workspaceId: String) {
+    /// Adds `session` to the strip (in `replacing`'s place, else at the
+    /// end), shows it, and starts it.
+    private func addSession(_ session: PTYSession, to workspaceId: String, replacing: TabRef? = nil) {
         let ws = workspaceState(for: workspaceId)
         ws.sessions.append(session)
-        ws.tabOrder.append(.session(session.id))
+        ws.insertTab(.session(session.id), replacing: replacing)
         selectSession(session.id, in: workspaceId)
         Task { await session.startIfNeeded() }
     }
 
     func selectSession(_ sessionId: String, in workspaceId: String) {
-        let ws = workspaceState(for: workspaceId)
-        ws.activeSessionId = sessionId
-        ws.activeDiffTabId = nil
-        ws.activeChatId = nil
-        ws.activeLauncherId = nil
+        workspaceState(for: workspaceId).activeTab = .session(sessionId)
     }
 
     // MARK: - Chats
 
-    /// Open a native chat tab. `prompt` is sent as the first message.
+    /// Open a native chat tab. `prompt` is sent as the first message;
+    /// `replacing` is a new-tab page the chat takes the place of.
     @discardableResult
-    func startNewChat(for workspace: Workspace, provider: AgentProviderKind, prompt: String? = nil) -> ChatSession {
+    func startNewChat(
+        for workspace: Workspace, provider: AgentProviderKind, prompt: String? = nil, replacing: TabRef? = nil
+    ) -> ChatSession {
         noteWorkspaceActivity(workspace.id)
         let chat = ChatSession(
             workspaceId: workspace.id,
@@ -897,30 +898,31 @@ final class AppState: ObservableObject {
             runtimeMode: settings.chatRuntimeMode,
             executableResolver: resolveAgentExecutable
         )
-        attach(chat, to: workspace.id)
+        attach(chat, to: workspace.id, replacing: replacing)
         selectChat(chat.id, in: workspace.id)
         chat.connectIfNeeded()
         if let prompt { chat.send(text: prompt) }
         return chat
     }
 
-    /// Bring a closed chat back as a tab.
-    func reopenChat(_ record: ChatThreadRecord, in workspace: Workspace) {
+    /// Bring a closed chat back as a tab, in `replacing`'s place if given.
+    func reopenChat(_ record: ChatThreadRecord, in workspace: Workspace, replacing: TabRef? = nil) {
         let ws = workspaceState(for: workspace.id)
         if ws.chats.contains(where: { $0.id == record.id }) {
+            if let replacing { _ = ws.removeTab(replacing) }
             selectChat(record.id, in: workspace.id)
             return
         }
         ChatStore.setClosed(record.id, closed: false)
         let chat = ChatSession(record: record, cwd: workspace.worktreePath, executableResolver: resolveAgentExecutable)
-        attach(chat, to: workspace.id)
+        attach(chat, to: workspace.id, replacing: replacing)
         selectChat(chat.id, in: workspace.id)
     }
 
-    private func attach(_ chat: ChatSession, to workspaceId: String) {
+    private func attach(_ chat: ChatSession, to workspaceId: String, replacing: TabRef? = nil) {
         let ws = workspaceState(for: workspaceId)
         ws.chats.append(chat)
-        ws.tabOrder.append(.chat(chat.id))
+        ws.insertTab(.chat(chat.id), replacing: replacing)
         chat.onTurnFinished = { [weak self] chat in
             guard let self, let workspace = self.workspaceById(chat.workspaceId) else { return }
             self.noteWorkspaceActivity(chat.workspaceId)
@@ -933,9 +935,7 @@ final class AppState: ObservableObject {
 
     func selectChat(_ chatId: String, in workspaceId: String) {
         let ws = workspaceState(for: workspaceId)
-        ws.activeChatId = chatId
-        ws.activeDiffTabId = nil
-        ws.activeLauncherId = nil
+        ws.activeTab = .chat(chatId)
         ws.activeChat?.connectIfNeeded()
     }
 
@@ -944,15 +944,12 @@ final class AppState: ObservableObject {
     func closeChat(_ chatId: String, in workspaceId: String) {
         let ws = workspaceState(for: workspaceId)
         guard let idx = ws.chats.firstIndex(where: { $0.id == chatId }) else { return }
-        let order = ws.tabOrder
-        let wasShowing = ws.activeTab == .chat(chatId)
         let chat = ws.chats.remove(at: idx)
-        ws.tabOrder.removeAll { $0 == .chat(chatId) }
+        let next = ws.removeTab(.chat(chatId))
         chat.close()
-        if ws.activeChatId == chatId { ws.activeChatId = nil }
         if !ws.hasAgentTabs {
             closeWorkspace(workspaceId)
-        } else if wasShowing, let next = Self.neighbour(of: .chat(chatId), in: order) {
+        } else if let next {
             selectTab(next, in: workspaceId)
         }
     }
@@ -1033,29 +1030,22 @@ final class AppState: ObservableObject {
             if ws.diffTabs[idx] != tab { ws.diffTabs[idx] = tab }
         } else {
             ws.diffTabs.append(tab)
-            ws.tabOrder.append(.diff(tab.id))
+            ws.insertTab(.diff(tab.id))
         }
-        ws.activeDiffTabId = tab.id
+        ws.activeTab = .diff(tab.id)
     }
 
     func selectDiffTab(_ tabId: String, in workspaceId: String) {
-        let ws = workspaceState(for: workspaceId)
-        ws.activeDiffTabId = tabId
-        ws.activeLauncherId = nil
+        workspaceState(for: workspaceId).activeTab = .diff(tabId)
     }
 
     /// Close a diff tab. An active one hands over to its strip neighbour.
     func closeDiffTab(_ tabId: String, in workspaceId: String) {
         let ws = workspaceState(for: workspaceId)
         guard let idx = ws.diffTabs.firstIndex(where: { $0.id == tabId }) else { return }
-        let order = ws.tabOrder
         ws.diffTabs.remove(at: idx)
-        ws.tabOrder.removeAll { $0 == .diff(tabId) }
-        if ws.activeDiffTabId == tabId {
-            ws.activeDiffTabId = nil
-            if let next = Self.neighbour(of: .diff(tabId), in: order) {
-                selectTab(next, in: workspaceId)
-            }
+        if let next = ws.removeTab(.diff(tabId)) {
+            selectTab(next, in: workspaceId)
         }
     }
 
@@ -1065,43 +1055,19 @@ final class AppState: ObservableObject {
     func openLauncherTab(in workspaceId: String) {
         let ws = workspaceState(for: workspaceId)
         let id = UUID().uuidString
-        ws.launcherTabs.append(id)
-        ws.tabOrder.append(.launcher(id))
+        ws.insertTab(.launcher(id))
         selectLauncherTab(id, in: workspaceId)
     }
 
     func selectLauncherTab(_ id: String, in workspaceId: String) {
-        workspaceState(for: workspaceId).activeLauncherId = id
+        workspaceState(for: workspaceId).activeTab = .launcher(id)
     }
 
     /// Close a new-tab page. An active one hands over to its strip neighbour.
     func closeLauncherTab(_ id: String, in workspaceId: String) {
-        let ws = workspaceState(for: workspaceId)
-        guard ws.launcherTabs.contains(id) else { return }
-        let order = ws.tabOrder
-        ws.launcherTabs.removeAll { $0 == id }
-        ws.tabOrder.removeAll { $0 == .launcher(id) }
-        if ws.activeLauncherId == id {
-            ws.activeLauncherId = nil
-            if let next = Self.neighbour(of: .launcher(id), in: order) {
-                selectTab(next, in: workspaceId)
-            }
+        if let next = workspaceState(for: workspaceId).removeTab(.launcher(id)) {
+            selectTab(next, in: workspaceId)
         }
-    }
-
-    /// Turn a new-tab page into the tab `open` creates, in the page's place
-    /// in the strip. `open` adds and shows exactly one tab.
-    func fillLauncherTab(_ id: String, in workspaceId: String, with open: () -> Void) {
-        let ws = workspaceState(for: workspaceId)
-        guard let index = ws.tabOrder.firstIndex(of: .launcher(id)) else { return }
-        ws.launcherTabs.removeAll { $0 == id }
-        ws.tabOrder.remove(at: index)
-        if ws.activeLauncherId == id { ws.activeLauncherId = nil }
-        let before = Set(ws.tabOrder)
-        open()
-        guard let added = ws.tabOrder.last, !before.contains(added) else { return }
-        ws.tabOrder.removeLast()
-        ws.tabOrder.insert(added, at: min(index, ws.tabOrder.count))
     }
 
     // MARK: - Tab strip
@@ -1122,14 +1088,6 @@ final class AppState: ObservableObject {
         case .chat(let id):    closeChat(id, in: workspaceId)
         case .launcher(let id): closeLauncherTab(id, in: workspaceId)
         }
-    }
-
-    /// The tab that takes over when `tab` closes: the one after it in
-    /// `order`, else the one before.
-    private static func neighbour(of tab: TabRef, in order: [TabRef]) -> TabRef? {
-        guard let idx = order.firstIndex(of: tab) else { return nil }
-        let rest = order.filter { $0 != tab }
-        return idx < rest.count ? rest[idx] : rest.last
     }
 
     // MARK: - Git actions
@@ -1451,12 +1409,6 @@ final class AppState: ObservableObject {
             .flatMap(MergeMethod.init(rawValue:))
     }
 
-    func activeSession(for workspaceId: String) -> PTYSession? {
-        let ws = workspaceState(for: workspaceId)
-        guard let id = ws.activeSessionId else { return nil }
-        return ws.sessions.first { $0.id == id }
-    }
-
     /// True iff at least one workspace currently has open tabs. Drives the
     /// quit-confirmation dialog so the user doesn't lose an in-flight agent
     /// run by reflex-quitting.
@@ -1470,10 +1422,8 @@ final class AppState: ObservableObject {
     func closeSession(_ sessionId: String, in workspaceId: String) {
         let ws = workspaceState(for: workspaceId)
         guard let idx = ws.sessions.firstIndex(where: { $0.id == sessionId }) else { return }
-        let order = ws.tabOrder
-        let wasShowing = ws.activeTab == .session(sessionId)
         let session = ws.sessions.remove(at: idx)
-        ws.tabOrder.removeAll { $0 == .session(sessionId) }
+        let next = ws.removeTab(.session(sessionId))
         session.terminate()
         // Detach from the incubator (or whichever container hosts it) so
         // dropping the PTYSession actually releases the AppTerminalView —
@@ -1481,14 +1431,9 @@ final class AppState: ObservableObject {
         // libghostty allocations outlive the close.
         session.emulator.nsView.removeFromSuperview()
 
-        if ws.activeSessionId == sessionId {
-            let neighbour = idx < ws.sessions.count ? ws.sessions[idx] : ws.sessions.last
-            ws.activeSessionId = neighbour?.id
-        }
-
         if !ws.hasAgentTabs {
             closeWorkspace(workspaceId)
-        } else if wasShowing, let next = Self.neighbour(of: .session(sessionId), in: order) {
+        } else if let next {
             selectTab(next, in: workspaceId)
         }
     }
@@ -1909,16 +1854,12 @@ final class AppState: ObservableObject {
             session.emulator.nsView.removeFromSuperview()
         }
         ws.sessions.removeAll()
-        ws.activeSessionId = nil
         // Chats stay open in the database and come back next activation;
         // only their processes stop.
         for chat in ws.chats { chat.disconnect() }
         ws.chats.removeAll()
-        ws.activeChatId = nil
         ws.diffTabs.removeAll()
-        ws.activeDiffTabId = nil
-        ws.launcherTabs.removeAll()
-        ws.activeLauncherId = nil
+        ws.activeTab = nil
         ws.tabOrder.removeAll()
 
         ws.setupController?.discard()
@@ -1974,8 +1915,11 @@ final class AppState: ObservableObject {
     func saveSettings(_ s: AppSettings) {
         do {
             try SettingsStore.save(s)
+            let old = settings
             settings = s
-            applyTerminalFont(s)
+            if old.monospaceFontFamily != s.monospaceFontFamily || old.terminalFontSize != s.terminalFontSize {
+                applyTerminalFont(s)
+            }
         } catch {
             Task { await presentError(error.localizedDescription) }
         }

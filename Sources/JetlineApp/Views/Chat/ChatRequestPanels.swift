@@ -115,18 +115,14 @@ private struct ApprovalPanel: View {
         guard case let .fileChange(change)? = item?.content else { return nil }
         let diffs = change.edits.compactMap { edit -> String? in
             guard let diff = edit.diff, !diff.isEmpty else { return nil }
-            return change.edits.count > 1 ? "\(relative(edit.path))\n\(diff)" : diff
+            return change.edits.count > 1 ? "\(edit.path.relative(to: cwd))\n\(diff)" : diff
         }
         return diffs.isEmpty ? nil : diffs.joined(separator: "\n")
     }
 
     private var displayDetail: String? {
         guard let detail = approval.detail?.nonBlank else { return nil }
-        return detail.split(separator: "\n").map { relative(String($0)) }.joined(separator: "\n")
-    }
-
-    private func relative(_ path: String) -> String {
-        path.hasPrefix(cwd + "/") ? String(path.dropFirst(cwd.count + 1)) : path
+        return detail.split(separator: "\n").map { String($0).relative(to: cwd) }.joined(separator: "\n")
     }
 
     private var sessionLabel: String {
