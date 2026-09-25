@@ -360,10 +360,18 @@ enum Schema {
 
         // Workspaces are deleted outright now, not archived. Archived rows
         // are forgotten (their chats with them); worktrees left on disk
-        // stay untouched.
+        // stay untouched. Foreign keys are off during migrations, so
+        // nothing cascades: delete the children explicitly.
         migrator.registerMigration("v26_drop_workspace_archive") { db in
+            let archivedThreads = """
+                SELECT id FROM chat_threads WHERE workspaceId IN
+                    (SELECT id FROM workspaces WHERE archivedAt IS NOT NULL)
+                """
+            try db.execute(sql: "DELETE FROM chat_items WHERE threadId IN (\(archivedThreads))")
+            try db.execute(sql: "DELETE FROM chat_turns WHERE threadId IN (\(archivedThreads))")
+            try db.execute(sql: "DELETE FROM chat_threads WHERE id IN (\(archivedThreads))")
             try db.execute(sql: """
-                DELETE FROM chat_threads WHERE workspaceId IN
+                DELETE FROM pr_snapshots WHERE workspaceId IN
                     (SELECT id FROM workspaces WHERE archivedAt IS NOT NULL)
                 """)
             try db.execute(sql: "DELETE FROM workspaces WHERE archivedAt IS NOT NULL")
