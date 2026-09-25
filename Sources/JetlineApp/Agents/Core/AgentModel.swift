@@ -266,6 +266,9 @@ struct AgentItem: Codable, Sendable, Identifiable, Equatable {
         var prompt: String?
         var agentType: String?
         var result: String?
+        /// Runs on after its tool call returns, and past the turn that
+        /// started it; the item stays in progress until it reports back.
+        var runsInBackground: Bool?
     }
 
     struct Notice: Codable, Sendable, Equatable {

@@ -226,6 +226,16 @@ struct ClaudeEventMapper {
         for block in content where block["type"]?.string == "tool_result" {
             guard let toolUseId = block["tool_use_id"]?.string,
                   var state = tools[toolUseId] else { continue }
+            // A background agent's call returns at once; its result comes
+            // later as a `task_notification`.
+            if toolUseResult?["status"]?.string == "async_launched",
+               case var .subagent(agent) = state.item.content {
+                agent.runsInBackground = true
+                state.item.content = .subagent(agent)
+                tools[toolUseId] = state
+                events.append(.item(state.item))
+                continue
+            }
             let isError = block["is_error"]?.bool ?? false
             let output = Self.resultText(block["content"])
             let status: AgentItem.Status
@@ -269,6 +279,21 @@ struct ClaudeEventMapper {
         case "status":
             guard let mode = message["permissionMode"]?.string else { return [] }
             return Self.modeEvents(for: mode)
+        case "task_notification":
+            // A background agent finished. It may outlive its turn, so its
+            // item keeps the turn it started in.
+            guard let toolUseId = message["tool_use_id"]?.string,
+                  var state = tools[toolUseId],
+                  case var .subagent(agent) = state.item.content else { return [] }
+            agent.result = message["summary"]?.string ?? agent.result
+            state.item.content = .subagent(agent)
+            switch message["status"]?.string {
+            case "completed": state.item.status = .completed
+            case "failed": state.item.status = .failed
+            default: state.item.status = .interrupted
+            }
+            tools[toolUseId] = state
+            return [.item(state.item)]
         case "compact_boundary":
             let id = message["uuid"]?.string ?? UUID().uuidString
             return [.item(AgentItem(id: id, turnId: turnId, status: .completed, content: .compaction))]
@@ -475,8 +500,11 @@ struct ClaudeEventMapper {
             events.append(.todos(todos))
         }
         let content = ClaudeTools.content(name: name, input: input)
+        // A subagent's calls belong to the turn that started it: a
+        // background one keeps working after that turn has ended.
         var item = tools[id]?.item ?? AgentItem(
-            id: id, turnId: turnId, parentId: parentId, status: .inProgress, content: content
+            id: id, turnId: parentId.flatMap { tools[$0]?.item.turnId } ?? turnId,
+            parentId: parentId, status: .inProgress, content: content
         )
         item.content = content
         tools[id] = ToolState(item: item, name: name, input: input)
@@ -540,7 +568,8 @@ enum ClaudeTools {
             return .subagent(.init(
                 description: input["description"]?.string ?? "Subagent",
                 prompt: input["prompt"]?.string,
-                agentType: input["subagent_type"]?.string
+                agentType: input["subagent_type"]?.string,
+                runsInBackground: input["run_in_background"]?.bool == true ? true : nil
             ))
         case "ExitPlanMode":
             return .plan(text: input["plan"]?.string ?? "")

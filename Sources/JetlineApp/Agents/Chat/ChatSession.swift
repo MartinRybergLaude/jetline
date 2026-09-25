@@ -644,6 +644,13 @@ final class ChatSession: Identifiable {
             if let turn = activeTurn {
                 finish(turn, outcome: exit.expected ? .interrupted : .failed(message: message))
             }
+            // Background agents died with the process.
+            for turn in turns {
+                for box in turn.items where box.item.status == .inProgress {
+                    box.item.status = .interrupted
+                    persistItem(box, in: turn)
+                }
+            }
         }
     }
 
@@ -696,8 +703,17 @@ final class ChatSession: Identifiable {
         }
         let box = ChatItemBox(id: item.id, item: item)
         boxesByItemId[item.id] = box
-        turn.items.append(box)
-        if item.status.isTerminal { persistItem(box, in: turn) }
+        // A subagent's calls go under it, after its earlier ones: parallel
+        // subagents interleave, and a background one reports after its
+        // turn has moved on.
+        let index = item.parentId
+            .flatMap { parent in turn.items.lastIndex { $0.item.id == parent || $0.item.parentId == parent } }
+            .map { $0 + 1 } ?? turn.items.count
+        turn.items.insert(box, at: index)
+        // Items after it moved down a place; their saved order with them.
+        for later in turn.items[index...] where later.item.status.isTerminal {
+            persistItem(later, in: turn)
+        }
     }
 
     private func targetTurn(for item: AgentItem) -> ChatTurn? {
@@ -731,7 +747,14 @@ final class ChatSession: Identifiable {
         // Close out anything the provider left open: text that stopped
         // streaming is complete; tools that never reported back didn't run
         // to the end.
-        for box in turn.items where box.item.status == .inProgress {
+        // Background agents, and their calls, carry on past the turn.
+        let background = Set(turn.items.compactMap { box -> String? in
+            guard box.item.status == .inProgress, case let .subagent(agent) = box.item.content,
+                  agent.runsInBackground == true else { return nil }
+            return box.item.id
+        })
+        for box in turn.items where box.item.status == .inProgress
+            && !background.contains(box.item.id) && !background.contains(box.item.parentId ?? "") {
             switch box.item.content {
             case .assistantMessage, .reasoning, .plan, .userMessage:
                 box.item.status = .completed

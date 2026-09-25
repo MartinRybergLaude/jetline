@@ -139,6 +139,28 @@ final class ClaudeEventMapperTests: XCTestCase {
         XCTAssertTrue(events.contains(.todos([AgentTodo(text: "Write tests", status: .inProgress)])))
     }
 
+    func testBackgroundAgentOutlivesItsTurn() throws {
+        let events = try replayClaude("claude-background-agent")
+        let items = finalItems(in: events)
+        let agent = try XCTUnwrap(items.first { if case .subagent = $0.content { return true }; return false })
+        guard case let .subagent(subagent) = agent.content else { return XCTFail() }
+        XCTAssertEqual(subagent.runsInBackground, true)
+        XCTAssertEqual(agent.status, .completed)
+        XCTAssertTrue(subagent.result?.contains("a.txt contents") == true)
+
+        // The agent's calls arrive after turn-1's result, but belong to it.
+        let children = items.filter { $0.parentId == agent.id }
+        XCTAssertEqual(children.count, 2)
+        XCTAssertTrue(children.allSatisfy { $0.turnId == "turn-1" && $0.status == .completed })
+
+        // Until it reports back, the agent stays in progress.
+        let snapshots = events.compactMap { event -> AgentItem? in
+            if case let .item(item) = event, item.id == agent.id { return item }
+            return nil
+        }
+        XCTAssertTrue(snapshots.dropLast().allSatisfy { $0.status == .inProgress })
+    }
+
     func testRuntimeModeRoundTrip() {
         for mode in AgentRuntimeMode.allCases {
             let claude = ClaudeProvider.claudeMode(for: mode, interaction: .normal)
