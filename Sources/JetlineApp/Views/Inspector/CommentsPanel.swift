@@ -10,7 +10,9 @@ struct PRConversationSection: View {
     @EnvironmentObject private var state: AppState
     let workspace: Workspace
     let workspaceState: WorkspaceState
-    @State private var hideResolved = false
+    @Environment(InspectorUIState.self) private var ui
+
+    private var hideResolved: Bool { ui.hideResolvedComments }
 
     var body: some View {
         switch workspaceState.conversation {
@@ -82,7 +84,7 @@ struct PRConversationSection: View {
                 }
             }
             if let conversation, conversation.resolvedCount > 0 {
-                Toggle(isOn: $hideResolved) {
+                Toggle(isOn: Bindable(ui).hideResolvedComments) {
                     Text("Hide resolved (\(conversation.resolvedCount))")
                 }
                 .toggleStyle(.checkbox)

@@ -4,7 +4,7 @@ import AppKit
 @main
 struct JetlineApp: App {
     @NSApplicationDelegateAdaptor(JetlineAppDelegate.self) private var appDelegate
-    @StateObject private var state = AppState()
+    @StateObject private var state = AppState.shared
     @StateObject private var updater = UpdaterViewModel()
 
     init() {
@@ -16,15 +16,16 @@ struct JetlineApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
-            AppShell()
+        // The main window isn't a scene: each of its tabs is a native window
+        // tab, which SwiftUI has no API for — `MainWindowCoordinator` builds
+        // it in AppKit. The app-wide menu commands hang off this scene.
+        Window("Activity Log", id: "activity-log") {
+            ActivityLogView()
                 .environmentObject(state)
                 .environment(\.monoFontFamily, state.settings.monospaceFontFamily)
-                .preferredColorScheme(colorScheme(for: state.settings.theme))
-                .task { appDelegate.state = state }
         }
-        .windowStyle(.titleBar)
-        .windowToolbarStyle(.unified(showsTitle: true))
+        .defaultSize(width: 720, height: 500)
+        .defaultLaunchBehavior(.suppressed)
         .commands {
             CommandGroup(after: .appInfo) {
                 CheckForUpdatesMenuItem(vm: updater)
@@ -123,15 +124,25 @@ struct JetlineApp: App {
                 }
                 .keyboardShortcut("i", modifiers: [.command, .option])
             }
+            // A `WindowGroup` brought these along; the AppKit-built main
+            // window doesn't. The sidebar toggle goes up the responder chain
+            // to the tab window's split controller.
+            CommandGroup(after: .sidebar) {
+                Button("Toggle Sidebar") {
+                    NSApp.sendAction(#selector(NSSplitViewController.toggleSidebar(_:)), to: nil, from: nil)
+                }
+                .keyboardShortcut("s", modifiers: [.command, .control])
+                Button("Show All Tabs") {
+                    NSApp.sendAction(#selector(NSWindow.toggleTabOverview(_:)), to: nil, from: nil)
+                }
+                .keyboardShortcut("\\", modifiers: [.command, .shift])
+                Button("Enter Full Screen") {
+                    NSApp.sendAction(#selector(NSWindow.toggleFullScreen(_:)), to: nil, from: nil)
+                }
+                .keyboardShortcut("f", modifiers: [.command, .control])
+            }
             DebugCommands()
         }
-
-        Window("Activity Log", id: "activity-log") {
-            ActivityLogView()
-                .environmentObject(state)
-                .environment(\.monoFontFamily, state.settings.monospaceFontFamily)
-        }
-        .defaultSize(width: 720, height: 500)
 
         Window("Welcome to Jetline", id: "onboarding") {
             OnboardingView()
@@ -141,6 +152,7 @@ struct JetlineApp: App {
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
         .defaultPosition(.center)
+        .defaultLaunchBehavior(.suppressed)
         .commandsRemoved()
 
         Settings {
@@ -185,15 +197,34 @@ private struct DebugCommands: Commands {
     }
 }
 
-/// Intercepts ⌘Q / Quit-menu so the user gets a chance to bail when there
-/// are live agent tabs. SwiftUI on macOS otherwise tears the windows down
-/// without warning, killing every running PTY mid-conversation.
+/// Builds the main window at launch, and intercepts ⌘Q / Quit-menu so the
+/// user gets a chance to bail when there are live agent tabs. SwiftUI on
+/// macOS otherwise tears the windows down without warning, killing every
+/// running PTY mid-conversation.
 @MainActor
 final class JetlineAppDelegate: NSObject, NSApplicationDelegate {
-    weak var state: AppState?
+    private var mainWindow: MainWindowCoordinator?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        let coordinator = MainWindowCoordinator(state: AppState.shared)
+        mainWindow = coordinator
+        coordinator.start()
+    }
+
+    /// Dock click with the main window closed.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { mainWindow?.showMainWindow() }
+        return false
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        mainWindow?.saveFrame()
+    }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let state, state.hasOpenTabs else { return .terminateNow }
+        mainWindow?.saveFrame()
+        let state = AppState.shared
+        guard state.hasOpenTabs else { return .terminateNow }
         let alert = NSAlert()
         alert.messageText = "Quit Jetline?"
         alert.informativeText = "You have active conversations. Quitting will end those sessions."

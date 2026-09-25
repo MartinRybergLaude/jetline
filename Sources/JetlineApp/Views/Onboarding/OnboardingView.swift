@@ -6,7 +6,7 @@ import AppKit
 /// step, two feature-list steps, and a celebratory close. Paging is a
 /// horizontal slide; the footer carries Back / page dots / Continue.
 ///
-/// Lives in its own `Window` scene; `AppShell` calls `openWindow(id:)` once
+/// Lives in its own `Window` scene; `MainWindowCoordinator` calls `openWindow(id:)` once
 /// after `state.load()` if `settings.hasCompletedOnboarding` is false, and
 /// the Debug menu exposes a re-run hook for testing.
 struct OnboardingView: View {

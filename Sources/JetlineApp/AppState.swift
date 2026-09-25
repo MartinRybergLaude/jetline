@@ -15,6 +15,11 @@ import AppKit
 final class AppState: ObservableObject {
     nonisolated private static let repositoryBaseWorkspacePrefix = "repo-base:"
 
+    /// The app's one state object. Shared rather than scene-owned because
+    /// the main window is built in AppKit (`MainWindowCoordinator`) at
+    /// launch, before any SwiftUI scene would have created it.
+    static let shared = AppState()
+
     @Published var repositories: [Repository] = []
     @Published var workspacesByRepo: [String: [Workspace]] = [:]
     /// Immediate selection used by the sidebar, terminal, toolbar, and commands.
@@ -36,7 +41,7 @@ final class AppState: ObservableObject {
     @Published var inspectorTab: InspectorTab = .changes
     /// Repo whose settings sheet should be presented at the shell level.
     /// Set by the File → Add Repository menu command (which has no view
-    /// of its own) so AppShell can host the sheet; sidebar / welcome do
+    /// of its own) so the main window can host the sheet; sidebar / welcome do
     /// the same locally without going through this.
     @Published var repoPendingSettings: Repository?
     /// Repo whose workspace-creation sheet should be presented at shell
@@ -116,9 +121,8 @@ final class AppState: ObservableObject {
 
     // MARK: - Load
 
-    /// Idempotent. Driven by `AppShell`'s `.task` so SwiftUI owns the
-    /// lifecycle (instead of an init-time `Task { ... }` that escapes the
-    /// SwiftUI graph and runs even when nothing observes the state).
+    /// Idempotent. Driven by `MainWindowCoordinator.start()` once the main
+    /// window is up.
     func load() async {
         guard !hasLoaded else { return }
         hasLoaded = true
@@ -1438,15 +1442,13 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Move one tab to a target final index. Used by the tab strip's drag
-    /// reorder; the callsite computes the destination once on drag-end so we
-    /// don't thrash observers mid-drag.
-    func moveTab(_ tab: TabRef, toIndex newIndex: Int, in workspaceId: String) {
+    /// Adopt a whole new strip order — what the native tab bar reports after
+    /// a drag-reorder. Ignored unless it's a permutation of the current one.
+    func setTabOrder(_ order: [TabRef], in workspaceId: String) {
         let ws = workspaceState(for: workspaceId)
-        var order = ws.tabOrder
-        guard let from = order.firstIndex(of: tab),
-              newIndex >= 0, newIndex < order.count, from != newIndex else { return }
-        order.insert(order.remove(at: from), at: newIndex)
+        guard order != ws.tabOrder,
+              order.count == ws.tabOrder.count,
+              Set(order) == Set(ws.tabOrder) else { return }
         ws.tabOrder = order
     }
 

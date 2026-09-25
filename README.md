@@ -12,7 +12,7 @@ action bar that fast-paths the common things and hands the rest to an agent.
 - SQLite persistence (workspaces, settings, PR snapshots) ✅
 - Sidebar with repos & workspaces, drag-reorder of repo sections and workspace rows (hold to lift, drag, release; within one repo), per-repo settings ✅
 - Embedded terminal hosting `claude` / `codex` / `vibe` / shell ✅ (libghostty-backed)
-- Multiple session tabs per workspace, ⌘N new workspace, ⌘1…⌘9 tabs, ⌘⇧←/→ (or ⌘⇧H/L) terminals, ⌘⇧↑/↓ (or ⌘⇧J/K) workspaces, drag-reorder ✅ — the ⌘⇧ shortcuts yield to standard text selection while repo or app settings are being edited
+- Multiple session tabs per workspace, ⌘N new workspace, ⌘1…⌘9 tabs, ⌘⇧←/→ (or ⌘⇧H/L) terminals, ⌘⇧↑/↓ (or ⌘⇧J/K) workspaces, native macOS window tabs (drag-reorder, tab overview) ✅ — the ⌘⇧ shortcuts yield to standard text selection while repo or app settings are being edited
 - Close a workspace from its sidebar row (✕ on hover) or by closing its last tab — ends its sessions and drops it from ⌘⇧↑/↓ cycling ✅
 - Inspector: changes (combined / PR / local) opening full-file diff tabs, PR + checks + conversation, run output ✅
 - FSEvents watcher → live diff refresh + PR poll kick ✅
@@ -92,10 +92,12 @@ Sources/JetlineApp/
 │   ├── RepoIconLoader.swift      ─ async repo icon BFS
 │   └── Subprocess.swift
 └── Views/
-    ├── Shell/AppShell.swift      ─ NavigationSplitView layout, hotkeys
+    ├── Shell/AppShell.swift      ─ per-tab-window AppKit split: sidebar | tab | inspector
+    ├── Shell/TabWindows.swift    ─ native window tabs (one NSWindow per tab), menu-first hotkeys
+    ├── Shell/TabToolbar.swift    ─ AppKit toolbar per tab window: title, new tab, git, open in, run
     ├── Sidebar/                  ─ repos, workspaces, new/import sheets, repo settings
-    ├── Terminal/TerminalArea     ─ session tabs + git action menu
-    ├── Inspector/                ─ Changes / PR / Run tabs
+    ├── Terminal/TerminalArea     ─ one tab's content (terminal, chat or diff)
+    ├── Inspector/                ─ Changes / PR / Run tabs (segmented accessory, Xcode-style)
     ├── Settings/                 ─ TabView'd preferences (incl. action prompts)
     ├── Shared/                   ─ CapsuleTabs etc.
     └── Welcome/                  ─ empty state

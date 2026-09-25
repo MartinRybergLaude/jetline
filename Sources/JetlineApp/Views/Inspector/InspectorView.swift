@@ -2,41 +2,13 @@ import SwiftUI
 
 /// Top-level so `AppState` can drive selection from outside the view (e.g.
 /// switch to `.run` when a fresh workspace's setup script kicks off).
-enum InspectorTab: Hashable { case changes, pr, run }
-
-struct InspectorView: View {
-    @EnvironmentObject private var state: AppState
-    @State private var diffMode: DiffMode = .combined
-
-    var body: some View {
-        HStack(spacing: 0) {
-            leadingSeparator
-            VStack(spacing: 0) {
-                Hairline()
-                CapsuleTabs(
-                    selection: $state.inspectorTab,
-                    tabs: tabs,
-                    help: { Self.tooltip(for: $0) }
-                ) { tab, _ in
-                    icon(for: tab)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 5)
-                .overlay(alignment: .bottom) { Divider() }
-
-                content
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        }
-        .background(Color(nsColor: .windowBackgroundColor))
-        .onChange(of: tabs, initial: true) { _, tabs in
-            if !tabs.contains(state.inspectorTab) { state.inspectorTab = .changes }
-        }
-    }
+enum InspectorTab: Hashable {
+    case changes, pr, run
 
     /// A repository's base checkout has no branch of its own to open a PR
     /// from, so the PR tab would only ever spin.
-    private var tabs: [InspectorTab] {
+    @MainActor
+    static func available(in state: AppState) -> [InspectorTab] {
         if let id = state.inspectorWorkspaceId,
            let ws = state.workspaceById(id),
            state.isRepositoryBaseWorkspace(ws) {
@@ -44,20 +16,33 @@ struct InspectorView: View {
         }
         return [.changes, .pr, .run]
     }
+}
 
-    /// macOS 27 leaves this edge unmarked: the `NSSplitDividerView` the
-    /// inspector split still creates no longer reaches the screen, and the
-    /// tone difference that used to back it up is gone as well —
-    /// `windowBackgroundColor` and `textBackgroundColor` now resolve to the
-    /// same value (pure white in Aqua, #1E1E1E in Dark), so the inspector and
-    /// the terminal bleed into each other. Draw the hairline ourselves, one
-    /// physical pixel of `separatorColor` — the same ink AppKit used.
-    ///
-    /// It's a laid-out sibling rather than an `.overlay` on the column root —
-    /// the root goes into SwiftUI's own inspector container, so keep the line
-    /// somewhere the column definitely owns.
-    private var leadingSeparator: some View {
-        Hairline(orientation: .vertical)
+/// Inspector view state that outlives any one inspector. Every native tab
+/// window has its own inspector column, so what the user sets in one has to
+/// be there when they switch tabs.
+@MainActor
+@Observable
+final class InspectorUIState {
+    var diffMode: DiffMode = .combined
+    /// Folders collapsed in the changes tree, per workspace.
+    var collapsedFolders: [String: Set<String>] = [:]
+    var hideResolvedComments = false
+}
+
+struct InspectorView: View {
+    @EnvironmentObject private var state: AppState
+    @Environment(InspectorUIState.self) private var ui
+
+    /// The tab switcher lives in the column's top accessory
+    /// (`InspectorTabsAccessory`), and the background is the inspector
+    /// column's own — as in Xcode.
+    var body: some View {
+        content
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .onChange(of: InspectorTab.available(in: state), initial: true) { _, tabs in
+                if !tabs.contains(state.inspectorTab) { state.inspectorTab = .changes }
+            }
     }
 
     /// Only the changes panel is scrolled from here — the others own their
@@ -68,12 +53,12 @@ struct InspectorView: View {
         switch state.inspectorTab {
         case .changes:
             VStack(spacing: 0) {
-                DiffModeToggle(mode: $diffMode)
+                DiffModeToggle(mode: Bindable(ui).diffMode)
                     .padding(.horizontal, 12)
                     .padding(.top, 8)
                     .padding(.bottom, 4)
                 ScrollView {
-                    ChangesPanel(mode: diffMode)
+                    ChangesPanel(mode: ui.diffMode)
                         .padding(.vertical, 8)
                 }
                 .scrollIndicators(.visible)
@@ -86,58 +71,6 @@ struct InspectorView: View {
             RunOutputPanel()
         }
     }
-
-    private static func tooltip(for tab: InspectorTab) -> String? {
-        switch tab {
-        case .changes: return "Changes"
-        case .pr: return "Pull request"
-        case .run: return "Run output"
-        }
-    }
-
-    @ViewBuilder
-    private func icon(for tab: InspectorTab) -> some View {
-        switch tab {
-        case .changes:
-            Image(systemName: "plusminus")
-        case .pr:
-            // The count rides alongside the icon rather than as a corner
-            // badge: `CapsuleTabs` segments are equal-width capsules, and an
-            // overlaid badge clips against the selected segment's fill.
-            HStack(spacing: 2) {
-                if let nsImage = Self.assetCache["PRStateNone"] {
-                    Image(nsImage: nsImage).resizable().scaledToFit().frame(width: 13, height: 13)
-                }
-                if unresolvedCommentCount > 0 {
-                    Text("\(unresolvedCommentCount)")
-                        .font(.system(size: 10, weight: .semibold, design: .rounded))
-                }
-            }
-        case .run:
-            Image(systemName: "apple.terminal.fill")
-        }
-    }
-
-    /// Unresolved review threads on the inspected workspace's PR. Already
-    /// carried by every `PRTracker` poll, so surfacing it costs nothing.
-    private var unresolvedCommentCount: Int {
-        guard let id = state.inspectorWorkspaceId,
-              case let .loaded(pr, _) = state.workspaceState(for: id).pr else { return 0 }
-        return pr.unresolvedThreadCount
-    }
-
-    private static let assetCache: [String: NSImage] = {
-        let names = ["PRStateNone"]
-        var map: [String: NSImage] = [:]
-        for name in names {
-            if let url = Bundle.jetlineResources.url(forResource: name, withExtension: "png"),
-               let img = NSImage(contentsOf: url) {
-                img.isTemplate = true
-                map[name] = img
-            }
-        }
-        return map
-    }()
 }
 
 private struct DiffModeToggle: View {

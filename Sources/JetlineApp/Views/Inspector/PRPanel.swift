@@ -218,11 +218,12 @@ private struct MergeSection: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
         }
-        // Opaque, so the checks list passes behind the bar rather than
+        // Near-opaque, so the checks list passes behind the bar rather than
         // showing through it — the buttons carry glass, but a floating glass
         // *bar* over scrolling text is where Liquid Glass stops being
-        // legible.
-        .background(Color(nsColor: .windowBackgroundColor))
+        // legible. A material rather than a colour so it takes on the
+        // inspector column's own background.
+        .background(.thickMaterial)
         .mergeConfirmation(
             workspace: workspace,
             method: pendingMethod,

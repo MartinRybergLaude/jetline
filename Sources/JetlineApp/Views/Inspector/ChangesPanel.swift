@@ -23,8 +23,13 @@ private struct ChangesPanelContent: View {
     let workspace: Workspace
     let workspaceState: WorkspaceState
     let mode: DiffMode
+    @Environment(InspectorUIState.self) private var ui
+
     /// Full paths of folders the user has collapsed in the file tree.
-    @State private var collapsedFolders: Set<String> = []
+    private var collapsedFolders: Set<String> {
+        get { ui.collapsedFolders[workspace.id] ?? [] }
+        nonmutating set { ui.collapsedFolders[workspace.id] = newValue }
+    }
 
     /// Horizontal inset per tree level.
     static let indentWidth: CGFloat = 12

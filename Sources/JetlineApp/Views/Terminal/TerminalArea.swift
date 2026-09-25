@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-import UniformTypeIdentifiers
 
 struct TerminalArea: View {
     @EnvironmentObject private var state: AppState
@@ -13,21 +12,13 @@ struct TerminalArea: View {
     /// only read `sessions`.
     let workspaceState: WorkspaceState
 
-    /// Live drag-reorder preview state. While set, the named tab is offset to
-    /// follow the cursor and neighbours slide aside; the underlying array is
-    /// not mutated until the drag ends, so the observable `tabOrder` array
-    /// only kicks once instead of on every tab-boundary crossing.
-    @State private var dragState: TabDragState?
-    /// Slot the dragged tab will land in given the current cursor position.
-    /// Lives separately from `dragState.translation` so threshold crossings
-    /// can animate via `withAnimation` without lagging the dragged tab —
-    /// translation must update 1:1 with the cursor, slot changes shouldn't.
-    @State private var visibleTargetIndex: Int?
-    @State private var tabFrames: [String: CGRect] = [:]
+    /// The window tab this view fills. Its `tab` picks the content; the
+    /// native tab bar above belongs to AppKit.
+    let slot: TabSlot
 
-    /// The session whose terminal is currently mounted. Trails
-    /// `workspaceState.activeSessionId` during rapid keyboard navigation
-    /// (⌘⇧↑/↓ workspace cycling, ⌘⇧←/→ tab cycling): every mount/unmount
+    /// The session whose terminal is currently mounted. Trails the slot's
+    /// tab during rapid keyboard navigation (⌘⇧↑/↓ workspace cycling
+    /// reassigns the visible window's tab on every hop): every mount/unmount
     /// costs two ghostty surface reflows plus a SIGWINCH-driven TUI redraw,
     /// so remounting on each hop makes held-key navigation crawl. A single
     /// switch applies immediately; only switches arriving within
@@ -40,287 +31,88 @@ struct TerminalArea: View {
     private static let rapidSwitchWindow: Duration = .milliseconds(350)
     private static let settleDelay: Duration = .milliseconds(120)
 
-    private struct TabDragState: Equatable {
-        let tabId: String
-        var translation: CGFloat
-        /// Tab frames captured at drag-start. Stable: `geo.frame(in:)` inside
-        /// `.background` sits under the per-tab `.offset` modifier, so live
-        /// `tabFrames` would include each tab's preview displacement —
-        /// double-counting `translation` and producing oscillating thresholds.
-        let startFrames: [String: CGRect]
-    }
-
     var body: some View {
-        VStack(spacing: 0) {
-            sessionTabStrip
-            if let tab = activeDiffTab {
-                FileDiffView(workspace: workspace, workspaceState: workspaceState, tab: tab)
-                    .id(tab.id)
-            } else if let chat = workspaceState.activeChat {
-                ChatView(session: chat)
-                    .id(chat.id)
-            } else {
-                terminalSurface
-            }
-        }
-        .background(Color(nsColor: .textBackgroundColor))
-        .onChange(of: workspaceState.activeSessionId, initial: true) {
+        tabContent
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(nsColor: .textBackgroundColor))
+        .onChange(of: slotSession?.id, initial: true) {
             syncDisplayedSession()
         }
-        .navigationTitle(workspace.name)
-        // Suppress the stock title rendering — our principal item below
-        // takes its place. `navigationTitle` above still drives the window
-        // menu proxy, Dock tooltip and accessibility label.
-        .toolbar(removing: .title)
-        .toolbar {
-            // `.navigation` puts content at the leading edge of the detail
-            // titlebar (right after the split separator), unlike `.principal`
-            // which centres between two flex spaces. The explicit
-            // `ToolbarSpacer` in between keeps the trailing actions anchored
-            // to the right edge — without it they collapse next to the
-            // title.
-            ToolbarItem(placement: .navigation) {
-                // Toolbar items mount in their own NSHostingView. SwiftUI
-                // pushes `\.colorScheme` in at mount time but doesn't tear
-                // the host down when the system appearance flips, so the
-                // title would otherwise stay stuck on whatever scheme was
-                // active at first render. Re-keying on `colorScheme`
-                // forces a remount on each flip so the new env takes hold.
-                WorkspaceTitleBar(
-                    name: workspace.name,
-                    branch: workspace.branchName,
-                    stats: workspaceState.diff
-                )
-                .environment(\.colorScheme, colorScheme)
-                .id(colorScheme)
-            }
-            // macOS 26+ gives every toolbar item a glass capsule. The title
-            // block is text, not a control — opt it out so it reads as part
-            // of the titlebar rather than a button.
-            .sharedBackgroundVisibility(.hidden)
-            ToolbarSpacer(.flexible)
-            ToolbarItemGroup(placement: .primaryAction) {
-                runToolbarItems
-            }
+        .onChange(of: slot.hasBeenShown) {
+            syncDisplayedSession()
         }
+        .onChange(of: tabTitle, initial: true) { _, title in
+            // An empty slot is named by the coordinator.
+            guard slot.tab != nil else { return }
+            slot.window?.tab.attributedTitle = TabTitle.attributed(icon: title.icon, title: title.text)
+        }
+        .mergeConfirmation(workspace: workspace, isPresented: Bindable(slot).pendingMerge)
     }
 
+    /// Placeholder until the slot is first selected — background tabs don't
+    /// mount terminals or chats nobody has looked at yet.
     @ViewBuilder
-    private var runToolbarItems: some View {
-        GitActionMenu(workspace: workspace)
-        OpenInAppButton(workspace: workspace)
-        RunToolbarSlot(workspace: workspace, workspaceState: workspaceState)
-        Button {
-            state.inspectorVisible.toggle()
-        } label: {
-            Image(systemName: "sidebar.right")
-        }
-        .help("Toggle inspector")
-    }
-
-    private var activeDiffTab: DiffTab? {
-        workspaceState.activeDiffTabId.flatMap { id in
-            workspaceState.diffTabs.first { $0.id == id }
-        }
-    }
-
-    /// Sessions and diff tabs share one strip, one order and one drag
-    /// reorder; only the tab's content differs.
-    @ViewBuilder
-    private var sessionTabStrip: some View {
-        let tabs = workspaceState.tabOrder
-        let activeId = workspaceState.activeTab?.id
-        let tabIds = tabs.map(\.id)
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal) {
-                HStack(spacing: 0) {
-                    ForEach(Array(tabs.enumerated()), id: \.element.id) { idx, tab in
-                        stripTab(tab, isActive: tab.id == activeId)
-                            .background(
-                                GeometryReader { geo in
-                                    Color.clear.preference(
-                                        key: TabFramesKey.self,
-                                        value: [tab.id: geo.frame(in: .named("tabstrip"))]
-                                    )
-                                }
-                            )
-                            .offset(x: dragOffset(for: tab.id, index: idx, in: tabs))
-                            .zIndex(dragState?.tabId == tab.id ? 1 : 0)
-                            .gesture(reorderGesture(for: tab, in: tabs))
-                            .id(tab.id)
-                    }
-                    NewSessionMenu(
-                        defaultAgent: state.settings.defaultAgent,
-                        visibleAgents: Workspace.AgentKind.allCases.filter(state.settings.isAgentVisible),
-                        prefersChat: state.settings.agentInterface == .chat,
-                        closedChats: ChatStore.closedThreads(workspaceId: workspace.id, limit: 8),
-                        // Resolve the workspace at click time rather than capturing it.
-                        // SwiftUI keeps NewSessionMenu's view identity stable across
-                        // workspace switches, so the NSMenuItem actions inside the
-                        // dropdown end up bound to the closure from first build —
-                        // a captured `workspace` would route new tabs to whichever
-                        // workspace was active when the menu was first realized.
-                        // `primaryAction:` (the plus button) refreshes correctly,
-                        // which is why only the dropdown shows the bug.
-                        onStart: { agent in
-                            guard let id = state.selectedWorkspaceId,
-                                  let ws = state.workspaceById(id) else { return }
-                            state.startNewSession(for: ws, agent: agent)
-                        },
-                        onStartInterface: { agent, chat in
-                            guard let id = state.selectedWorkspaceId,
-                                  let ws = state.workspaceById(id) else { return }
-                            if chat, let provider = AgentProviderKind(agent: agent) {
-                                state.startNewChat(for: ws, provider: provider)
-                            } else {
-                                state.startNewTerminal(for: ws, agent: agent)
-                            }
-                        },
-                        onReopen: { record in
-                            guard let id = state.selectedWorkspaceId,
-                                  let ws = state.workspaceById(id) else { return }
-                            state.reopenChat(record, in: ws)
-                        }
-                    )
-                    .id("new-session-menu")
-                    Spacer(minLength: 0)
+    private var tabContent: some View {
+        if !slot.hasBeenShown {
+            Color(nsColor: .textBackgroundColor)
+        } else {
+            switch slot.tab {
+            case .diff(let id):
+                if let tab = workspaceState.diffTabs.first(where: { $0.id == id }) {
+                    FileDiffView(workspace: workspace, workspaceState: workspaceState, tab: tab)
+                        .id(tab.id)
                 }
-                .coordinateSpace(name: "tabstrip")
-                .onPreferenceChange(TabFramesKey.self) { tabFrames = $0 }
-            }
-            .background(Color(nsColor: .windowBackgroundColor))
-            .onChange(of: activeId) { _, newId in
-                guard let newId else { return }
-                proxy.scrollTo(newId, anchor: .center)
-            }
-            .onChange(of: tabIds) { oldIds, newIds in
-                guard newIds.count > oldIds.count,
-                      let added = newIds.first(where: { !oldIds.contains($0) }) else { return }
-                proxy.scrollTo(added, anchor: .trailing)
+            case .chat(let id):
+                if let chat = workspaceState.chats.first(where: { $0.id == id }) {
+                    ChatView(session: chat)
+                        .id(chat.id)
+                }
+            case .session:
+                terminalSurface
+            case nil:
+                ProgressView()
             }
         }
-        // `.never` rather than `.hidden`: the latter still yields to the
-        // system's "Always show scroll bars" setting.
-        .scrollIndicators(.never, axes: .horizontal)
-        .overlay(alignment: .bottom) { Divider() }
     }
 
-    @ViewBuilder
-    private func stripTab(_ tab: TabRef, isActive: Bool) -> some View {
-        switch tab {
-        case .session(let id):
-            if let session = workspaceState.sessions.first(where: { $0.id == id }) {
-                BorderedTab(
-                    session: session,
-                    isActive: isActive,
-                    onSelect: { state.selectTab(tab, in: workspace.id) },
-                    onClose: { state.closeTab(tab, in: workspace.id) }
-                )
-            }
-        case .diff(let id):
-            if let diffTab = workspaceState.diffTabs.first(where: { $0.id == id }) {
-                DiffTabButton(
-                    tab: diffTab,
-                    isActive: isActive,
-                    onSelect: { state.selectTab(tab, in: workspace.id) },
-                    onClose: { state.closeTab(tab, in: workspace.id) }
-                )
-            }
+    private var slotSession: PTYSession? {
+        guard case .session(let id) = slot.tab else { return nil }
+        return workspaceState.sessions.first { $0.id == id }
+    }
+
+    private struct NativeTabTitle: Equatable {
+        let text: String
+        let icon: NSImage?
+    }
+
+    /// What the native tab shows for this slot.
+    private var tabTitle: NativeTabTitle {
+        switch slot.tab {
+        case .session:
+            let agent = slotSession?.agent ?? .shell
+            return NativeTabTitle(text: agent.displayName, icon: AgentMark.image(for: agent))
         case .chat(let id):
-            if let chat = workspaceState.chats.first(where: { $0.id == id }) {
-                ChatTabButton(
-                    chat: chat,
-                    isActive: isActive,
-                    onSelect: { state.selectTab(tab, in: workspace.id) },
-                    onClose: { state.closeTab(tab, in: workspace.id) }
-                )
-            }
+            let chat = workspaceState.chats.first { $0.id == id }
+            return NativeTabTitle(
+                text: chat?.title ?? "Chat",
+                icon: chat.flatMap { AgentMark.image(for: $0.provider.agentKind) }
+            )
+        case .diff(let id):
+            return NativeTabTitle(
+                text: (id as NSString).lastPathComponent,
+                icon: TabTitle.fileIcon(for: id)
+            )
+        case nil:
+            return NativeTabTitle(text: workspace.name, icon: nil)
         }
-    }
-
-    /// Custom drag handler — sidesteps SwiftUI's `.onDrag`/`.onDrop`, which
-    /// engage the macOS OS drag service (NSItemProvider serialization, drop
-    /// pasteboard read) and stall ~2s on drop. Pure SwiftUI gesture means
-    /// no system drag session at all.
-    private func reorderGesture(for tab: TabRef, in tabs: [TabRef]) -> some Gesture {
-        DragGesture(minimumDistance: 4)
-            .onChanged { value in
-                if dragState == nil {
-                    dragState = TabDragState(
-                        tabId: tab.id,
-                        translation: 0,
-                        startFrames: tabFrames
-                    )
-                    visibleTargetIndex = tabs.firstIndex(of: tab)
-                }
-                guard let ds = dragState, ds.tabId == tab.id else { return }
-                dragState?.translation = value.translation.width
-
-                let newTarget = computeTarget(
-                    translation: value.translation.width,
-                    tabId: tab.id,
-                    frames: ds.startFrames,
-                    in: tabs
-                )
-                if newTarget != visibleTargetIndex {
-                    withAnimation(.easeOut(duration: 0.16)) {
-                        visibleTargetIndex = newTarget
-                    }
-                }
-            }
-            .onEnded { _ in
-                let dragged = dragState.flatMap { ds in tabs.first { $0.id == ds.tabId } }
-                let to = visibleTargetIndex
-                dragState = nil
-                visibleTargetIndex = nil
-                guard let dragged,
-                      let to,
-                      let from = tabs.firstIndex(of: dragged),
-                      from != to else { return }
-                state.moveTab(dragged, toIndex: to, in: workspace.id)
-            }
-    }
-
-    private func dragOffset(for tabId: String, index: Int, in tabs: [TabRef]) -> CGFloat {
-        guard let ds = dragState else { return 0 }
-        if tabId == ds.tabId { return ds.translation }
-        guard let target = visibleTargetIndex,
-              let dragIdx = tabs.firstIndex(where: { $0.id == ds.tabId }),
-              let dragWidth = ds.startFrames[ds.tabId]?.width else { return 0 }
-        if target > dragIdx, index > dragIdx, index <= target { return -dragWidth }
-        if target < dragIdx, index < dragIdx, index >= target { return dragWidth }
-        return 0
-    }
-
-    /// Final slot the dragged tab will land in: the count of *other* tabs
-    /// whose pre-drag midpoint sits left of the cursor. Equivalent to "swap
-    /// when the cursor crosses the next tab's centre" — the convention used
-    /// by Safari/Chrome — and stable under non-uniform tab widths, unlike
-    /// "closest midpoint" which flips at the midpoint between two centres
-    /// and feels eager.
-    private func computeTarget(
-        translation: CGFloat,
-        tabId: String,
-        frames: [String: CGRect],
-        in tabs: [TabRef]
-    ) -> Int {
-        let fallback = tabs.firstIndex(where: { $0.id == tabId }) ?? 0
-        guard let dragFrame = frames[tabId] else { return fallback }
-        let visualMid = dragFrame.midX + translation
-        var leftCount = 0
-        for t in tabs where t.id != tabId {
-            guard let frame = frames[t.id] else { continue }
-            if frame.midX < visualMid { leftCount += 1 }
-        }
-        return leftCount
     }
 
     @ViewBuilder
     private var terminalSurface: some View {
         if let session = displayedSession {
-            SessionSurface(session: session)
+            SessionSurface(session: session, isActive: slot.isSelected)
                 .id(session.id)
-        } else if workspaceState.activeSessionId != nil {
+        } else if slotSession != nil {
             // Mid-navigation settle window — hold the slot in the terminal
             // background colour so the eventual mount doesn't flash chrome.
             Color(nsColor: colorScheme == .dark
@@ -339,9 +131,7 @@ struct TerminalArea: View {
     /// so cycling across N workspaces pays two surface reflows instead of 2N.
     private func syncDisplayedSession() {
         displaySettleTask?.cancel()
-        let target = workspaceState.activeSessionId.flatMap { id in
-            workspaceState.sessions.first(where: { $0.id == id })
-        }
+        let target = slot.hasBeenShown ? slotSession : nil
         guard target !== displayedSession else { return }
 
         let now = ContinuousClock.now
@@ -361,270 +151,20 @@ struct TerminalArea: View {
     }
 }
 
-/// Title-area content rendered into the window's principal toolbar slot.
-/// Matches the system title styling — name in headline weight on top,
-/// branch in secondary subheadline below — and adds a coloured diff pill
-/// alongside the branch. The Liquid Glass capsule the toolbar would
-/// normally wrap this in is stripped at the AppKit level by the embedded
-/// `UnborderHost`, which finds its host `NSToolbarItem` and clears its
-/// `isBordered` flag (the same flag that keeps the system title item
-/// pill-free).
-private struct WorkspaceTitleBar: View {
-    let name: String
-    let branch: String
-    let stats: DiffSnapshot?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(name)
-                .font(.headline)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            HStack(spacing: 8) {
-                Text(branch)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                if let stats, !stats.isEmpty {
-                    ChangesPill(adds: stats.totalAdditions, dels: stats.totalDeletions)
-                }
-            }
-        }
-        .padding(.leading, 8)
-        .background(UnborderHost().frame(width: 0, height: 0))
-    }
-}
-
-/// Self-locating unborder. The probe NSView lives inside the SwiftUI tree
-/// that's hosted by the principal `NSToolbarItem` — so once it's mounted in
-/// a window, walking up its superview chain hits a `ToolbarItemHostingView`,
-/// which is referenced by exactly one `NSToolbarItem`. We flip that item's
-/// `isBordered` to `false`, which (per AppKit) suppresses the Liquid Glass
-/// capsule. Position-based / identifier-based matching would be fragile —
-/// SwiftUI assigns UUID identifiers and shuffles item order — so we let the
-/// view tell us which item it lives in.
-private struct UnborderHost: NSViewRepresentable {
-    func makeNSView(context: Context) -> UnborderProbe { UnborderProbe() }
-    func updateNSView(_ nsView: UnborderProbe, context: Context) {
-        nsView.unborderHostItem()
-    }
-}
-
-private final class UnborderProbe: NSView {
-    /// Pending retry items. Held so a fresh `unborderHostItem()` (e.g. from
-    /// SwiftUI's `updateNSView`) can cancel any still-queued attempts before
-    /// scheduling its own — otherwise repeated layout passes pile up dozens
-    /// of stale closures, each capturing self.
-    private var pendingRetries: [DispatchWorkItem] = []
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        unborderHostItem()
-    }
-
-    /// Toolbar items mount asynchronously; retry across a few frames until
-    /// our host view is wired into a `ToolbarItemHostingView` whose
-    /// `NSToolbarItem` we can reach. Idempotent.
-    func unborderHostItem() {
-        for item in pendingRetries { item.cancel() }
-        pendingRetries.removeAll(keepingCapacity: true)
-
-        for delay: TimeInterval in [0.0, 0.05, 0.2, 0.6] {
-            let item = DispatchWorkItem { [weak self] in
-                self?.tryUnborder()
-            }
-            pendingRetries.append(item)
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
-        }
-    }
-
-    private func tryUnborder() {
-        guard let host = enclosingToolbarItemHost(),
-              let toolbar = window?.toolbar else { return }
-        for item in toolbar.items where item.view === host {
-            if item.isBordered { item.isBordered = false }
-            // Once we've found and unbordered the item, drop any still-queued
-            // retries — they'd just repeat the same successful work.
-            for r in pendingRetries { r.cancel() }
-            pendingRetries.removeAll(keepingCapacity: true)
-            return
-        }
-    }
-
-    /// Walk superviews until we hit the AppKit-private `ToolbarItemHostingView`
-    /// class that wraps SwiftUI content inside an `NSToolbarItem`.
-    private func enclosingToolbarItemHost() -> NSView? {
-        var current: NSView? = self
-        while let v = current {
-            if String(describing: type(of: v)).contains("ToolbarItemHostingView") {
-                return v
-            }
-            current = v.superview
-        }
-        return nil
-    }
-}
-
-private struct ChangesPill: View {
-    let adds: Int
-    let dels: Int
-
-    var body: some View {
-        HStack(spacing: 4) {
-            if adds > 0 {
-                Text("+\(adds)").foregroundStyle(Color.readableGreen)
-            }
-            if dels > 0 {
-                Text("−\(dels)").foregroundStyle(.red)
-            }
-        }
-        .monoFont(size: 11, weight: .medium)
-    }
-}
-
-/// Toolbar slot for the run/setup button. Two-stage routing so the spinner
-/// flips to "Run" the moment setup exits: the outer view observes
-/// `WorkspaceState.setupController` membership, the inner view holds the
-/// SetupController as an `@ObservedObject` and re-renders on its phase
-/// changes.
-private struct RunToolbarSlot: View {
-    @EnvironmentObject private var state: AppState
-    let workspace: Workspace
-    let workspaceState: WorkspaceState
-
-    var body: some View {
-        if let setup = workspaceState.setupController {
-            SetupAwareRunSlot(workspace: workspace, workspaceState: workspaceState, controller: setup)
-        } else if state.hasRunScript(workspace) {
-            ReadyOrRunningRunSlot(workspace: workspace, workspaceState: workspaceState)
-        }
-    }
-}
-
-private struct SetupAwareRunSlot: View {
-    @EnvironmentObject private var state: AppState
-    let workspace: Workspace
-    let workspaceState: WorkspaceState
-    @ObservedObject var controller: SetupController
-
-    var body: some View {
-        if controller.isRunning {
-            Button { /* disabled */ } label: {
-                Label {
-                    Text("Setting up")
-                } icon: {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-            }
-            .disabled(true)
-            .help("Setup is running. Run will be available once setup completes.")
-        } else if state.hasRunScript(workspace) {
-            ReadyOrRunningRunSlot(workspace: workspace, workspaceState: workspaceState)
-        }
-    }
-}
-
-private struct ReadyOrRunningRunSlot: View {
-    @EnvironmentObject private var state: AppState
-    let workspace: Workspace
-    let workspaceState: WorkspaceState
-
-    var body: some View {
-        if let runner = workspaceState.runController {
-            RunStatusButton(runner: runner) { state.toggleRun(for: workspace) }
-        } else {
-            Button {
-                state.toggleRun(for: workspace)
-            } label: {
-                Label("Run", systemImage: "play")
-            }
-            .help("Run the configured run script")
-        }
-    }
-}
-
-/// Toolbar button that mirrors the runner's phase: play icon when idle,
-/// pulsing yellow dot while spinning up, solid green once it's settled.
-/// Click toggles start/stop in any phase.
-private struct RunStatusButton: View {
-    @ObservedObject var runner: RunController
-    let onToggle: () -> Void
-    @State private var pulse: Bool = false
-
-    var body: some View {
-        Button(action: onToggle) {
-            label
-        }
-        .help(helpText)
-    }
-
-    @ViewBuilder
-    private var label: some View {
-        Label {
-            Text(accessibilityTitle)
-        } icon: {
-            Image(systemName: runner.phase == .idle ? "play" : "stop")
-                .overlay(alignment: .topTrailing) { statusDot }
-        }
-    }
-
-    @ViewBuilder
-    private var statusDot: some View {
-        switch runner.phase {
-        case .idle:
-            EmptyView()
-        case .queued, .starting:
-            Circle()
-                .fill(.yellow)
-                .frame(width: 6, height: 6)
-                .opacity(pulse ? 0.35 : 1.0)
-                .animation(
-                    .easeInOut(duration: 0.6).repeatForever(autoreverses: true),
-                    value: pulse
-                )
-                .onAppear { pulse = true }
-                .onDisappear { pulse = false }
-                .offset(x: 3, y: -3)
-        case .running:
-            Circle()
-                .fill(Color.readableGreen)
-                .frame(width: 6, height: 6)
-                .offset(x: 3, y: -3)
-        }
-    }
-
-    private var accessibilityTitle: String {
-        switch runner.phase {
-        case .idle: return "Run"
-        case .queued: return "Waiting"
-        case .starting: return "Starting"
-        case .running: return "Running"
-        }
-    }
-
-    private var helpText: String {
-        switch runner.phase {
-        case .idle: return "Run the configured run script"
-        case .queued: return "Waiting for the other run to stop… click to cancel"
-        case .starting: return "Starting… click to stop"
-        case .running: return "Running — click to stop"
-        }
-    }
-}
-
 /// Terminal viewport for one session. Observes the session so transient state
 /// (lastError, fellBackToShell) actually drives the UI.
 private struct SessionSurface: View {
     @ObservedObject var session: PTYSession
+    /// The tab is the visible one — only then does the terminal take focus
+    /// and render.
+    let isActive: Bool
     @EnvironmentObject private var state: AppState
 
     var body: some View {
         ZStack(alignment: .top) {
             TerminalHostView(
                 session: session,
-                isActive: true,
+                isActive: isActive,
                 paddingX: state.settings.terminalPaddingX
             )
 
@@ -672,205 +212,6 @@ private struct ErrorOverlay: View {
     }
 }
 
-/// Session tab: agent mark and name over the shared `StripTab` chrome.
-private struct BorderedTab: View {
-    @ObservedObject var session: PTYSession
-    let isActive: Bool
-    let onSelect: () -> Void
-    let onClose: () -> Void
-
-    var body: some View {
-        StripTab(isActive: isActive, onSelect: onSelect, onClose: onClose) {
-            AgentMark(agent: session.agent, size: 14)
-                .opacity(isActive ? 1 : 0.75)
-        } title: {
-            Text(session.agent.displayName)
-        }
-    }
-}
-
-/// Chat tab: agent mark, chat title, and a dot for what the agent is doing.
-private struct ChatTabButton: View {
-    let chat: ChatSession
-    let isActive: Bool
-    let onSelect: () -> Void
-    let onClose: () -> Void
-
-    var body: some View {
-        StripTab(isActive: isActive, onSelect: onSelect, onClose: onClose) {
-            AgentMark(agent: chat.provider.agentKind, size: 14)
-                .opacity(isActive ? 1 : 0.75)
-                .overlay(alignment: .bottomTrailing) { activityDot }
-        } title: {
-            Text(chat.title)
-                .frame(maxWidth: 180, alignment: .leading)
-        }
-        .help(chat.title)
-    }
-
-    @ViewBuilder
-    private var activityDot: some View {
-        switch chat.activity {
-        case .idle:
-            EmptyView()
-        case .working:
-            PulsingDot(color: .accentColor)
-        case .needsInput:
-            dot(.orange)
-        case .failed:
-            dot(.red)
-        }
-    }
-
-    private func dot(_ color: Color) -> some View {
-        Circle().fill(color).frame(width: 6, height: 6).offset(x: 2, y: 2)
-    }
-}
-
-private struct PulsingDot: View {
-    let color: Color
-    @State private var pulse = false
-
-    var body: some View {
-        Circle()
-            .fill(color)
-            .frame(width: 6, height: 6)
-            .opacity(pulse ? 0.35 : 1)
-            .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: pulse)
-            .onAppear { pulse = true }
-            .offset(x: 2, y: 2)
-    }
-}
-
-/// Full-file diff tab, opened from the inspector's changes panel.
-private struct DiffTabButton: View {
-    let tab: DiffTab
-    let isActive: Bool
-    let onSelect: () -> Void
-    let onClose: () -> Void
-
-    var body: some View {
-        StripTab(isActive: isActive, onSelect: onSelect, onClose: onClose) {
-            Image(nsImage: Self.icon(for: tab.path))
-                .resizable()
-                .interpolation(.high)
-                .frame(width: 16, height: 16)
-                .opacity(isActive ? 1 : 0.75)
-        } title: {
-            Text((tab.path as NSString).lastPathComponent)
-        }
-        .help(tab.path)
-    }
-
-    /// Finder's document icon for the file's type, cached per extension.
-    /// Looked up by type rather than by path so a deleted file still gets
-    /// its icon.
-    @MainActor private static var iconCache: [String: NSImage] = [:]
-
-    @MainActor private static func icon(for path: String) -> NSImage {
-        let ext = (path as NSString).pathExtension.lowercased()
-        if let cached = iconCache[ext] { return cached }
-        let type = UTType(filenameExtension: ext) ?? .plainText
-        let icon = NSWorkspace.shared.icon(for: type)
-        iconCache[ext] = icon
-        return icon
-    }
-}
-
-/// Tab styled after Apple HIG: the active tab is lifted out of the recessed
-/// strip with the system text background, an accent indicator across the top
-/// edge, and bolder text. Inactive tabs gain a soft hover tint and show a
-/// hairline separator only between adjacent inactive siblings — same trick
-/// Safari uses to keep the strip from looking like a row of buttons.
-private struct StripTab<Icon: View, Title: View>: View {
-    let isActive: Bool
-    let onSelect: () -> Void
-    let onClose: () -> Void
-    @ViewBuilder let icon: Icon
-    @ViewBuilder let title: Title
-
-    @State private var hovering = false
-    @State private var closeHovering = false
-
-    var body: some View {
-        HStack(spacing: 7) {
-            icon
-            title
-                .lineLimit(1)
-                .font(.system(size: 13))
-                .foregroundStyle(isActive ? .primary : .secondary)
-            closeButton
-        }
-        .padding(.leading, 12)
-        .padding(.trailing, 8)
-        .padding(.vertical, 8)
-        .frame(minWidth: 110)
-        .background(tabBackground)
-        .overlay(alignment: .top) { activeAccent }
-        .overlay(alignment: .trailing) { trailingSeparator }
-        .contentShape(Rectangle())
-        .onTapGesture(perform: onSelect)
-        .onHover { hovering = $0 }
-    }
-
-    @ViewBuilder
-    private var closeButton: some View {
-        // Always laid out so tab width is stable; revealed on tab hover.
-        Button(action: onClose) {
-            Image(systemName: "xmark")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(closeHovering ? .primary : .secondary)
-                .frame(width: 16, height: 16)
-                .background(
-                    Circle()
-                        .fill(Color.primary.opacity(closeHovering ? 0.16 : 0))
-                )
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .opacity(hovering || closeHovering ? 1 : 0)
-        .onHover { closeHovering = $0 }
-        .help("Close tab")
-    }
-
-    @ViewBuilder
-    private var tabBackground: some View {
-        if isActive {
-            Color(nsColor: .textBackgroundColor)
-        } else if hovering {
-            Color.primary.opacity(0.06)
-        } else {
-            Color.clear
-        }
-    }
-
-    @ViewBuilder
-    private var activeAccent: some View {
-        if isActive {
-            Rectangle()
-                .fill(Color.accentColor)
-                .frame(height: 1.5)
-        }
-    }
-
-    @ViewBuilder
-    private var trailingSeparator: some View {
-        if !isActive {
-            Rectangle()
-                .fill(Color(nsColor: .separatorColor).opacity(0.6))
-                .frame(width: 1, height: 16)
-                .padding(.vertical, 8)
-        }
-    }
-}
-
-private struct TabFramesKey: PreferenceKey {
-    static let defaultValue: [String: CGRect] = [:]
-    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
-        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
-    }
-}
-
 /// Brand mark for an agent. Branded agents ship PNG assets in
 /// `Sources/JetlineApp/Resources` (loaded via NSImage — SwiftUI's
 /// `Image(_:bundle:)` only resolves asset-catalog entries). The plain
@@ -901,6 +242,14 @@ struct AgentMark: View {
         }
     }
 
+    /// The mark as an `NSImage`, for AppKit surfaces (the native tab title).
+    static func image(for agent: Workspace.AgentKind) -> NSImage? {
+        if let image = cache[agent] { return image }
+        return agent == .shell
+            ? NSImage(systemSymbolName: "terminal", accessibilityDescription: nil)
+            : nil
+    }
+
     private static let cache: [Workspace.AgentKind: NSImage] = {
         var map: [Workspace.AgentKind: NSImage] = [:]
         let assetNames: [Workspace.AgentKind: String] = [
@@ -916,125 +265,6 @@ struct AgentMark: View {
         }
         return map
     }()
-}
-
-/// Split menu button: the icon click starts a session with the user's default
-/// agent; the chevron exposes the other agents.
-private struct NewSessionMenu: View {
-    let defaultAgent: Workspace.AgentKind
-    let visibleAgents: [Workspace.AgentKind]
-    /// Whether Claude Code / Codex tabs open as chats by default.
-    let prefersChat: Bool
-    let closedChats: [ChatThreadRecord]
-    let onStart: (Workspace.AgentKind) -> Void
-    /// Start `agent` in a specific interface: `true` → chat.
-    let onStartInterface: (Workspace.AgentKind, Bool) -> Void
-    let onReopen: (ChatThreadRecord) -> Void
-
-    var body: some View {
-        Menu {
-            ForEach(visibleAgents, id: \.self) { kind in
-                Button {
-                    onStart(kind)
-                } label: {
-                    Text(label(for: kind, chat: prefersChat && AgentProviderKind(agent: kind) != nil))
-                }
-            }
-            let chatCapable = visibleAgents.filter { AgentProviderKind(agent: $0) != nil }
-            if !chatCapable.isEmpty {
-                Divider()
-                ForEach(chatCapable, id: \.self) { kind in
-                    Button {
-                        onStartInterface(kind, !prefersChat)
-                    } label: {
-                        Text(label(for: kind, chat: !prefersChat))
-                    }
-                }
-            }
-            if !closedChats.isEmpty {
-                Divider()
-                Menu("Reopen Chat") {
-                    ForEach(closedChats, id: \.id) { record in
-                        Button {
-                            onReopen(record)
-                        } label: {
-                            Text("\(record.title) — \(record.provider.displayName)")
-                        }
-                    }
-                }
-            }
-        } label: {
-            Image(systemName: "plus")
-                .font(.callout)
-                .padding(10)
-        } primaryAction: {
-            onStart(defaultAgent)
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.visible)
-        .fixedSize()
-        .help(label(for: defaultAgent, chat: prefersChat && AgentProviderKind(agent: defaultAgent) != nil))
-    }
-
-    private func label(for kind: Workspace.AgentKind, chat: Bool) -> String {
-        chat ? "New \(kind.displayName) chat" : "New \(kind.displayName) tab"
-    }
-}
-
-/// Split-action toolbar button: clicking the body opens the workspace's
-/// worktree in the user's last-chosen app; the chevron exposes the picker,
-/// and picking an app both updates the default and opens the folder.
-private struct OpenInAppButton: View {
-    @EnvironmentObject private var state: AppState
-    let workspace: Workspace
-
-    /// Falls back to Finder if the persisted choice was uninstalled since
-    /// it was saved — Finder is always present.
-    private var current: OpenInApp {
-        let stored = state.settings.defaultOpenInApp
-        return stored.isInstalled ? stored : .finder
-    }
-
-    var body: some View {
-        Menu {
-            ForEach(OpenInApp.allCases.filter(\.isInstalled), id: \.self) { app in
-                Button {
-                    // Resolve the worktree at click time — see the comment on
-                    // `NewSessionMenu` above. Dropdown items get bridged to
-                    // NSMenuItems whose action closures bind at first build,
-                    // so a captured `workspace.worktreePath` would open the
-                    // previous workspace's folder after a switch.
-                    var s = state.settings
-                    s.defaultOpenInApp = app
-                    state.saveSettings(s)
-                    guard let id = state.selectedWorkspaceId,
-                          let ws = state.workspaceById(id) else { return }
-                    app.open(directory: ws.worktreePath)
-                } label: {
-                    if let icon = app.icon(size: 16) {
-                        Label {
-                            Text(app.displayName)
-                        } icon: {
-                            Image(nsImage: icon)
-                        }
-                    } else {
-                        Text(app.displayName)
-                    }
-                }
-            }
-        } label: {
-            HStack {
-                if let icon = current.icon(size: 14) {
-                    Image(nsImage: ToolbarLabelIcon.app(icon))
-                }
-                Text(current.displayName)
-            }
-        } primaryAction: {
-            current.open(directory: workspace.worktreePath)
-        }
-        .menuIndicator(.visible)
-        .help("Open workspace in \(current.displayName)")
-    }
 }
 
 /// SwiftUI ↔ NSView bridge that hosts whichever `TerminalEmulatorView` the
