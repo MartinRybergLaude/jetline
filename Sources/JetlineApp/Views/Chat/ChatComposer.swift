@@ -155,10 +155,17 @@ struct ChatComposer: View {
 
     private var controls: some View {
         HStack(spacing: 8) {
-            ModelMenu(session: session)
-            EffortMenu(session: session)
-            RuntimeModeMenu(session: session)
-            if session.supportsRemoteControl { RemoteControlMenu(session: session) }
+            // Until the agent reports its models the pills can only show
+            // placeholders; keep their space and fade them in once ready.
+            HStack(spacing: 8) {
+                ModelMenu(session: session)
+                EffortMenu(session: session)
+                RuntimeModeMenu(session: session)
+                if session.supportsRemoteControl { RemoteControlMenu(session: session) }
+            }
+            .opacity(pillsReady ? 1 : 0)
+            .allowsHitTesting(pillsReady)
+            .animation(.easeOut(duration: 0.2), value: pillsReady)
             Spacer()
             UsageMeter(usage: session.usage, limits: AgentRateLimits.shared.windows[session.provider] ?? [])
             if session.isWorking && session.draft.nonBlank == nil && session.draftImages.isEmpty {
@@ -177,6 +184,15 @@ struct ChatComposer: View {
                 .disabled(!canSend)
                 .help("Send (Return)")
             }
+        }
+    }
+
+    /// The agent has reported in once. Its models outlive a disconnect
+    /// (continuing in the terminal), so the pills stay up then.
+    private var pillsReady: Bool {
+        switch session.connection {
+        case .connected, .failed: return true
+        case .connecting, .disconnected: return !session.models.isEmpty
         }
     }
 

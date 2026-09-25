@@ -45,40 +45,31 @@ struct SidebarView: View {
         .padding(.vertical, 16)
     }
 
-    /// Floats over the list rather than sitting in a bar: the buttons carry
-    /// their own glass, so the sidebar material reads straight through to the
+    /// Floats over the list rather than sitting in a bar: the button carries
+    /// its own glass, so the sidebar material reads straight through to the
     /// window edge. `safeAreaInset` still reserves the height, so the last
-    /// row scrolls clear of them.
+    /// row scrolls clear of it.
     private var sidebarFooter: some View {
         VStack(spacing: 8) {
             if let message = state.prTrackerStatus.userMessage {
                 PRTrackerStatusPill(message: message)
             }
-            GlassEffectContainer(spacing: 8) {
-                HStack(spacing: 8) {
-                    Button {
-                        Task {
-                            if let repo = await state.addRepository() {
-                                // Drop the user straight into settings for the
-                                // freshly-added repo so they can configure setup
-                                // / run scripts before spawning a workspace —
-                                // the next workspace will then see those scripts
-                                // on first creation.
-                                showingRepoSettings = repo
-                            }
-                        }
-                    } label: {
-                        Label("Add repository", systemImage: "plus")
+            Button {
+                Task {
+                    if let repo = await state.addRepository() {
+                        // Drop the user straight into settings for the
+                        // freshly-added repo so they can configure setup
+                        // / run scripts before spawning a workspace —
+                        // the next workspace will then see those scripts
+                        // on first creation.
+                        showingRepoSettings = repo
                     }
-                    .buttonStyle(.glass)
-                    Spacer(minLength: 0)
-                    SettingsLink {
-                        Image(systemName: "gearshape")
-                    }
-                    .buttonStyle(.glass)
-                    .help("Settings")
                 }
+            } label: {
+                Label("Add repository", systemImage: "plus")
+                    .frame(maxWidth: .infinity)
             }
+            .buttonStyle(.glass)
             .padding(.horizontal, 10)
             .padding(.bottom, 10)
         }
