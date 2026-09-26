@@ -110,7 +110,6 @@ struct CommentComposer: View {
     @State private var text = ""
     @State private var isSubmitting = false
     @State private var errorMessage: String?
-    @FocusState private var focused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -120,18 +119,12 @@ struct CommentComposer: View {
                     .foregroundStyle(.red)
                     .lineLimit(3)
             }
-            CommentEditor(text: $text, placeholder: "Comment on #\(number)…", focus: $focused)
-                .frame(height: 58)
-            HStack {
-                Spacer()
-                SubmitButton(
-                    title: "Comment",
-                    isSubmitting: isSubmitting,
-                    isEnabled: text.nonBlank != nil,
-                    shortcut: focused,
-                    action: submit
-                )
-            }
+            CommentField(
+                text: $text,
+                placeholder: "Comment on #\(number)…",
+                isSending: isSubmitting,
+                onSubmit: submit
+            )
         }
     }
 
@@ -151,70 +144,5 @@ struct CommentComposer: View {
                 text = ""
             }
         }
-    }
-}
-
-/// `TextEditor` with a placeholder and chrome that matches the inspector.
-/// `scrollContentBackground(.hidden)` is required — otherwise the editor
-/// paints its own opaque `textBackgroundColor` over the rounded border.
-struct CommentEditor: View {
-    @Binding var text: String
-    let placeholder: String
-    /// Bound to the caller's `@FocusState` so the submit button can claim
-    /// ⌘↩ only while this editor holds focus — several composers can be on
-    /// screen at once, and duplicate key equivalents resolve arbitrarily.
-    var focus: FocusState<Bool>.Binding
-
-    var body: some View {
-        TextEditor(text: $text)
-            .focused(focus)
-            .font(.system(size: 13))
-            .scrollContentBackground(.hidden)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 4)
-            .background(Color.secondary.opacity(0.08))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            .overlay(
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(Color.secondary.opacity(0.2), lineWidth: 0.5)
-            )
-            .overlay(alignment: .topLeading) {
-                if text.isEmpty {
-                    Text(placeholder)
-                        .font(.system(size: 13))
-                        .foregroundStyle(.tertiary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .allowsHitTesting(false)
-                }
-            }
-    }
-}
-
-struct SubmitButton: View {
-    let title: String
-    let isSubmitting: Bool
-    let isEnabled: Bool
-    /// Claims ⌘↩. Only ever true for the one composer that currently has
-    /// focus; see `CommentEditor.focus`.
-    var shortcut: Bool = false
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 4) {
-                if isSubmitting {
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.6)
-                        .frame(width: 10, height: 10)
-                }
-                Text(title)
-            }
-            .font(.callout)
-        }
-        .controlSize(.small)
-        .disabled(isSubmitting || !isEnabled)
-        .keyboardShortcut(shortcut ? KeyboardShortcut(.return, modifiers: .command) : nil)
     }
 }

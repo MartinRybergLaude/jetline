@@ -559,6 +559,10 @@ final class PRTimelineController: NSObject, NSTableViewDataSource, NSTableViewDe
         if wasBlank != (text.nonBlank == nil) { rowUIChanged(id) }
     }
 
+    func threadLayoutChanged(_ id: String) {
+        rowUIChanged(id)
+    }
+
     func submitReply(thread: PRReviewThread, thenResolve: Bool) {
         let state = threadState(thread.id)
         guard let body = state.replyText.nonBlank, !state.isSubmitting else { return }

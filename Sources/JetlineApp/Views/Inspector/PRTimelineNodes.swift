@@ -19,6 +19,8 @@ protocol PRTimelineHost: AnyObject {
     func threadState(_ id: String) -> PRThreadUIState
     func updateThread(_ id: String, _ change: (inout PRThreadUIState) -> Void)
     func replyTextChanged(thread id: String, text: String)
+    /// The reply field grew or shrank.
+    func threadLayoutChanged(_ id: String)
     func submitReply(thread: PRReviewThread, thenResolve: Bool)
     func setResolved(thread: PRReviewThread, resolved: Bool)
 }
@@ -290,23 +292,21 @@ enum PRTimelineNodes {
                 },
                 FillNode(),
             ]
-            if ui.isSubmitting { buttons.append(SpinnerNode(diameter: 10)) }
             if canResolve {
                 buttons.append(ButtonNode("Reply & resolve", enabled: hasText && !ui.isSubmitting) { [weak host] in
                     host?.submitReply(thread: thread, thenResolve: true)
                 })
             }
-            buttons.append(ButtonNode("Reply", enabled: hasText && !ui.isSubmitting) { [weak host] in
-                host?.submitReply(thread: thread, thenResolve: false)
-            })
-            let editor = ReplyEditorNode(
+            let field = ReplyFieldNode(
                 text: ui.replyText,
-                placeholder: "Reply…",
+                canSend: hasText,
+                isSending: ui.isSubmitting,
                 focus: ui.focusReply,
                 onChange: { [weak host] text in host?.replyTextChanged(thread: id, text: text) },
-                onSubmit: { [weak host] in host?.submitReply(thread: thread, thenResolve: false) }
+                onSubmit: { [weak host] in host?.submitReply(thread: thread, thenResolve: false) },
+                onHeightChange: { [weak host] in host?.threadLayoutChanged(id) }
             )
-            return VStackNode([editor, HStackNode(buttons, spacing: 6, flexible: [1])], spacing: 6)
+            return VStackNode([field, HStackNode(buttons, spacing: 6, flexible: [1])], spacing: 6)
         }
 
         var items: [ChatNode] = []
@@ -501,126 +501,45 @@ final class PRButton: NSButton {
     @objc private func fire() { handler?() }
 }
 
-// MARK: - Reply editor
+// MARK: - Reply field
 
-/// Editable plain-text box with a placeholder; ⌘↩ submits.
-final class ReplyEditorNode: ChatNode {
+/// `CommentFieldView` in a thread card, as tall as its text.
+final class ReplyFieldNode: ChatNode {
     let text: String
-    let placeholder: String
+    let canSend: Bool
+    let isSending: Bool
     /// Cleared once used: the cached node is re-configured whenever its
     /// row remounts, and only the first should take focus.
     private var focus: Bool
     let onChange: (String) -> Void
     let onSubmit: () -> Void
+    let onHeightChange: () -> Void
 
-    static let height: CGFloat = 60
-
-    init(text: String, placeholder: String, focus: Bool, onChange: @escaping (String) -> Void, onSubmit: @escaping () -> Void) {
+    init(text: String, canSend: Bool, isSending: Bool, focus: Bool, onChange: @escaping (String) -> Void, onSubmit: @escaping () -> Void, onHeightChange: @escaping () -> Void) {
         self.text = text
-        self.placeholder = placeholder
+        self.canSend = canSend
+        self.isSending = isSending
         self.focus = focus
         self.onChange = onChange
         self.onSubmit = onSubmit
+        self.onHeightChange = onHeightChange
     }
 
-    override func measure(_ width: CGFloat) -> CGSize { CGSize(width: width, height: Self.height) }
-    override var viewType: NSView.Type { PRReplyEditorView.self }
-    override func makeView() -> NSView { PRReplyEditorView() }
+    override func measure(_ width: CGFloat) -> CGSize {
+        CGSize(width: width, height: CommentFieldView.height(for: text, width: width))
+    }
+
+    override var viewType: NSView.Type { CommentFieldView.self }
+    override func makeView() -> NSView { CommentFieldView() }
     override func configure(_ view: NSView, size: CGSize) {
-        guard let editor = view as? PRReplyEditorView else { return }
-        editor.onChange = onChange
-        editor.onSubmit = onSubmit
-        editor.set(text: text, placeholder: placeholder)
+        guard let field = view as? CommentFieldView else { return }
+        field.onChange = onChange
+        field.onSubmit = onSubmit
+        field.onHeightChange = onHeightChange
+        field.set(text: text, placeholder: "Reply…", canSend: canSend, isSending: isSending, sendHelp: "Reply (⌘↩)")
         if focus {
             focus = false
-            editor.focusWhenMounted()
+            field.focus()
         }
-    }
-}
-
-final class PRReplyEditorView: NSView, NSTextViewDelegate {
-    private let scroll = NSScrollView()
-    private let textView = PRReplyTextView()
-    private let placeholderLabel = ChatLabel.make()
-    var onChange: ((String) -> Void)?
-    var onSubmit: (() -> Void)?
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        wantsLayer = true
-        layer?.cornerRadius = 6
-        layer?.borderWidth = 0.5
-
-        textView.isRichText = false
-        textView.allowsUndo = true
-        textView.drawsBackground = false
-        textView.font = .systemFont(ofSize: 13)
-        textView.textColor = .labelColor
-        textView.textContainerInset = NSSize(width: 2, height: 4)
-        textView.isVerticallyResizable = true
-        textView.autoresizingMask = [.width]
-        textView.textContainer?.widthTracksTextView = true
-        textView.delegate = self
-        textView.onSubmit = { [weak self] in self?.onSubmit?() }
-
-        scroll.documentView = textView
-        scroll.drawsBackground = false
-        scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = true
-        scroll.borderType = .noBorder
-        addSubview(scroll)
-
-        placeholderLabel.font = .systemFont(ofSize: 13)
-        placeholderLabel.textColor = .tertiaryLabelColor
-        addSubview(placeholderLabel)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("not used") }
-
-    override var isFlipped: Bool { true }
-    override var wantsUpdateLayer: Bool { true }
-
-    override func updateLayer() {
-        layer?.backgroundColor = NSColor.secondary(0.08).cgColor
-        layer?.borderColor = NSColor.secondary(0.2).cgColor
-    }
-
-    override func layout() {
-        super.layout()
-        scroll.frame = bounds.insetBy(dx: 5, dy: 0)
-        textView.frame.size.width = scroll.contentSize.width
-        placeholderLabel.frame = NSRect(x: 9, y: 4, width: max(0, bounds.width - 18), height: 18)
-    }
-
-    func set(text: String, placeholder: String) {
-        if textView.string != text { textView.string = text }
-        placeholderLabel.stringValue = placeholder
-        placeholderLabel.isHidden = !text.isEmpty
-    }
-
-    func focusWhenMounted() {
-        DispatchQueue.main.async { [weak self] in
-            guard let self, let window else { return }
-            window.makeFirstResponder(textView)
-        }
-    }
-
-    func textDidChange(_ notification: Notification) {
-        placeholderLabel.isHidden = !textView.string.isEmpty
-        onChange?(textView.string)
-    }
-}
-
-private final class PRReplyTextView: NSTextView {
-    var onSubmit: (() -> Void)?
-
-    override func keyDown(with event: NSEvent) {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if flags == .command, event.keyCode == 36 || event.keyCode == 76 {
-            onSubmit?()
-            return
-        }
-        super.keyDown(with: event)
     }
 }
