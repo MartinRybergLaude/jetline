@@ -19,7 +19,10 @@ struct ComposerTextView: NSViewRepresentable {
     @Binding var text: String
     @Binding var height: CGFloat
     var placeholder: String
-    var isFocused: Bool
+    /// Take focus when first shown. Only then: refocusing on every update
+    /// would pull focus out of other fields and drop text selections
+    /// while a turn streams.
+    var focusesOnAppear: Bool
     /// Caret offset (UTF-16) changes, for token completion.
     var onCaretChange: (Int) -> Void
     var onSubmit: () -> Void
@@ -68,6 +71,7 @@ struct ComposerTextView: NSViewRepresentable {
         textView.autoresizingMask = [.width]
         textView.textContainer?.widthTracksTextView = true
         textView.placeholder = placeholder
+        textView.focusesOnAppear = focusesOnAppear
         textView.registerForDraggedTypes([.fileURL, .png, .tiff])
         textView.string = text
         scroll.documentView = textView
@@ -89,9 +93,6 @@ struct ComposerTextView: NSViewRepresentable {
             textView.string = text
         }
         context.coordinator.recalculateHeight()
-        if isFocused, textView.window != nil, textView.window?.firstResponder !== textView {
-            DispatchQueue.main.async { textView.window?.makeFirstResponder(textView) }
-        }
     }
 
     @MainActor
@@ -160,6 +161,17 @@ final class ComposerNSTextView: NSTextView {
     weak var coordinator: ComposerTextView.Coordinator?
     var placeholder: String = "" {
         didSet { if oldValue != placeholder { needsDisplay = true } }
+    }
+
+    var focusesOnAppear = false
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard focusesOnAppear, let window else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.window === window else { return }
+            window.makeFirstResponder(self)
+        }
     }
 
     override func draw(_ dirtyRect: NSRect) {

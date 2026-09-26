@@ -6,6 +6,17 @@ enum MergeCleanupPolicy {
               let mergedAt = pr.mergedAt else { return false }
         return mergedAt >= workspace.createdAt
     }
+
+    /// Deleting force-removes the worktree and its branch, so it only
+    /// happens when nothing there would be lost: a clean tree and every
+    /// commit on some remote. Any git failure counts as "keep it".
+    static func hasNoLocalWork(worktreePath: String) async -> Bool {
+        guard let status = try? await GitRunner.run(["status", "--porcelain"], cwd: worktreePath),
+              status.success, status.stdout.nonBlank == nil,
+              let unpushed = try? await GitRunner.run(["rev-list", "--count", "HEAD", "--not", "--remotes"], cwd: worktreePath),
+              unpushed.success else { return false }
+        return unpushed.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "0"
+    }
 }
 
 /// Background tracker that keeps each workspace's `WorkspaceState.pr`
@@ -570,7 +581,18 @@ final class PRTracker {
               MergeCleanupPolicy.shouldDelete(workspace: workspace, pr: pr),
               !autoDeleted.contains(workspace.id) else { return }
         autoDeleted.insert(workspace.id)
-        Task { await state.deleteWorkspace(workspace) }
+        Task {
+            guard await MergeCleanupPolicy.hasNoLocalWork(worktreePath: workspace.worktreePath) else {
+                state.activityLog.record(
+                    .lifecycle,
+                    "Kept workspace \(workspace.name) after its PR merged: it has uncommitted or unpushed work",
+                    repoId: workspace.repositoryId,
+                    workspaceId: workspace.id
+                )
+                return
+            }
+            await state.deleteWorkspace(workspace)
+        }
     }
 
     private func updateStatus(_ new: Status) {

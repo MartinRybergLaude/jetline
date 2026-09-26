@@ -33,7 +33,7 @@ enum JSONValue: Sendable, Hashable {
     var int: Int? {
         switch self {
         case let .int(i): return Int(i)
-        case let .double(d) where d.rounded() == d: return Int(d)
+        case let .double(d): return Int(exactly: d)
         default: return nil
         }
     }

@@ -125,7 +125,7 @@ struct ChatComposer: View {
                     text: Binding(get: { session.draft }, set: { session.draft = $0 }),
                     height: $height,
                     placeholder: placeholder,
-                    isFocused: true,
+                    focusesOnAppear: true,
                     onCaretChange: updateCompletion,
                     onSubmit: submit,
                     onPopupKey: handlePopupKey,

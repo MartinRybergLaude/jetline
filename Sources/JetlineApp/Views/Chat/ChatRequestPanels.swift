@@ -155,7 +155,13 @@ private struct QuestionsPanel: View {
     @State private var freeform = ""
 
     var body: some View {
-        let question = questions[min(index, questions.count - 1)]
+        // Providers answer an empty list themselves; never index into one.
+        if !questions.isEmpty {
+            panel(questions[min(index, questions.count - 1)])
+        }
+    }
+
+    private func panel(_ question: AgentQuestion) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: "questionmark.bubble").foregroundStyle(.orange)

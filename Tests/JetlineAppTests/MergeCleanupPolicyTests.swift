@@ -72,6 +72,43 @@ final class MergeCleanupPolicyTests: XCTestCase {
         XCTAssertEqual(pr.mergedAt, date("2026-06-30T12:00:00Z"))
     }
 
+    func testLocalWorkBlocksDelete() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("jetline-merge-\(UUID().uuidString.prefix(8))")
+            .resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let remote = root.appendingPathComponent("remote.git").path
+        let clone = root.appendingPathComponent("clone").path
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try await git(["init", "-q", "--bare", remote], in: root.path)
+        try await git(["clone", "-q", remote, clone], in: root.path)
+        let commit = ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "c"]
+        try "one\n".write(toFile: clone + "/a.txt", atomically: true, encoding: .utf8)
+        try await git(["add", "."], in: clone)
+        try await git(commit, in: clone)
+        try await git(["push", "-q", "origin", "HEAD"], in: clone)
+
+        let pushedAndClean = await MergeCleanupPolicy.hasNoLocalWork(worktreePath: clone)
+        XCTAssertTrue(pushedAndClean)
+
+        try "two\n".write(toFile: clone + "/a.txt", atomically: true, encoding: .utf8)
+        let dirty = await MergeCleanupPolicy.hasNoLocalWork(worktreePath: clone)
+        XCTAssertFalse(dirty)
+
+        try await git(["add", "."], in: clone)
+        try await git(commit, in: clone)
+        let unpushed = await MergeCleanupPolicy.hasNoLocalWork(worktreePath: clone)
+        XCTAssertFalse(unpushed)
+
+        let missing = await MergeCleanupPolicy.hasNoLocalWork(worktreePath: root.appendingPathComponent("nope").path)
+        XCTAssertFalse(missing)
+    }
+
+    private func git(_ args: [String], in cwd: String) async throws {
+        let result = try await GitRunner.run(args, cwd: cwd)
+        XCTAssertTrue(result.success, "git \(args.joined(separator: " "))")
+    }
+
     private var decoder: JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601

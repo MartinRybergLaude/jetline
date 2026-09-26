@@ -41,6 +41,8 @@ actor CodexProvider: AgentProvider {
     private var childThreads: [String: String?] = [:]
     /// A turn/start is in flight; its turn id isn't known yet.
     private var startingTurn = false
+    /// Stop was pressed while `startingTurn`: interrupt once the id is known.
+    private var interruptWhenStarted = false
     private var runtimeMode: AgentRuntimeMode = .supervised
     private var interactionMode: AgentInteractionMode = .normal
     private var stopping = false
@@ -100,7 +102,14 @@ actor CodexProvider: AgentProvider {
             emitNotice(.warning, "codex \(version) is older than Jetline has been tested with (\(Self.minimumTestedVersion)). Update Codex if the chat misbehaves.")
         }
 
-        let thread = try await openThread(resume: config.resume)
+        let thread: (id: String, model: String?)
+        do {
+            thread = try await openThread(resume: config.resume)
+        } catch {
+            self.process = nil
+            await process.terminate(grace: .milliseconds(200))
+            throw error
+        }
         threadId = thread.id
         if let resolved = thread.model { model = resolved }
 
@@ -252,6 +261,7 @@ actor CodexProvider: AgentProvider {
                 if activeTurnId == id { continue }
                 activeTurnId = id
                 startingTurn = false
+                interruptIfRequested()
             case let .requestClosed(id):
                 serverRequests.removeValue(forKey: id)
             default:
@@ -395,6 +405,10 @@ actor CodexProvider: AgentProvider {
                     allowsMultiple: false,
                     allowsFreeform: q["isOther"]?.bool ?? (q["options"]?.array?.isEmpty ?? true)
                 )
+            }
+            guard !questions.isEmpty else {
+                respond(id: id, result: ["answers": [:]])
+                return
             }
             kind = .questions(questions)
         case "mcpServer/elicitation/request":
@@ -556,6 +570,7 @@ actor CodexProvider: AgentProvider {
             result = try await request("turn/start", .object(params))
         } catch {
             startingTurn = false
+            interruptWhenStarted = false
             throw error
         }
         // `turn/started` usually lands first, but the response carries the
@@ -564,6 +579,7 @@ actor CodexProvider: AgentProvider {
             activeTurnId = turnId
             startingTurn = false
             continuation.yield(.turnStarted(id: turnId))
+            interruptIfRequested()
         }
         continuation.yield(.item(AgentItem(
             id: clientId, turnId: activeTurnId, status: .completed,
@@ -572,7 +588,12 @@ actor CodexProvider: AgentProvider {
     }
 
     func interrupt() async {
-        guard let threadId, let turnId = activeTurnId else { return }
+        guard let threadId else { return }
+        guard let turnId = activeTurnId else {
+            if startingTurn { interruptWhenStarted = true }
+            return
+        }
+        interruptWhenStarted = false
         // Cancel open approvals first so the turn isn't left waiting on
         // them while it winds down.
         closeAllRequests()
@@ -587,6 +608,12 @@ actor CodexProvider: AgentProvider {
         _ = try? await request("turn/interrupt", [
             "threadId": .string(threadId), "turnId": .string(turnId)
         ], timeout: .seconds(10))
+    }
+
+    private func interruptIfRequested() {
+        guard interruptWhenStarted else { return }
+        interruptWhenStarted = false
+        Task { await self.interrupt() }
     }
 
     // MARK: - Revert

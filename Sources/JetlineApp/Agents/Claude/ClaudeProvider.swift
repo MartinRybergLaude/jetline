@@ -47,6 +47,9 @@ actor ClaudeProvider: AgentProvider {
     /// Set when an interrupt had to kill the process: the next message
     /// respawns it with `--resume`.
     private var needsRespawn = false
+    /// A spawn is waiting on `initialize`: the process dying then is a
+    /// failed launch for `spawn` to report, not the session ending.
+    private var launching = false
     /// Uuids of the messages we sent, whose replay echoes we already show.
     private var sentMessageIds: Set<String> = []
     /// Remote Control's session name while it's on; restored on respawn.
@@ -132,14 +135,14 @@ actor ClaudeProvider: AgentProvider {
         self.process = process
         stopping = false
         needsRespawn = false
+        launching = true
+        defer { launching = false }
         startReading(process)
 
         let response: JSONValue
         do {
             response = try await control(["subtype": "initialize", "hooks": nil], timeout: .seconds(60))
         } catch {
-            // Detach first so `processEnded` doesn't treat this as the
-            // session dying and finish the event stream.
             self.process = nil
             await process.terminate(grace: .milliseconds(200))
             let stderr = process.stderrTail.nonBlank
@@ -161,6 +164,12 @@ actor ClaudeProvider: AgentProvider {
         stopping = true
         if let process {
             await process.terminate()
+        } else {
+            // Already dead (a hard interrupt, a failed revert): nothing
+            // will end the stream, so end it here.
+            closeAllRequests()
+            continuation.yield(.exited(AgentExit(status: 0, stderr: "", expected: true)))
+            continuation.finish()
         }
     }
 
@@ -293,7 +302,8 @@ actor ClaudeProvider: AgentProvider {
         process = nil
         pendingControl.failAll(AgentError.notRunning)
         closeAllRequests()
-        if needsRespawn {
+        if launching { return }
+        if needsRespawn && !stopping {
             // Killed by a hard interrupt: report the turn as interrupted and
             // stay alive for the respawn on the next message.
             if let turn = activeTurnId {
@@ -373,6 +383,13 @@ actor ClaudeProvider: AgentProvider {
         let toolName = request["tool_name"]?.string ?? "tool"
         let input = request["input"] ?? .object([:])
         let toolUseId = request["tool_use_id"]?.string
+        if toolName == "AskUserQuestion", input["questions"]?.array?.isEmpty ?? true {
+            // Nothing to ask; don't leave the CLI waiting on an empty card.
+            var answered = input.object ?? [:]
+            answered["answers"] = .object([:])
+            reply(to: requestId, ["behavior": "allow", "updatedInput": .object(answered)])
+            return
+        }
         permissionRequests[requestId] = PermissionRequest(
             toolName: toolName,
             toolUseId: toolUseId,
@@ -575,7 +592,7 @@ actor ClaudeProvider: AgentProvider {
 
     func answer(_ requestId: String, answers: [String: [String]]) async {
         guard let request = permissionRequests.removeValue(forKey: requestId) else { return }
-        guard case var .object(input) = request.input else { return }
+        var input = request.input.object ?? [:]
         input["answers"] = .object(answers.mapValues { .string($0.joined(separator: ", ")) })
         reply(to: requestId, ["behavior": "allow", "updatedInput": .object(input)])
         continuation.yield(.requestClosed(id: requestId))
@@ -621,7 +638,14 @@ actor ClaudeProvider: AgentProvider {
             await process.terminate(grace: .seconds(1))
         }
         stopping = false
+        // Detached above, so `processEnded` won't settle these.
+        pendingControl.failAll(AgentError.notRunning)
+        closeAllRequests()
+        if let turn = activeTurnId {
+            continuation.yield(.turnCompleted(id: turn, .interrupted))
+        }
         activeTurnId = nil
+        sentMessageIds.removeAll()
         mapper = ClaudeEventMapper()
         let newId = UUID().uuidString.lowercased()
         if index > 0, let cut = anchors[index - 1].lastMessageId {

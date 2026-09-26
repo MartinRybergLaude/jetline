@@ -156,6 +156,12 @@ final class ChatSession: Identifiable {
     @ObservationIgnored private var agent: (any AgentProvider)?
     @ObservationIgnored private var capabilities: AgentCapabilities?
     @ObservationIgnored private var eventTask: Task<Void, Never>?
+    /// Bumped whenever the agent is replaced or dropped, so events still in
+    /// flight from an old process are ignored.
+    @ObservationIgnored private var agentGeneration = 0
+    /// Set once the session is dropped (tab closed, workspace torn down):
+    /// from then on nothing writes to the database or checkpoint refs.
+    @ObservationIgnored private var isRetired = false
     @ObservationIgnored private var connectTask: Task<Void, Error>?
     @ObservationIgnored private var boxesByItemId: [String: ChatItemBox] = [:]
     @ObservationIgnored private var turnsByProviderId: [String: ChatTurn] = [:]
@@ -268,7 +274,7 @@ final class ChatSession: Identifiable {
     /// Start the agent process if it isn't running. Called when the tab is
     /// first shown and before sending.
     func connectIfNeeded() {
-        guard agent == nil, connectTask == nil else { return }
+        guard agent == nil, connectTask == nil, !isRetired else { return }
         connectTask = Task { [weak self] in
             guard let self else { return }
             defer { self.connectTask = nil }
@@ -293,10 +299,13 @@ final class ChatSession: Identifiable {
         let agent: any AgentProvider = provider == .claude ? ClaudeProvider() : CodexProvider()
         self.agent = agent
         self.capabilities = agent.capabilities
+        agentGeneration += 1
+        let generation = agentGeneration
         let events = agent.events
         eventTask = Task { [weak self] in
             for await event in events {
-                self?.handle(event)
+                guard let self, self.agentGeneration == generation else { return }
+                self.handle(event)
             }
         }
         do {
@@ -309,8 +318,15 @@ final class ChatSession: Identifiable {
                 interactionMode: interactionMode,
                 resume: resumableSession
             ))
+            // Disconnected while starting: nothing else will stop it.
+            if generation != agentGeneration {
+                await agent.stop()
+                throw AgentError.notRunning
+            }
         } catch {
+            guard generation == agentGeneration else { throw error }
             self.agent = nil
+            agentGeneration += 1
             eventTask?.cancel()
             eventTask = nil
             connection = .failed(error.localizedDescription)
@@ -320,9 +336,42 @@ final class ChatSession: Identifiable {
 
     /// Stop the agent process. The chat stays; the next message resumes it.
     func disconnect() {
-        guard let agent else { return }
-        self.agent = nil
+        guard let agent = detachAgent() else { return }
         Task { await agent.stop() }
+    }
+
+    /// Drop the agent and settle the chat as if it had stopped on request.
+    /// Its remaining events are ignored: a late `exited` would otherwise
+    /// clear a newer agent or write rows for a deleted chat.
+    private func detachAgent() -> (any AgentProvider)? {
+        guard let agent else { return nil }
+        flushDeltas()
+        agentGeneration += 1
+        eventTask?.cancel()
+        agentEnded(failure: nil)
+        return agent
+    }
+
+    /// The agent stopped: `failure` is why, or nil when it was asked to.
+    private func agentEnded(failure: String?) {
+        agent = nil
+        eventTask = nil
+        remoteControl = .off
+        requests.removeAll()
+        connection = failure.map { .failed("\(provider.displayName) stopped: \($0)") } ?? .disconnected
+        // A requested stop drops what was queued behind the turn, rather
+        // than starting it on a fresh process.
+        if failure == nil { queued.removeAll() }
+        if let turn = activeTurn {
+            finish(turn, outcome: failure.map { .failed(message: $0) } ?? .interrupted)
+        }
+        // Background agents died with the process.
+        for turn in turns {
+            for box in turn.items where box.item.status == .inProgress {
+                box.item.status = .interrupted
+                persistItem(box, in: turn)
+            }
+        }
     }
 
     // MARK: - Sending
@@ -332,8 +381,10 @@ final class ChatSession: Identifiable {
         guard !text.isEmpty || !images.isEmpty else { return }
         banner = nil
         if isWorking {
-            if capabilities?.steering == true {
-                steer(text: text, images: images)
+            // Steer only a turn the agent has started: before that, the
+            // message would become a turn of its own.
+            if capabilities?.steering == true, let agent, pendingTurn == nil {
+                steer(text: text, images: images, agent: agent)
             } else {
                 queued.append(QueuedMessage(text: text, images: images))
             }
@@ -367,7 +418,7 @@ final class ChatSession: Identifiable {
             text: text, images: images, model: model, effort: effort, interactionMode: interactionMode
         )
         Task { [weak self] in
-            guard let self else { return }
+            guard let self, self.isLive(turn) else { return }
             if let before = await Checkpointer.capture(
                 worktree: self.cwd,
                 ref: Checkpointer.ref(thread: self.id, turn: String(turn.seq), phase: "before")
@@ -375,20 +426,23 @@ final class ChatSession: Identifiable {
                 turn.checkpointBefore = before
                 self.persistTurn(turn)
             }
+            // Stopped (or reverted) while the snapshot was taken.
+            guard turn.status == .running, self.isLive(turn) else { return }
             do {
                 try await self.ensureConnected()
-                try await self.agent?.send(input)
+                guard let agent = self.agent else { throw AgentError.notRunning }
+                try await agent.send(input)
             } catch {
                 self.failPendingTurn(turn, error)
             }
         }
     }
 
-    private func steer(text: String, images: [URL]) {
+    private func steer(text: String, images: [URL], agent: any AgentProvider) {
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await self.agent?.send(AgentTurnInput(
+                try await agent.send(AgentTurnInput(
                     text: text, images: images, model: self.model, effort: self.effort,
                     interactionMode: self.interactionMode
                 ))
@@ -405,10 +459,14 @@ final class ChatSession: Identifiable {
         turn.errorMessage = error.localizedDescription
         turn.completedAt = Date()
         persistTurn(turn)
+        startNextQueued()
     }
 
     func interrupt() {
         queued.removeAll()
+        // Not handed to the agent yet: `startTurn` sees it's over and
+        // doesn't send it.
+        if let turn = pendingTurn { finish(turn, outcome: .interrupted) }
         guard let agent else {
             if let turn = activeTurn { finish(turn, outcome: .interrupted) }
             return
@@ -501,14 +559,22 @@ final class ChatSession: Identifiable {
     /// after) from the conversation. The turn's message returns to the
     /// composer so it can be edited and resent.
     func revert(to turn: ChatTurn) {
-        guard !isReverting, let index = turns.firstIndex(where: { $0 === turn }) else { return }
+        guard !isReverting, turns.contains(where: { $0 === turn }) else { return }
         isReverting = true
         banner = nil
+        // Nothing queued may start while the turns it follows are dropped.
+        queued.removeAll()
         Task { [weak self] in
             guard let self else { return }
             defer { self.isReverting = false }
-            if self.isWorking, let agent = self.agent {
-                await agent.interrupt()
+            if self.isWorking {
+                self.interrupt()
+                // Files are only restored once the agent has stopped
+                // writing them.
+                guard await self.waitUntilIdle(timeout: .seconds(15)) else {
+                    self.banner = "The running turn didn't stop, so nothing was reverted."
+                    return
+                }
             }
             guard let before = turn.checkpointBefore else {
                 self.banner = "This turn has no file snapshot, so it can't be reverted."
@@ -531,6 +597,7 @@ final class ChatSession: Identifiable {
             } catch {
                 self.banner = "The conversation was reverted, but restoring files failed: \(error.localizedDescription)"
             }
+            guard let index = self.turns.firstIndex(where: { $0 === turn }) else { return }
             let removed = self.turns[index...]
             for turn in removed {
                 for box in turn.items { self.boxesByItemId.removeValue(forKey: box.item.id) }
@@ -549,25 +616,44 @@ final class ChatSession: Identifiable {
         }
     }
 
+    private func waitUntilIdle(timeout: Duration) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while isWorking, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return !isWorking
+    }
+
     // MARK: - Lifecycle
 
     /// App quitting: stop the process and wait for it.
     func shutdown() async {
-        guard let agent else { return }
-        self.agent = nil
+        guard let agent = detachAgent() else { return }
         await agent.stop()
+    }
+
+    /// Workspace torn down: stop the process. The chat stays in the
+    /// database; this object is done with.
+    func retire() {
+        disconnect()
+        isRetired = true
     }
 
     /// Tab closed: stop the process and mark the thread closed.
     func close() {
-        disconnect()
-        eventTask?.cancel()
+        retire()
         // Nothing was said: not worth reopening.
         if turns.contains(where: { $0.userMessage != nil }) {
             ChatStore.setClosed(id, closed: true)
         } else {
             ChatStore.deleteThread(id)
         }
+    }
+
+    /// Whether `turn` is still part of this live chat: work finishing after
+    /// a revert or close must not write it back.
+    private func isLive(_ turn: ChatTurn) -> Bool {
+        !isRetired && turns.contains { $0 === turn }
     }
 
     // MARK: - Event reduction
@@ -655,22 +741,8 @@ final class ChatSession: Identifiable {
             }
 
         case let .exited(exit):
-            agent = nil
-            remoteControl = .off
-            eventTask = nil
-            requests.removeAll()
             let message = exit.stderr.nonBlank.map { Self.lastLines($0, count: 6) } ?? "exit status \(exit.status)"
-            connection = exit.expected ? .disconnected : .failed("\(provider.displayName) stopped: \(message)")
-            if let turn = activeTurn {
-                finish(turn, outcome: exit.expected ? .interrupted : .failed(message: message))
-            }
-            // Background agents died with the process.
-            for turn in turns {
-                for box in turn.items where box.item.status == .inProgress {
-                    box.item.status = .interrupted
-                    persistItem(box, in: turn)
-                }
-            }
+            agentEnded(failure: exit.expected ? nil : message)
         }
     }
 
@@ -689,7 +761,7 @@ final class ChatSession: Identifiable {
             turns.append(turn)
             let seq = turn.seq
             Task { [weak self] in
-                guard let self else { return }
+                guard let self, self.isLive(turn) else { return }
                 turn.checkpointBefore = await Checkpointer.capture(
                     worktree: self.cwd, ref: Checkpointer.ref(thread: self.id, turn: String(seq), phase: "before")
                 )
@@ -790,7 +862,7 @@ final class ChatSession: Identifiable {
         let seq = turn.seq
         let before = turn.checkpointBefore
         Task { [weak self] in
-            guard let self else { return }
+            guard let self, self.isLive(turn) else { return }
             if let after = await Checkpointer.capture(
                 worktree: self.cwd, ref: Checkpointer.ref(thread: self.id, turn: String(seq), phase: "after")
             ) {
@@ -804,12 +876,15 @@ final class ChatSession: Identifiable {
         }
 
         onAttention?(self)
-        // Stopping clears the queue (`interrupt`), so anything still queued
-        // was meant to follow whatever this turn's outcome.
-        if let next = queued.first {
-            queued.removeFirst()
-            startTurn(text: next.text, images: next.images)
-        }
+        startNextQueued()
+    }
+
+    /// Stopping clears the queue (`interrupt`), so anything still queued
+    /// was meant to follow whatever the last turn's outcome.
+    private func startNextQueued() {
+        guard !isWorking, !isRetired, let next = queued.first else { return }
+        queued.removeFirst()
+        startTurn(text: next.text, images: next.images)
     }
 
     // MARK: - Deltas
@@ -856,6 +931,7 @@ final class ChatSession: Identifiable {
     // MARK: - Persistence
 
     private func persistThread() {
+        guard !isRetired else { return }
         let record = ChatThreadRecord(
             id: id,
             workspaceId: workspaceId,
@@ -875,6 +951,7 @@ final class ChatSession: Identifiable {
     }
 
     private func persistTurn(_ turn: ChatTurn) {
+        guard isLive(turn) else { return }
         ChatStore.save(ChatTurnRecord(
             id: turn.id,
             threadId: id,
@@ -891,7 +968,7 @@ final class ChatSession: Identifiable {
     }
 
     private func persistItem(_ box: ChatItemBox, in turn: ChatTurn) {
-        guard let payload = try? ChatStore.encoder.encode(box.item) else { return }
+        guard isLive(turn), let payload = try? ChatStore.encoder.encode(box.item) else { return }
         let seq = turn.seq * 100_000 + (turn.items.firstIndex { $0 === box } ?? turn.items.count)
         ChatStore.save(ChatItemRecord(id: box.id, threadId: id, turnId: turn.id, seq: seq, payload: payload, createdAt: box.createdAt))
     }

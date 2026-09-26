@@ -1856,7 +1856,7 @@ final class AppState: ObservableObject {
         ws.sessions.removeAll()
         // Chats stay open in the database and come back next activation;
         // only their processes stop.
-        for chat in ws.chats { chat.disconnect() }
+        for chat in ws.chats { chat.retire() }
         ws.chats.removeAll()
         ws.diffTabs.removeAll()
         ws.activeTab = nil

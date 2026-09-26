@@ -124,7 +124,12 @@ final class MainWindowCoordinator: NSObject, NSWindowDelegate {
 
     /// Captured from the first root view — the coordinator has no SwiftUI
     /// environment of its own to open scene windows (onboarding) with.
-    var openWindow: OpenWindowAction?
+    var openWindow: OpenWindowAction? {
+        didSet { openOnboardingIfPending() }
+    }
+    /// First launch wants the welcome flow, which may be decided before
+    /// the root view has handed over `openWindow`.
+    private var onboardingPending = false
 
     private static let tabbingIdentifier = "jetline.main"
     private static let frameDefaultsKey = "JetlineMainWindowFrame"
@@ -194,9 +199,16 @@ final class MainWindowCoordinator: NSObject, NSWindowDelegate {
             // OnboardingView itself flips the flag the first time it
             // appears so a subsequent relaunch stays quiet.
             if !state.settings.hasCompletedOnboarding {
-                openWindow?(id: "onboarding")
+                onboardingPending = true
+                openOnboardingIfPending()
             }
         }
+    }
+
+    private func openOnboardingIfPending() {
+        guard onboardingPending, let openWindow else { return }
+        onboardingPending = false
+        openWindow(id: "onboarding")
     }
 
     /// SwiftUI re-evaluates menu commands for its own scenes' windows; with

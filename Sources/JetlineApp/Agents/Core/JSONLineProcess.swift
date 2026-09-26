@@ -406,12 +406,12 @@ final class JSONLineProcess: @unchecked Sendable {
         drainStdout()
         finishStdout()
         drainStderr()
+        // On the write queue, after any write in progress: closing the fd
+        // under a running `write` loop could hand its remaining bytes to
+        // whatever reuses the descriptor number.
+        closeStdin()
         let waiters: [CheckedContinuation<Int32, Never>] = lock.withLock {
             exitStatus = code
-            if stdinFd >= 0 {
-                close(stdinFd)
-                stdinFd = -1
-            }
             defer { exitWaiters.removeAll() }
             return exitWaiters
         }
