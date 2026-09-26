@@ -161,10 +161,12 @@ struct ChatComposer: View {
         // One container so the capsules share a lensing pass and merge as
         // they touch, instead of refracting each other.
         GlassEffectContainer(spacing: 8) {
-        HStack(spacing: 8) {
+        HStack(alignment: .bottom, spacing: 8) {
             // Until the agent reports its models the pills can only show
             // placeholders; keep their space and fade them in once ready.
-            HStack(spacing: 8) {
+            // They wrap onto more rows when the column is narrow, so the
+            // bar never forces the column wider than the pane.
+            FlowLayout(spacing: 8) {
                 ModelMenu(session: session)
                 EffortMenu(session: session)
                 RuntimeModeMenu(session: session)
@@ -173,7 +175,7 @@ struct ChatComposer: View {
             .opacity(pillsReady ? 1 : 0)
             .allowsHitTesting(pillsReady)
             .animation(.easeOut(duration: 0.2), value: pillsReady)
-            Spacer()
+            Spacer(minLength: 0)
             UsageMeter(usage: session.usage, limits: AgentRateLimits.shared.windows[session.provider] ?? [])
             if session.isWorking && session.draft.nonBlank == nil && session.draftImages.isEmpty {
                 Button(action: session.interrupt) {
@@ -240,7 +242,7 @@ struct ChatComposer: View {
     }
 
     private var attachmentsRow: some View {
-        HStack(spacing: 8) {
+        FlowLayout(spacing: 8) {
             ForEach(session.draftImages, id: \.self) { url in
                 AttachmentThumbnail(url: url, size: 72)
                     .onTapGesture { previewedImage = url }
