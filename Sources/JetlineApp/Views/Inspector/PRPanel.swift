@@ -28,6 +28,7 @@ struct PRPanel: View {
 
 private struct PRPanelContent: View {
     @EnvironmentObject private var state: AppState
+    @Environment(InspectorUIState.self) private var ui
     let workspace: Workspace
     let workspaceState: WorkspaceState
 
@@ -35,36 +36,32 @@ private struct PRPanelContent: View {
     /// wraps) so the merge button can sit in a footer the checks list
     /// scrolls under, rather than being one more thing to scroll down to.
     var body: some View {
-        ScrollView {
-            content
-                .padding(.vertical, 8)
-        }
-        .scrollIndicators(.visible)
-        // An inset, not a `safeAreaBar`: the footer is opaque with its own
-        // divider, and the bar's scroll edge effect drew a second edge
-        // above it.
-        .safeAreaInset(edge: .bottom, spacing: 0) { mergeFooter }
-        // Re-entered whenever the panel appears or the workspace changes, and
-        // cancelled when either goes away — so the poll only runs while
-        // someone is actually reading the tab. `refresh` collapses requests
-        // that land inside its freshness window, so flipping tabs is free.
-        .task(id: workspace.id) {
-            while !Task.isCancelled {
-                await state.conversationStore.refresh(workspaceId: workspace.id)
-                try? await Task.sleep(for: .seconds(45))
+        content
+            // An inset, not a `safeAreaBar`: the footer is opaque with its own
+            // divider, and the bar's scroll edge effect drew a second edge
+            // above it.
+            .safeAreaInset(edge: .bottom, spacing: 0) { mergeFooter }
+            // Re-entered whenever the panel appears or the workspace changes, and
+            // cancelled when either goes away — so the poll only runs while
+            // someone is actually reading the tab. `refresh` collapses requests
+            // that land inside its freshness window, so flipping tabs is free.
+            .task(id: workspace.id) {
+                while !Task.isCancelled {
+                    await state.conversationStore.refresh(workspaceId: workspace.id)
+                    try? await Task.sleep(for: .seconds(45))
+                }
             }
-        }
-        // Asking is what makes GitHub compute mergeability: a PR nobody has
-        // touched for a while answers `UNKNOWN` first and its real state on
-        // the next query. Keyed on the state itself, so it re-asks once and
-        // then stops — a still-`UNKNOWN` answer doesn't change the key, and
-        // the tracker's own poll covers the rest.
-        .task(id: mergeStateKey) {
-            guard mergeStateKey == .unknown else { return }
-            try? await Task.sleep(for: .seconds(1.5))
-            guard !Task.isCancelled else { return }
-            state.requestPRRefresh(workspaceId: workspaceState.id)
-        }
+            // Asking is what makes GitHub compute mergeability: a PR nobody has
+            // touched for a while answers `UNKNOWN` first and its real state on
+            // the next query. Keyed on the state itself, so it re-asks once and
+            // then stops — a still-`UNKNOWN` answer doesn't change the key, and
+            // the tracker's own poll covers the rest.
+            .task(id: mergeStateKey) {
+                guard mergeStateKey == .unknown else { return }
+                try? await Task.sleep(for: .seconds(1.5))
+                guard !Task.isCancelled else { return }
+                state.requestPRRefresh(workspaceId: workspaceState.id)
+            }
     }
 
     private var mergeStateKey: PullRequest.MergeState? {
@@ -74,38 +71,45 @@ private struct PRPanelContent: View {
 
     @ViewBuilder
     private var content: some View {
-        switch workspaceState.pr {
-        case .loading, .error, .absent:
-            PRSnapshotPlaceholder(
-                snapshot: workspaceState.pr,
-                branchName: workspace.branchName
+        if case .loaded = workspaceState.pr {
+            // AppKit: a long review can carry a hundred markdown cards, and
+            // only an `NSTableView` with exact row heights scrolls them
+            // without jumping. See `PRTimelineView`.
+            PRTimelineView(
+                workspaceId: workspace.id,
+                conversation: workspaceState.conversation,
+                hideResolved: ui.hideResolvedComments,
+                store: state.conversationStore,
+                hosted: hostedRow
             )
-        case let .loaded(pr, checks):
-            // Lazy for the conversation's sake: a long review can carry a
-            // hundred markdown cards, and only the visible ones should build.
-            LazyVStack(alignment: .leading, spacing: 12) {
-                PRHeaderCard(
-                    pr: pr,
-                    isRefreshing: workspaceState.isRefreshingPR,
-                    onRefresh: {
-                        state.requestPRRefresh(workspaceId: workspaceState.id)
-                        Task {
-                            await state.conversationStore.refresh(workspaceId: workspace.id, force: true)
-                        }
-                    }
+            .id(workspace.id)
+        } else {
+            ScrollView {
+                PRSnapshotPlaceholder(
+                    snapshot: workspaceState.pr,
+                    branchName: workspace.branchName
                 )
-                // The merge gates, together on one card.
-                VStack(alignment: .leading, spacing: 10) {
-                    ReviewSection(pr: pr)
-                    Divider()
-                    ChecksSection(checks: checks)
-                }
-                .padding(12)
-                .cardSurface()
-                PRConversationSection(workspace: workspace, workspaceState: workspaceState)
+                .padding(.vertical, 8)
             }
-            .padding(.horizontal, 12)
+            .scrollIndicators(.visible)
         }
+    }
+
+    /// The rows the timeline hosts rather than draws. Each reads
+    /// `workspaceState` itself, so it redraws without the table.
+    private func hostedRow(_ kind: PRHostedRow) -> AnyView {
+        let view: AnyView
+        switch kind {
+        case .header:
+            view = AnyView(PRHeaderRow(workspaceState: workspaceState))
+        case .gates:
+            view = AnyView(PRGatesRow(workspaceState: workspaceState))
+        case .conversation:
+            view = AnyView(PRConversationHeader(workspaceId: workspace.id, workspaceState: workspaceState))
+        case .composer:
+            view = AnyView(PRComposerRow(workspaceId: workspace.id, workspaceState: workspaceState))
+        }
+        return AnyView(view.environmentObject(state).environment(ui))
     }
 
     /// Present for every open PR, not just mergeable ones: "the button is
@@ -122,6 +126,54 @@ private struct PRPanelContent: View {
                 isMerging: workspaceState.runningGitAction == .mergePR,
                 isTogglingAutoMerge: workspaceState.isTogglingAutoMerge
             )
+        }
+    }
+}
+
+private struct PRHeaderRow: View {
+    @EnvironmentObject private var state: AppState
+    let workspaceState: WorkspaceState
+
+    var body: some View {
+        if case let .loaded(pr, _) = workspaceState.pr {
+            PRHeaderCard(
+                pr: pr,
+                isRefreshing: workspaceState.isRefreshingPR,
+                onRefresh: {
+                    state.requestPRRefresh(workspaceId: workspaceState.id)
+                    Task {
+                        await state.conversationStore.refresh(workspaceId: workspaceState.id, force: true)
+                    }
+                }
+            )
+        }
+    }
+}
+
+/// The merge gates, together on one card.
+private struct PRGatesRow: View {
+    let workspaceState: WorkspaceState
+
+    var body: some View {
+        if case let .loaded(pr, checks) = workspaceState.pr {
+            VStack(alignment: .leading, spacing: 10) {
+                ReviewSection(pr: pr)
+                Divider()
+                ChecksSection(checks: checks)
+            }
+            .padding(12)
+            .cardSurface()
+        }
+    }
+}
+
+private struct PRComposerRow: View {
+    let workspaceId: String
+    let workspaceState: WorkspaceState
+
+    var body: some View {
+        if let conversation = workspaceState.conversation.conversation {
+            CommentComposer(workspaceId: workspaceId, number: conversation.number)
         }
     }
 }
@@ -175,7 +227,7 @@ private struct MergeSection: View {
         VStack(spacing: 0) {
             if let caption {
                 Label(caption.text, systemImage: caption.symbol)
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 12)
@@ -374,9 +426,9 @@ struct StatusChip: View {
     var body: some View {
         HStack(spacing: 3) {
             Image(systemName: symbol)
-                .font(.system(size: 9, weight: .bold))
+                .font(.system(size: 10.5, weight: .bold))
             Text(label)
-                .font(.system(size: 10, weight: .semibold))
+                .font(.system(size: 11.5, weight: .semibold))
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 7)
@@ -405,7 +457,7 @@ private struct PRHeaderCard: View {
         VStack(alignment: .leading, spacing: 10) {
             identityRow
             Text(pr.title)
-                .font(.headline)
+                .font(.system(size: 15, weight: .semibold))
                 .lineLimit(3)
                 // Headlines wrap in a 240pt-wide inspector; without this the
                 // card claims a single line's height and clips.
@@ -422,7 +474,7 @@ private struct PRHeaderCard: View {
         HStack(spacing: 6) {
             statePill
             Text("#\(pr.number)")
-                .monoFont(.caption)
+                .monoFont(size: 11.5)
                 .foregroundStyle(.secondary)
             Spacer(minLength: 0)
             RefreshButton(isRefreshing: isRefreshing, help: "Refresh pull request") {
@@ -435,21 +487,21 @@ private struct PRHeaderCard: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 4) {
                 Image(systemName: "arrow.triangle.branch")
-                    .font(.system(size: 9))
+                    .font(.system(size: 10.5))
                 Text("\(pr.headRefName) → \(pr.baseRefName)")
-                    .monoFont(.caption)
+                    .monoFont(size: 11.5)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
             .foregroundStyle(.secondary)
 
             Text(byline)
-                .font(.caption)
+                .font(.callout)
                 .foregroundStyle(.secondary)
 
             if hasConflicts {
                 Label("Merge conflicts with \(pr.baseRefName)", systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.orange)
                     .padding(.top, 2)
             }
@@ -554,7 +606,7 @@ private struct ReviewSection: View {
     var body: some View {
         HStack(spacing: 6) {
             Text("Review")
-                .font(.caption.weight(.semibold))
+                .font(.callout.weight(.semibold))
                 .foregroundStyle(.secondary)
             Spacer()
             StatusChip(label: label, symbol: symbol, color: color)
@@ -609,15 +661,15 @@ private struct ChecksSection: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 8, weight: .bold))
+                        .font(.system(size: 9, weight: .bold))
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                         .opacity(checks.isEmpty ? 0 : 1)
                     Text("Checks")
-                        .font(.caption.weight(.semibold))
+                        .font(.callout.weight(.semibold))
                     Spacer()
                     if !checks.isEmpty {
                         Text(summary)
-                            .monoFont(.caption)
+                            .monoFont(size: 11.5)
                     }
                 }
                 .foregroundStyle(.secondary)
@@ -628,7 +680,7 @@ private struct ChecksSection: View {
 
             if checks.isEmpty {
                 Text("No checks reported.")
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 8)
             } else if isExpanded {
@@ -636,7 +688,7 @@ private struct ChecksSection: View {
                     ForEach(grouped, id: \.workflow) { group in
                         if !group.workflow.isEmpty {
                             Text(group.workflow)
-                                .monoFont(size: 10, weight: .medium)
+                                .monoFont(size: 11.5, weight: .medium)
                                 .foregroundStyle(.secondary)
                                 .padding(.top, 6)
                                 .padding(.bottom, 2)
@@ -708,7 +760,7 @@ private struct CheckRow: View {
         HStack(spacing: 6) {
             statusIcon
             Text(run.name)
-                .monoFont(.caption)
+                .monoFont(size: 11.5)
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer()

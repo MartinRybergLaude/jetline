@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 /// Diff-line tints, shared by the full-file diff tab (AppKit, `DiffTextView`)
-/// and the review-thread hunk preview in `ReviewThreadCard` (SwiftUI). The
+/// and the review-thread hunk preview in `PRTimelineNodes`. The
 /// two render differently — one parses a patch, the other gets GitHub's raw
 /// `diffHunk` string — but they should never disagree about what an added
 /// line looks like.

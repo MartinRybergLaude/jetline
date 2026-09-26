@@ -65,8 +65,7 @@ enum ChatFonts {
     }
 }
 
-/// Memoizes inline markdown → styled `NSAttributedString`, like
-/// `MarkdownInlineCache` does for the SwiftUI renderer.
+/// Memoizes inline markdown → styled `NSAttributedString`.
 @MainActor
 enum ChatInline {
     private final class Box {
