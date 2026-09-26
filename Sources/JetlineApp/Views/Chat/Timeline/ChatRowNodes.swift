@@ -536,14 +536,19 @@ enum ChatRowNodes {
     private static func changedFiles(stat: Checkpointer.Stat, from: String, to: String, row: String, host: ChatRowHost) -> ChatNode {
         let key = "files:" + row
         let expanded = host.isExpanded(key, default: false)
+        // One label, so the smaller counts share the title's baseline.
+        let title = NSMutableAttributedString(attributedString: string(
+            stat.files == 1 ? "1 file changed" : "\(stat.files) files changed", font(14), .secondaryLabelColor
+        ))
+        if let counts = counts(adds: stat.additions, dels: stat.deletions, font: mono(12, .medium), showZero: true) {
+            title.append(NSAttributedString(string: " ", attributes: [.font: font(14), .kern: 4]))
+            title.append(counts)
+        }
         var headerItems: [ChatNode] = [
             SymbolNode("doc", size: 14),
-            LabelNode(stat.files == 1 ? "1 file changed" : "\(stat.files) files changed", font: font(14), color: .secondaryLabelColor),
+            LabelNode(title),
+            FillNode(),
         ]
-        if let counts = counts(adds: stat.additions, dels: stat.deletions, font: mono(14, .medium), showZero: true) {
-            headerItems.append(LabelNode(counts))
-        }
-        headerItems.append(FillNode())
         headerItems.append(BoxNode(SymbolNode(expanded ? "chevron.down" : "chevron.right", size: 12), width: 14))
         let header = ClickNode(BoxNode(
             HStackNode(headerItems, spacing: 8, flexible: [headerItems.count - 2]),
@@ -569,10 +574,10 @@ enum ChatRowNodes {
         let isOpen = host.value(for: key) == file.path
         var items: [ChatNode] = [
             statusBadge(file.status),
-            LabelNode(file.path, font: font(14), truncation: .byTruncatingMiddle),
+            LabelNode(file.path, font: mono(12), truncation: .byTruncatingMiddle),
             FillNode(),
         ]
-        if let counts = counts(adds: file.additions, dels: file.deletions, font: mono(14), showZero: false) {
+        if let counts = counts(adds: file.additions, dels: file.deletions, font: mono(12), showZero: false) {
             items.append(LabelNode(counts))
         }
         let line = ClickNode(BoxNode(
@@ -602,13 +607,6 @@ enum ChatRowNodes {
 
     /// Coloured one-letter status chip, as `FileStatusBadge` draws it.
     private static func statusBadge(_ status: FileDiff.Status) -> ChatNode {
-        return BoxNode(
-            LabelNode(status.rawValue, font: mono(9, .bold), color: .white),
-            padding: NSEdgeInsets(top: 1, left: 4, bottom: 1, right: 4),
-            fill: status.badgeColor,
-            radius: 3,
-            hug: true,
-            toolTip: status.label
-        )
+        LetterChipNode(status.rawValue, font: mono(9, .bold), fill: status.badgeColor, toolTip: status.label)
     }
 }

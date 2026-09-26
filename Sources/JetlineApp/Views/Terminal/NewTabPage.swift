@@ -20,16 +20,6 @@ struct NewTabPage: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("New Tab")
-                        .font(.title.weight(.semibold))
-                    Text(workspace.name)
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-
                 group("Start") {
                     ForEach(Array(visibleAgents.enumerated()), id: \.element) { index, agent in
                         if index > 0 { GroupSeparator(inset: 50) }
@@ -82,7 +72,7 @@ struct NewTabPage: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.primary)
                 .padding(.leading, 12)
             VStack(spacing: 0) {
                 rows()

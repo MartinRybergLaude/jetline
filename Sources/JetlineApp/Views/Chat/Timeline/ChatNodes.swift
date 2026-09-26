@@ -385,6 +385,59 @@ final class LabelNode: ChatNode {
     }
 }
 
+/// A one-letter chip (a git file status). Drawn rather than built from a
+/// label in a box: a text field centres its line box, which leaves a lone
+/// capital sitting low in a chip this small. This centres the letter's ink.
+final class LetterChipNode: ChatNode {
+    let letter: String
+    let font: NSFont
+    let fill: NSColor
+    let toolTip: String?
+
+    static let height: CGFloat = 14
+
+    init(_ letter: String, font: NSFont, fill: NSColor, toolTip: String? = nil) {
+        self.letter = letter
+        self.font = font
+        self.fill = fill
+        self.toolTip = toolTip
+    }
+
+    override func measure(_ width: CGFloat) -> CGSize {
+        let text = (letter as NSString).size(withAttributes: [.font: font]).width
+        return CGSize(width: max(Self.height, ceil(text) + 8), height: Self.height)
+    }
+
+    override var viewType: NSView.Type { LetterChipView.self }
+    override func makeView() -> NSView { LetterChipView() }
+    override func configure(_ view: NSView, size: CGSize) {
+        guard let view = view as? LetterChipView else { return }
+        view.letter = letter
+        view.font = font
+        view.fill = fill
+        view.toolTip = toolTip
+        view.needsDisplay = true
+    }
+}
+
+final class LetterChipView: NSView {
+    var letter = ""
+    var font = NSFont.systemFont(ofSize: 9)
+    var fill = NSColor.clear
+
+    override func draw(_ dirtyRect: NSRect) {
+        fill.setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: 3, yRadius: 3).fill()
+        let text = NSAttributedString(string: letter, attributes: [.font: font, .foregroundColor: NSColor.white])
+        let ink = text.boundingRect(with: bounds.size, options: [.usesDeviceMetrics])
+        // Without `.usesLineFragmentOrigin` the rect's origin is the
+        // baseline; place it so the glyph's own bounds sit mid-chip.
+        // (Unflipped, so the ink rect's y runs up from the baseline.)
+        let origin = NSPoint(x: bounds.midX - ink.midX, y: bounds.midY - ink.midY)
+        text.draw(with: NSRect(origin: origin, size: bounds.size), options: [])
+    }
+}
+
 // MARK: - Images
 
 final class ChatSymbolView: NSImageView {
