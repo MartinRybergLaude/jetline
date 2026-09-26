@@ -78,16 +78,22 @@ actor ClaudeProvider: AgentProvider {
             do {
                 try await spawn(resume: true)
                 return
-            } catch {
+            } catch let error as AgentError where Self.isMissingSession(error) {
                 // The transcript is gone (deleted, or never written because
                 // the first turn didn't complete). Start over rather than
-                // leaving the chat unusable.
+                // leaving the chat unusable; anything else (a timeout) would
+                // silently lose the context.
                 emitNotice(.warning, "Couldn't resume the previous Claude session, so a new one was started.")
             }
         }
         sessionId = UUID().uuidString.lowercased()
         anchors = []
         try await spawn(resume: false)
+    }
+
+    static func isMissingSession(_ error: AgentError) -> Bool {
+        guard case let .launchFailed(message) = error else { return false }
+        return message.lowercased().contains("no conversation found")
     }
 
     /// `fork`: resume `sessionId` truncated after message `at`, under the

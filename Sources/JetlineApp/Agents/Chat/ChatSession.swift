@@ -168,6 +168,10 @@ final class ChatSession: Identifiable {
     /// Optimistic turn created on send, waiting for the provider's
     /// `turnStarted`.
     @ObservationIgnored private var pendingTurn: ChatTurn?
+    /// The turn whose `send` is in flight. Stopped meanwhile, it's no
+    /// longer pending but still adopts the provider turn the send starts,
+    /// so that turn doesn't show up as a new one.
+    @ObservationIgnored private var sendingTurn: ChatTurn?
     @ObservationIgnored private var pendingDeltas: [(itemId: String, turnId: String?, kind: AgentStreamKind, text: String)] = []
     @ObservationIgnored private var deltaFlushTask: Task<Void, Never>?
     @ObservationIgnored private var itemSeq = 0
@@ -295,6 +299,12 @@ final class ChatSession: Identifiable {
             let error = AgentError.executableNotFound(provider.agentKind.executableName)
             connection = .failed(error.localizedDescription)
             throw error
+        }
+        // Closed while resolving: `retire()` found no agent to stop, so
+        // nothing would stop this one.
+        guard !isRetired else {
+            connection = .disconnected
+            throw AgentError.notRunning
         }
         let agent: any AgentProvider = provider == .claude ? ClaudeProvider() : CodexProvider()
         self.agent = agent
@@ -430,7 +440,11 @@ final class ChatSession: Identifiable {
             guard turn.status == .running, self.isLive(turn) else { return }
             do {
                 try await self.ensureConnected()
+                // Stopped (or reverted) while the agent was starting.
+                guard turn.status == .running, self.isLive(turn) else { return }
                 guard let agent = self.agent else { throw AgentError.notRunning }
+                self.sendingTurn = turn
+                defer { if self.sendingTurn === turn { self.sendingTurn = nil } }
                 try await agent.send(input)
             } catch {
                 self.failPendingTurn(turn, error)
@@ -583,8 +597,11 @@ final class ChatSession: Identifiable {
             // Conversation first: it's the step that can refuse (a turn
             // the provider no longer knows). Files only change once it has
             // succeeded, so the two never drift apart.
+            // The first turn from here the provider knows: an earlier one
+            // may never have reached it (failed at start).
+            let providerTurnId = self.turns.drop { $0 !== turn }.lazy.compactMap(\.providerTurnId).first
             do {
-                if let providerTurnId = turn.providerTurnId {
+                if let providerTurnId {
                     try await self.ensureConnected()
                     try await self.agent?.revert(toBefore: providerTurnId)
                 }
@@ -752,9 +769,10 @@ final class ChatSession: Identifiable {
         if let existing = turnsByProviderId[providerId] { return existing }
         guard create else { return nil }
         let turn: ChatTurn
-        if let pending = pendingTurn {
+        if let pending = pendingTurn ?? sendingTurn {
             turn = pending
             pendingTurn = nil
+            sendingTurn = nil
         } else {
             // Started by the provider itself (Codex implementing a plan).
             turn = ChatTurn(id: UUID().uuidString.lowercased(), seq: (turns.last?.seq ?? 0) + 1, status: .running)
