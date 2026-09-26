@@ -41,6 +41,10 @@ actor ClaudeProvider: AgentProvider {
     private var requestCounter = 0
 
     private var activeTurnId: String?
+    /// `send` is respawning or reconfiguring before its turn starts.
+    private var startingTurn = false
+    /// Stop was pressed while `startingTurn`: the message isn't sent.
+    private var cancelStart = false
     private var runtimeMode: AgentRuntimeMode = .supervised
     private var interactionMode: AgentInteractionMode = .normal
     private var stopping = false
@@ -480,6 +484,11 @@ actor ClaudeProvider: AgentProvider {
     // MARK: - Turns
 
     func send(_ input: AgentTurnInput) async throws {
+        startingTurn = true
+        defer {
+            startingTurn = false
+            cancelStart = false
+        }
         if needsRespawn || process == nil {
             guard config != nil, !stopping else { throw AgentError.notRunning }
             try await spawn(resume: true)
@@ -497,6 +506,9 @@ actor ClaudeProvider: AgentProvider {
             ])
             continuation.yield(.interactionModeChanged(interactionMode))
         }
+        // Stopped while the process was starting or reconfiguring.
+        guard !cancelStart else { return }
+        startingTurn = false
 
         let turnId = UUID().uuidString.lowercased()
         activeTurnId = turnId
@@ -534,7 +546,10 @@ actor ClaudeProvider: AgentProvider {
     }
 
     func interrupt() async {
-        guard let turnId = activeTurnId, let process else { return }
+        guard let turnId = activeTurnId, let process else {
+            if startingTurn { cancelStart = true }
+            return
+        }
         closeAllRequests()
         do {
             _ = try await control(["subtype": "interrupt"], timeout: .seconds(5))
