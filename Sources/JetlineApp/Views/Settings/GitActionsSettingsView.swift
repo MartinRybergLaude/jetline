@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 /// Settings tab for the inspector's git action bar. Top section picks the
@@ -185,3 +186,4 @@ struct PromptOverrideEditor: View {
         return GitActionPrompts.defaults[action] ?? ""
     }
 }
+#endif

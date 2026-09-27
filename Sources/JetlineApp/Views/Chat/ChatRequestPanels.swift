@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 /// Takes the composer's place while the agent waits on the user. One
@@ -281,3 +282,4 @@ private struct PlanApprovalPanel: View {
         }
     }
 }
+#endif

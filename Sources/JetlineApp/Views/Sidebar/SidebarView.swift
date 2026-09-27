@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 struct SidebarView: View {
@@ -101,3 +102,4 @@ private struct PRTrackerStatusPill: View {
         .background(Color.yellow.opacity(0.08))
     }
 }
+#endif

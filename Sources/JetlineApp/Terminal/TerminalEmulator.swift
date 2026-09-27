@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import AppKit
 
@@ -74,3 +75,4 @@ enum TerminalEmulatorFactory {
         GhosttyEmulator()
     }
 }
+#endif

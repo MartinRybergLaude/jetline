@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 /// A one-physical-pixel line in the system separator colour.
@@ -22,3 +23,4 @@ struct Hairline: View {
             )
     }
 }
+#endif

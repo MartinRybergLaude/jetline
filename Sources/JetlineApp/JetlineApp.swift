@@ -1,7 +1,12 @@
+#if os(macOS)
 import SwiftUI
 import AppKit
 
-@main
+/// Entry point for the `jetline` executable.
+public func runJetlineApp() {
+    JetlineApp.main()
+}
+
 struct JetlineApp: App {
     @NSApplicationDelegateAdaptor(JetlineAppDelegate.self) private var appDelegate
     @StateObject private var state = AppState.shared
@@ -240,3 +245,4 @@ final class JetlineAppDelegate: NSObject, NSApplicationDelegate {
         return .terminateLater
     }
 }
+#endif

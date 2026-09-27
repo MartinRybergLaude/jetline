@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 import AppKit
 
@@ -198,3 +199,4 @@ struct PRStatusIcon: View {
         return names.compactMapValues { Bundle.jetlineResources.templateImage($0) }
     }()
 }
+#endif

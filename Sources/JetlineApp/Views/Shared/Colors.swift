@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 import AppKit
 
@@ -47,3 +48,4 @@ extension NSColor {
             : NSColor(white: 0, alpha: 0.07)
     }
 }
+#endif

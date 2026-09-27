@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 
 /// Fetches and caches GitHub avatars for the comment timeline.
@@ -56,3 +57,4 @@ final class AvatarLoader {
         return NSImage(data: data)
     }
 }
+#endif

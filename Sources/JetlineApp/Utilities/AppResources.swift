@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 
 extension Bundle {
@@ -32,3 +33,4 @@ extension Bundle {
         return image
     }
 }
+#endif

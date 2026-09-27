@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 /// Xcode-style segmented tab bar: a recessed capsule "track" with equal-width
@@ -50,3 +51,4 @@ struct CapsuleTabs<Tab: Hashable, Label: View>: View {
         .help(help?(tab) ?? "")
     }
 }
+#endif

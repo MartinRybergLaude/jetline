@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import Quartz
 
@@ -1497,3 +1498,4 @@ final class RowRootNode: ChatNode {
         )]
     }
 }
+#endif

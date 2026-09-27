@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 /// Per-repository configuration sheet. Edits are kept in a local draft so
@@ -409,3 +410,4 @@ private struct BranchPrefixField: View {
         return addUniqueSuffix ? base + "-vega" : base
     }
 }
+#endif

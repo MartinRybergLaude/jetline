@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 /// Centered icon + caption used by the inspector for empty / loading /
@@ -56,3 +57,4 @@ struct PRSnapshotPlaceholder: View {
         }
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 import AppKit
 
@@ -289,3 +290,4 @@ private struct RunTerminalHost: NSViewRepresentable {
         ])
     }
 }
+#endif

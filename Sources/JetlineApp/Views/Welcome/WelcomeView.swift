@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 import AppKit
 
@@ -99,3 +100,4 @@ private struct JetMark: View {
         }
     }
 }
+#endif

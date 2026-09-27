@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import Observation
 
@@ -134,3 +135,4 @@ struct DiffTab: Identifiable, Hashable {
     /// stacking a second one.
     var id: String { path }
 }
+#endif

@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 import AppKit
 
@@ -87,3 +88,4 @@ struct OpenOnGitHubButton: View {
         }
     }
 }
+#endif

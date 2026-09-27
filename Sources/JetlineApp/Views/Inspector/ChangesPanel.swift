@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 struct ChangesPanel: View {
@@ -152,3 +153,4 @@ private struct ChangesPanelContent: View {
         .monoFont(.caption)
     }
 }
+#endif

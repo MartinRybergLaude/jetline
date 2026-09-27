@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 /// What the tab bar's `+` opens: a page for picking what the new tab
@@ -191,3 +192,4 @@ private struct ReopenRow: View {
         .help("Reopen this chat")
     }
 }
+#endif

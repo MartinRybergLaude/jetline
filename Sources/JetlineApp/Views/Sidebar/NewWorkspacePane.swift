@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 /// "New" tab of the workspace creation sheet: derive a fresh feature branch
@@ -47,3 +48,4 @@ struct NewWorkspacePane: View {
         name.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
+#endif

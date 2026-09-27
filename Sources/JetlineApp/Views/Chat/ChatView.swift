@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 /// Main-area content of a chat tab.
@@ -192,3 +193,4 @@ private struct TodoStrip: View {
         }
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import SwiftUI
 
@@ -374,3 +375,4 @@ final class DiffGutterView: NSView {
         NSRect(x: bounds.maxX - 1, y: rect.minY, width: 1, height: rect.height).fill()
     }
 }
+#endif

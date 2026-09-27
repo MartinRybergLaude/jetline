@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 /// The conversation's header row: title, resolution count, the hide
@@ -146,3 +147,4 @@ struct CommentComposer: View {
         }
     }
 }
+#endif

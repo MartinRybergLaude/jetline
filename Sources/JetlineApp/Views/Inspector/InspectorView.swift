@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 /// Top-level so `AppState` can drive selection from outside the view (e.g.
@@ -95,3 +96,4 @@ private struct DiffModeToggle: View {
               : "Showing all changes vs base branch (committed + uncommitted)")
     }
 }
+#endif

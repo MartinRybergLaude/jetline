@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 /// The composer's `/` and `@` completions, shared with `ChatView`, which
@@ -60,3 +61,4 @@ struct ComposerSuggestionList: View {
         .contentShape(Rectangle())
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 import AppKit
 
@@ -180,3 +181,4 @@ private struct SlotContent: View {
         }
     }
 }
+#endif

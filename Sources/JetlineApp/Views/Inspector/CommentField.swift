@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 import AppKit
 
@@ -303,3 +304,4 @@ struct CommentField: NSViewRepresentable {
         return CGSize(width: width, height: CommentFieldView.height(for: text, width: width))
     }
 }
+#endif

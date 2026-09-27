@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 
 // Markdown for the AppKit chat timeline. Flowing blocks (paragraphs,
@@ -577,3 +578,4 @@ extension MarkdownTable.Align {
         }
     }
 }
+#endif

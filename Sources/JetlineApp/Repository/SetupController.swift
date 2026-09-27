@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import AppKit
 
@@ -115,3 +116,4 @@ final class SetupController: ObservableObject, Identifiable {
         }
     }
 }
+#endif

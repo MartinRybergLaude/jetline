@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 
 enum SyntaxTokenKind: Equatable, Sendable {
@@ -236,3 +237,4 @@ enum SyntaxTheme {
     private static let attribute = dynamic("syntaxAttribute", light: 0x815F03, dark: 0xFD8F3F)
     private static let variable  = dynamic("syntaxVariable",  light: 0x326D74, dark: 0x67B7A4)
 }
+#endif

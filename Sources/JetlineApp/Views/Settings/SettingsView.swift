@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 import AppKit
 
@@ -222,3 +223,4 @@ extension AppState {
         )
     }
 }
+#endif

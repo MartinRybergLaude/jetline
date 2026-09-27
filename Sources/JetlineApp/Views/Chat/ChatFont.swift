@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 extension Font {
@@ -5,3 +6,4 @@ extension Font {
         family.map { .custom($0, fixedSize: size) } ?? .system(size: size)
     }
 }
+#endif

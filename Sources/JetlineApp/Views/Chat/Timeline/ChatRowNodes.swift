@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 
 /// What row content needs from the timeline: per-row UI state that must
@@ -610,3 +611,4 @@ enum ChatRowNodes {
         LetterChipNode(status.rawValue, font: mono(9, .bold), fill: status.badgeColor, toolTip: status.label)
     }
 }
+#endif

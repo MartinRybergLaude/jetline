@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 import Sparkle
 
@@ -34,3 +35,4 @@ struct CheckForUpdatesMenuItem: View {
         .disabled(!vm.canCheck)
     }
 }
+#endif

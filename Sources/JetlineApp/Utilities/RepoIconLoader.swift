@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 
 /// Discovers a representative app/site icon inside a repository so the
@@ -182,3 +183,4 @@ final class RepoIconLoader: ObservableObject {
         return score
     }
 }
+#endif

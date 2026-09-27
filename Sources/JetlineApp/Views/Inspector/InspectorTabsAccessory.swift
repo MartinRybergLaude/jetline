@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import Combine
 import Observation
@@ -131,3 +132,4 @@ final class InspectorTabsAccessory: NSSplitViewItemAccessoryViewController {
         return image
     }()
 }
+#endif

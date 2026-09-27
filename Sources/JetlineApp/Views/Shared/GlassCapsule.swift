@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 enum GlassCapsule {
@@ -18,3 +19,4 @@ extension View {
             .glassEffect(.regular.interactive(), in: Capsule())
     }
 }
+#endif

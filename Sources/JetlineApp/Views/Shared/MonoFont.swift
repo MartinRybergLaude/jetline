@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 import AppKit
 
@@ -130,3 +131,4 @@ private extension Font.TextStyle {
         }
     }
 }
+#endif

@@ -1,5 +1,7 @@
 import Foundation
+#if os(macOS)
 import AppKit
+#endif
 import GRDB
 
 /// External applications that can open a workspace's worktree directory.
@@ -48,6 +50,7 @@ enum OpenInApp: String, Codable, CaseIterable, DatabaseValueConvertible, Hashabl
         }
     }
 
+    #if os(macOS)
     var appURL: URL? { OpenInAppCache.shared.url(for: self) }
 
     var isInstalled: Bool { appURL != nil }
@@ -79,7 +82,10 @@ enum OpenInApp: String, Codable, CaseIterable, DatabaseValueConvertible, Hashabl
         cfg.activates = true
         NSWorkspace.shared.open([url], withApplicationAt: app, configuration: cfg) { _, _ in }
     }
+    #endif
 }
+
+#if os(macOS)
 
 private final class OpenInAppCache: @unchecked Sendable {
     static let shared = OpenInAppCache()
@@ -112,3 +118,4 @@ private final class OpenInAppCache: @unchecked Sendable {
         return copy
     }
 }
+#endif

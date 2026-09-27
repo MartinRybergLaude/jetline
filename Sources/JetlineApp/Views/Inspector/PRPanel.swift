@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 import AppKit
 
@@ -837,3 +838,4 @@ private struct FooterButtonStyle: ButtonStyle {
             .opacity(isEnabled ? 1 : 0.5)
     }
 }
+#endif

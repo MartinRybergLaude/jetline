@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 /// Single sheet that hosts the three workspace-creation flows (new branch,
@@ -75,3 +76,4 @@ struct WorkspaceCreationSheet: View {
         }
     }
 }
+#endif

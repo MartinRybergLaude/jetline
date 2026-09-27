@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
@@ -253,3 +254,4 @@ final class ComposerNSTextView: NSTextView {
         path.contains(" ") ? "\"\(path)\"" : path
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import GhosttyTerminal
 
@@ -338,3 +339,4 @@ private extension NSColor {
         )
     }
 }
+#endif

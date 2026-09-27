@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 import AppKit
 import Combine
@@ -794,3 +795,4 @@ extension EnvironmentValues {
     /// columns.
     @Entry var tabSlot: TabSlot?
 }
+#endif

@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 enum MergeCleanupPolicy {
@@ -600,3 +601,4 @@ final class PRTracker {
         state.prTrackerStatus = new
     }
 }
+#endif

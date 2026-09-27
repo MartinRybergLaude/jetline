@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 struct RepositorySection: View {
@@ -246,3 +247,4 @@ struct RepositorySection: View {
             .padding(.horizontal, 6)
     }
 }
+#endif

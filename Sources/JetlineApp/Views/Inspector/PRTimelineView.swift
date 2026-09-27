@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 import AppKit
 
@@ -709,3 +710,4 @@ final class PRHostedCell: NSView {
         hosting.frame = CGRect(x: 0, y: top, width: bounds.width, height: max(0, bounds.height - top - bottom))
     }
 }
+#endif

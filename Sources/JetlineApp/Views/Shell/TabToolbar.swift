@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import Combine
 import SwiftUI
@@ -479,3 +480,4 @@ private enum RunImage {
         return image
     }
 }
+#endif

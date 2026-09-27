@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import AppKit
 
@@ -83,3 +84,4 @@ final class PTYSession: ObservableObject, Identifiable {
 
     func terminate() { emulator.terminate() }
 }
+#endif

@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 import AppKit
 
@@ -551,3 +552,4 @@ final class ChatRowCell: ChatContainerView {
         ChatMount.mountChildren(of: root, in: self, size: bounds.size, breakout: ChatBreakout())
     }
 }
+#endif

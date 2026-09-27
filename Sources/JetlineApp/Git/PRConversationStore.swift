@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 /// On-demand loader for PR comment streams, plus the write path for
@@ -218,3 +219,4 @@ final class PRConversationStore {
         return nil
     }
 }
+#endif

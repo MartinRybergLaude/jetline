@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 /// "Import PR" tab of the workspace creation sheet. Lists open PRs from the
@@ -315,3 +316,4 @@ struct ImportPRPane: View {
         dismiss()
     }
 }
+#endif

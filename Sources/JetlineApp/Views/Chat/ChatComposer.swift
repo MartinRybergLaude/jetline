@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 import QuickLook
 import AppKit
@@ -681,3 +682,4 @@ private struct UsageRow: View {
         }
     }
 }
+#endif

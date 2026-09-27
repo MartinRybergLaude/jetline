@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 /// Merge-method confirmation, shared by the toolbar's git action menu and
@@ -66,3 +67,4 @@ extension View {
         modifier(MergeConfirmation(workspace: workspace, method: method, isPresented: isPresented))
     }
 }
+#endif

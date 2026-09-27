@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import SwiftUI
 import AppKit
@@ -1971,3 +1972,4 @@ final class AppState: ObservableObject {
         }
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 
 /// Hidden offscreen NSWindow that holds run / setup script terminal views
@@ -83,3 +84,4 @@ enum TerminalIncubator {
         return window
     }
 }
+#endif

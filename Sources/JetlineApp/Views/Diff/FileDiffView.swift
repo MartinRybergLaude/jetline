@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 /// Main-area view for a diff tab: the whole file, with changed lines tinted
@@ -221,3 +222,4 @@ extension FileDiff.Status {
         }
     }
 }
+#endif

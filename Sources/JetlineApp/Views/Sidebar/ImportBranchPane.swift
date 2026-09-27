@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 /// "Import branch" tab of the workspace creation sheet. Defaults to recent
@@ -261,3 +262,4 @@ private struct BranchRow: Hashable, Identifiable {
         return formatter.localizedString(for: lastCommitAt, relativeTo: Date())
     }
 }
+#endif

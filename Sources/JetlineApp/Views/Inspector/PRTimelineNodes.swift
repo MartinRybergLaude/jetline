@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 
 /// Per-thread state that must outlive recycled row views.
@@ -543,3 +544,4 @@ final class ReplyFieldNode: ChatNode {
         }
     }
 }
+#endif

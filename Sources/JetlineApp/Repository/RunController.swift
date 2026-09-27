@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import Combine
 import AppKit
@@ -278,3 +279,4 @@ final class RunController: ObservableObject, Identifiable {
         return out
     }
 }
+#endif

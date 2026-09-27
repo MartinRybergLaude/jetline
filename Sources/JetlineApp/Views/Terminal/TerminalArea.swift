@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 import AppKit
 
@@ -481,3 +482,4 @@ private final class TerminalDropContainer: NSView {
         return "'\(escaped)'"
     }
 }
+#endif

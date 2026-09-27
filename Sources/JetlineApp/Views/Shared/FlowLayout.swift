@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 /// Lays its subviews out left to right at their ideal sizes, wrapping onto
@@ -53,3 +54,4 @@ struct FlowLayout: Layout {
         return rows
     }
 }
+#endif

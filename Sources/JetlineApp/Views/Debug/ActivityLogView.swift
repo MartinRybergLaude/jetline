@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 /// Hidden debug window content. Opens from the Debug menu in the menu bar
@@ -119,3 +120,4 @@ private struct ActivityRow: View {
         return f
     }()
 }
+#endif

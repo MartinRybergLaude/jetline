@@ -1,3 +1,4 @@
+#if os(macOS)
 import CoreGraphics
 
 /// Type sizes for rendered markdown. Kept as explicit point sizes rather
@@ -34,3 +35,4 @@ struct MarkdownStyle: Hashable {
         }
     }
 }
+#endif
