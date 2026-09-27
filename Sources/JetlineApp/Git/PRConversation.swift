@@ -9,7 +9,7 @@ import Foundation
 /// every repo every 15–60s; carrying every comment body through it would
 /// multiply both the response size and the GraphQL point cost for data
 /// that's only ever looked at one PR at a time.
-struct PRConversation: Sendable, Hashable {
+struct PRConversation: Sendable, Hashable, Codable {
     /// GraphQL node id of the pull request — `addComment`'s `subjectId`.
     var pullRequestId: String
     var number: Int
@@ -31,7 +31,7 @@ struct PRConversation: Sendable, Hashable {
 
 /// One authored message: a top-level issue comment, or one comment inside an
 /// inline review thread.
-struct PRComment: Sendable, Hashable, Identifiable {
+struct PRComment: Sendable, Hashable, Identifiable, Codable {
     var id: String
     var author: String
     /// Pre-sized by the GraphQL query; `nil` for a deleted account.
@@ -75,8 +75,8 @@ struct PRComment: Sendable, Hashable, Identifiable {
 
 /// A submitted review's summary body — the text a reviewer writes above
 /// their inline comments, plus the approve / request-changes verdict.
-struct PRReview: Sendable, Hashable, Identifiable {
-    enum Verdict: Sendable, Hashable {
+struct PRReview: Sendable, Hashable, Identifiable, Codable {
+    enum Verdict: Sendable, Hashable, Codable {
         case approved, changesRequested, commented, dismissed
 
         init?(raw: String) {
@@ -134,8 +134,72 @@ struct PRReview: Sendable, Hashable, Identifiable {
     }
 }
 
+// The wire carries the raw bodies; the client re-parses the markdown when it
+// decodes, off the engine (which never renders).
+extension PRComment {
+    private enum CodingKeys: String, CodingKey {
+        case id, author, avatarURL, body, createdAt, url, isMinimized, minimizedReason
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try c.decode(String.self, forKey: .id),
+            author: try c.decode(String.self, forKey: .author),
+            avatarURL: try c.decodeIfPresent(String.self, forKey: .avatarURL),
+            body: try c.decode(String.self, forKey: .body),
+            createdAt: try c.decode(Date.self, forKey: .createdAt),
+            url: try c.decode(String.self, forKey: .url),
+            isMinimized: try c.decode(Bool.self, forKey: .isMinimized),
+            minimizedReason: try c.decodeIfPresent(String.self, forKey: .minimizedReason)
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(author, forKey: .author)
+        try c.encodeIfPresent(avatarURL, forKey: .avatarURL)
+        try c.encode(body, forKey: .body)
+        try c.encode(createdAt, forKey: .createdAt)
+        try c.encode(url, forKey: .url)
+        try c.encode(isMinimized, forKey: .isMinimized)
+        try c.encodeIfPresent(minimizedReason, forKey: .minimizedReason)
+    }
+}
+
+extension PRReview {
+    private enum CodingKeys: String, CodingKey {
+        case id, author, avatarURL, verdict, submittedAt, url, body
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try c.decode(String.self, forKey: .id),
+            author: try c.decode(String.self, forKey: .author),
+            avatarURL: try c.decodeIfPresent(String.self, forKey: .avatarURL),
+            body: try c.decode(String.self, forKey: .body),
+            verdict: try c.decode(Verdict.self, forKey: .verdict),
+            submittedAt: try c.decode(Date.self, forKey: .submittedAt),
+            url: try c.decode(String.self, forKey: .url)
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(author, forKey: .author)
+        try c.encodeIfPresent(avatarURL, forKey: .avatarURL)
+        try c.encode(verdict, forKey: .verdict)
+        try c.encode(submittedAt, forKey: .submittedAt)
+        try c.encode(url, forKey: .url)
+        try c.encode(body, forKey: .body)
+    }
+}
+
 /// An inline review thread anchored to a line of the diff.
-struct PRReviewThread: Sendable, Hashable, Identifiable {
+struct PRReviewThread: Sendable, Hashable, Identifiable, Codable {
     var id: String
     var isResolved: Bool
     /// The anchored line no longer exists in the head commit — GitHub greys
@@ -163,7 +227,7 @@ struct PRReviewThread: Sendable, Hashable, Identifiable {
     }
 }
 
-enum PRTimelineItem: Sendable, Hashable, Identifiable {
+enum PRTimelineItem: Sendable, Hashable, Identifiable, Codable {
     case comment(PRComment)
     case review(PRReview)
     case thread(PRReviewThread)
@@ -193,7 +257,7 @@ enum PRTimelineItem: Sendable, Hashable, Identifiable {
 /// Mirrors `PRSnapshot`'s shape. `.idle` is the extra state: conversations
 /// are only fetched once the PR tab asks for them, so "never loaded"
 /// has to be distinguishable from "loading".
-enum PRConversationSnapshot: Equatable, Sendable {
+enum PRConversationSnapshot: Equatable, Sendable, Codable {
     case idle
     case loading
     case error(String)

@@ -3,7 +3,7 @@ import GRDB
 
 /// How the branch prefix for new workspaces in a repository is derived.
 /// Stored as the raw string in `Repository.branchPrefixMode`.
-enum BranchPrefixMode: String, CaseIterable, Hashable {
+enum BranchPrefixMode: String, CaseIterable, Hashable, Codable, Sendable {
     /// Slugged `git config user.name` followed by `/`. The most useful
     /// default when collaborators share a remote — branches are clearly
     /// owned without each user typing their name into settings.
@@ -16,7 +16,7 @@ enum BranchPrefixMode: String, CaseIterable, Hashable {
 
 /// A git repository the user has added to Jetline.
 /// Workspaces are git worktrees rooted off this repo.
-struct Repository: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
+struct Repository: Codable, Identifiable, Hashable, Sendable, FetchableRecord, PersistableRecord {
     var id: String
     var name: String
     var path: String

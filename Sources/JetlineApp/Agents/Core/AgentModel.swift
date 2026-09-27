@@ -144,14 +144,14 @@ struct AgentModelOption: Codable, Sendable, Hashable, Identifiable {
     var isDefault: Bool
 }
 
-struct AgentSlashCommand: Sendable, Hashable, Identifiable {
+struct AgentSlashCommand: Sendable, Hashable, Identifiable, Codable {
     var name: String
     var description: String
     var argumentHint: String?
     var id: String { name }
 }
 
-struct AgentCapabilities: Sendable, Hashable {
+struct AgentCapabilities: Sendable, Hashable, Codable {
     /// Model can be switched on a live session without a restart.
     var liveModelSwitch: Bool
     /// Messages sent during a running turn are delivered to it.
@@ -349,7 +349,7 @@ struct AgentTokenUsage: Codable, Sendable, Equatable {
 
 /// One usage window of the account's plan: Claude's 5-hour and weekly
 /// limits, Codex's primary and secondary ones.
-struct AgentRateLimit: Sendable, Equatable, Identifiable {
+struct AgentRateLimit: Sendable, Equatable, Identifiable, Codable {
     /// The window's key ("five_hour", "seven_day", "primary", ...).
     var id: String
     var name: String
@@ -372,13 +372,13 @@ struct AgentRateLimit: Sendable, Equatable, Identifiable {
 // MARK: - Requests
 
 /// Something that blocks the agent until the user answers.
-struct AgentRequest: Sendable, Identifiable, Equatable {
+struct AgentRequest: Sendable, Identifiable, Equatable, Codable {
     var id: String
     var turnId: String?
     var itemId: String?
     var kind: Kind
 
-    enum Kind: Sendable, Equatable {
+    enum Kind: Sendable, Equatable, Codable {
         case approval(AgentApproval)
         case questions([AgentQuestion])
         /// Plan mode finished: approve to leave plan mode and implement.
@@ -386,8 +386,8 @@ struct AgentRequest: Sendable, Identifiable, Equatable {
     }
 }
 
-struct AgentApproval: Sendable, Equatable {
-    enum Category: String, Sendable {
+struct AgentApproval: Sendable, Equatable, Codable {
+    enum Category: String, Sendable, Codable {
         case command
         case fileChange
         case fileRead
@@ -405,7 +405,7 @@ struct AgentApproval: Sendable, Equatable {
     var allowsSessionScope: Bool
 }
 
-enum AgentApprovalDecision: Sendable, Equatable {
+enum AgentApprovalDecision: Sendable, Equatable, Codable {
     case allowOnce
     case allowForSession
     case deny(message: String?)
@@ -413,8 +413,8 @@ enum AgentApprovalDecision: Sendable, Equatable {
     case cancel
 }
 
-struct AgentQuestion: Sendable, Equatable, Identifiable {
-    struct Option: Sendable, Equatable, Hashable {
+struct AgentQuestion: Sendable, Equatable, Identifiable, Codable {
+    struct Option: Sendable, Equatable, Hashable, Codable {
         var label: String
         var description: String?
     }
@@ -428,7 +428,7 @@ struct AgentQuestion: Sendable, Equatable, Identifiable {
 }
 
 /// Answer to a plan approval request.
-enum AgentPlanDecision: Sendable, Equatable {
+enum AgentPlanDecision: Sendable, Equatable, Codable {
     /// Leave plan mode (switching to `mode`) and let the agent implement.
     case implement(mode: AgentRuntimeMode)
     case keepPlanning(feedback: String?)

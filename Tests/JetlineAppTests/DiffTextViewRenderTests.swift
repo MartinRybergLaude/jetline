@@ -1,3 +1,4 @@
+#if os(macOS)
 import XCTest
 import AppKit
 import SwiftUI
@@ -119,3 +120,4 @@ private extension NSView {
         return nil
     }
 }
+#endif

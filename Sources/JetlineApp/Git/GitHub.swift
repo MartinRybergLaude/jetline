@@ -276,7 +276,7 @@ struct CheckRun: Codable, Sendable, Hashable, Identifiable {
 /// because the picker needs `headRepositoryOwner` (for fork detection) and
 /// `updatedAt` (for the row caption) that the per-branch tracker query
 /// doesn't fetch — and conversely doesn't need review-thread/comment counts.
-struct PRSummary: Sendable, Hashable, Identifiable {
+struct PRSummary: Sendable, Hashable, Identifiable, Codable {
     let number: Int
     let title: String
     let url: String
@@ -297,7 +297,7 @@ struct PRSummary: Sendable, Hashable, Identifiable {
     }
 }
 
-enum PRSnapshot: Equatable, Sendable {
+enum PRSnapshot: Equatable, Sendable, Codable {
     case loading
     case error(String)
     case absent
@@ -308,7 +308,7 @@ enum PRSnapshot: Equatable, Sendable {
 /// the repo allows. Cached per-repo by `PRTracker` and surfaced to the UI
 /// via `AppState.repoMetadataByRepo` so the merge controls only offer what
 /// will actually work.
-struct RepoIdentifier: Sendable, Hashable {
+struct RepoIdentifier: Sendable, Hashable, Codable {
     let owner: String
     let name: String
     let allowedMergeMethods: Set<MergeMethod>

@@ -22,5 +22,6 @@ case "${1:-patch}" in
 esac
 
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $NEW" "$PLIST"
+sed -i "" "s/static let embedded = \".*\"/static let embedded = \"$NEW\"/" Sources/JetlineApp/Daemon/JetlineDaemon.swift
 echo "$CUR → $NEW"
 echo "Next: git commit -am 'Release $NEW' && git tag v$NEW && git push origin main --tags"

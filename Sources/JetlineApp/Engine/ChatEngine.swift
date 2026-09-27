@@ -83,32 +83,17 @@ final class ChatTurn: Identifiable {
     }
 }
 
-/// A native chat with one agent: owns the provider, folds its events into
-/// observable state, persists the transcript and snapshots the worktree
-/// around every turn.
+/// A native chat with one agent, engine side: owns the provider, folds its
+/// events into observable state, persists the transcript and snapshots the
+/// worktree around every turn. Clients see it through `ChatPublisher`'s
+/// patches (the client-side mirror is `ChatSession`).
 @MainActor
 @Observable
-final class ChatSession: Identifiable {
-    enum Connection: Equatable {
-        case disconnected
-        case connecting
-        case connected
-        case failed(String)
-    }
-
+final class ChatEngine: Identifiable {
+    typealias Connection = ChatConnection
     /// What the tab strip and sidebar show.
-    enum Activity: Equatable {
-        case idle
-        case working
-        case needsInput
-        case failed
-    }
-
-    struct QueuedMessage: Identifiable, Equatable {
-        let id = UUID()
-        var text: String
-        var images: [URL]
-    }
+    typealias Activity = ChatActivity
+    typealias QueuedMessage = ChatQueuedMessage
 
     let id: String
     let workspaceId: String
@@ -128,14 +113,7 @@ final class ChatSession: Identifiable {
     private(set) var connection: Connection = .disconnected
     /// Remote Control: continuing this chat from claude.ai or the Claude
     /// app. Not kept across restarts.
-    private(set) var remoteControl: RemoteControl = .off
-
-    enum RemoteControl: Equatable {
-        case off
-        case starting
-        case on(URL?)
-        case failed(String)
-    }
+    private(set) var remoteControl: ChatRemoteControl = .off
     private(set) var turns: [ChatTurn] = []
     private(set) var requests: [AgentRequest] = []
     private(set) var todos: [AgentTodo] = []
@@ -146,9 +124,6 @@ final class ChatSession: Identifiable {
     /// Transient problem shown above the composer (send failed, revert
     /// failed). Cleared on the next successful action.
     var banner: String?
-    /// Composer contents, kept here so switching tabs doesn't lose a draft.
-    var draft = ""
-    var draftImages: [URL] = []
     /// True while a revert restores files and truncates the conversation.
     private(set) var isReverting = false
 
@@ -176,12 +151,13 @@ final class ChatSession: Identifiable {
     @ObservationIgnored private var deltaFlushTask: Task<Void, Never>?
     @ObservationIgnored private var itemSeq = 0
     @ObservationIgnored private var executableResolver: (AgentProviderKind) async -> String?
+    @ObservationIgnored private let rateLimits: AgentRateLimits
 
     /// Fired when a turn finishes or starts waiting on the user, so the app
     /// can badge or notify.
-    @ObservationIgnored var onAttention: ((ChatSession) -> Void)?
+    @ObservationIgnored var onAttention: ((ChatEngine) -> Void)?
     /// Fired after each completed turn (used to refresh the diff panel).
-    @ObservationIgnored var onTurnFinished: ((ChatSession) -> Void)?
+    @ObservationIgnored var onTurnFinished: ((ChatEngine) -> Void)?
 
     // MARK: - Init
 
@@ -193,8 +169,10 @@ final class ChatSession: Identifiable {
         model: String?,
         effort: String?,
         runtimeMode: AgentRuntimeMode,
+        rateLimits: AgentRateLimits,
         executableResolver: @escaping (AgentProviderKind) async -> String?
     ) {
+        self.rateLimits = rateLimits
         self.id = UUID().uuidString.lowercased()
         self.workspaceId = workspaceId
         self.cwd = cwd
@@ -210,7 +188,13 @@ final class ChatSession: Identifiable {
     }
 
     /// A chat restored from the database.
-    init(record: ChatThreadRecord, cwd: String, executableResolver: @escaping (AgentProviderKind) async -> String?) {
+    init(
+        record: ChatThreadRecord,
+        cwd: String,
+        rateLimits: AgentRateLimits,
+        executableResolver: @escaping (AgentProviderKind) async -> String?
+    ) {
+        self.rateLimits = rateLimits
         self.id = record.id
         self.workspaceId = record.workspaceId
         self.cwd = cwd
@@ -396,7 +380,7 @@ final class ChatSession: Identifiable {
             if capabilities?.steering == true, let agent, pendingTurn == nil {
                 steer(text: text, images: images, agent: agent)
             } else {
-                queued.append(QueuedMessage(text: text, images: images))
+                queued.append(QueuedMessage(text: text, images: images.map(\.path)))
             }
             return
         }
@@ -570,67 +554,63 @@ final class ChatSession: Identifiable {
     // MARK: - Revert
 
     /// Put the worktree back to before `turn` and drop it (and everything
-    /// after) from the conversation. The turn's message returns to the
-    /// composer so it can be edited and resent.
-    func revert(to turn: ChatTurn) {
-        guard !isReverting, turns.contains(where: { $0 === turn }) else { return }
+    /// after) from the conversation. Returns the turn's message, for the
+    /// composer, so it can be edited and resent — nil when nothing was
+    /// reverted (`banner` says why).
+    func revert(to turn: ChatTurn) async -> (text: String, images: [String])? {
+        guard !isReverting, turns.contains(where: { $0 === turn }) else { return nil }
         isReverting = true
         banner = nil
         // Nothing queued may start while the turns it follows are dropped.
         queued.removeAll()
-        Task { [weak self] in
-            guard let self else { return }
-            defer { self.isReverting = false }
-            if self.isWorking {
-                self.interrupt()
-                // Files are only restored once the agent has stopped
-                // writing them.
-                guard await self.waitUntilIdle(timeout: .seconds(15)) else {
-                    self.banner = "The running turn didn't stop, so nothing was reverted."
-                    return
-                }
+        defer { isReverting = false }
+        if isWorking {
+            interrupt()
+            // Files are only restored once the agent has stopped
+            // writing them.
+            guard await waitUntilIdle(timeout: .seconds(15)) else {
+                banner = "The running turn didn't stop, so nothing was reverted."
+                return nil
             }
-            guard let before = turn.checkpointBefore else {
-                self.banner = "This turn has no file snapshot, so it can't be reverted."
-                return
-            }
-            // Conversation first: it's the step that can refuse (a turn
-            // the provider no longer knows). Files only change once it has
-            // succeeded, so the two never drift apart.
-            // The first turn from here the provider knows: an earlier one
-            // may never have reached it (failed at start).
-            let providerTurnId = self.turns.drop { $0 !== turn }.lazy.compactMap(\.providerTurnId).first
-            do {
-                if let providerTurnId {
-                    try await self.ensureConnected()
-                    try await self.agent?.revert(toBefore: providerTurnId)
-                }
-            } catch {
-                self.banner = "Couldn't revert the conversation: \(error.localizedDescription)"
-                return
-            }
-            do {
-                try await Checkpointer.restore(worktree: self.cwd, to: before)
-            } catch {
-                self.banner = "The conversation was reverted, but restoring files failed: \(error.localizedDescription)"
-            }
-            guard let index = self.turns.firstIndex(where: { $0 === turn }) else { return }
-            let removed = self.turns[index...]
-            for turn in removed {
-                for box in turn.items { self.boxesByItemId.removeValue(forKey: box.item.id) }
-                if let providerId = turn.providerTurnId { self.turnsByProviderId.removeValue(forKey: providerId) }
-            }
-            if let message = turn.userMessage {
-                self.draft = message.text
-                self.draftImages = message.images.map { URL(fileURLWithPath: $0) }
-            }
-            self.turns.removeSubrange(index...)
-            self.requests.removeAll()
-            self.todos = []
-            ChatStore.truncate(threadId: self.id, fromSeq: turn.seq)
-            self.persistThread()
-            self.onTurnFinished?(self)
         }
+        guard let before = turn.checkpointBefore else {
+            banner = "This turn has no file snapshot, so it can't be reverted."
+            return nil
+        }
+        // Conversation first: it's the step that can refuse (a turn
+        // the provider no longer knows). Files only change once it has
+        // succeeded, so the two never drift apart.
+        // The first turn from here the provider knows: an earlier one
+        // may never have reached it (failed at start).
+        let providerTurnId = turns.drop { $0 !== turn }.lazy.compactMap(\.providerTurnId).first
+        do {
+            if let providerTurnId {
+                try await ensureConnected()
+                try await agent?.revert(toBefore: providerTurnId)
+            }
+        } catch {
+            banner = "Couldn't revert the conversation: \(error.localizedDescription)"
+            return nil
+        }
+        do {
+            try await Checkpointer.restore(worktree: cwd, to: before)
+        } catch {
+            banner = "The conversation was reverted, but restoring files failed: \(error.localizedDescription)"
+        }
+        guard let index = turns.firstIndex(where: { $0 === turn }) else { return nil }
+        let removed = turns[index...]
+        for turn in removed {
+            for box in turn.items { boxesByItemId.removeValue(forKey: box.item.id) }
+            if let providerId = turn.providerTurnId { turnsByProviderId.removeValue(forKey: providerId) }
+        }
+        let draft = turn.userMessage.map { ($0.text, $0.images) }
+        turns.removeSubrange(index...)
+        requests.removeAll()
+        todos = []
+        ChatStore.truncate(threadId: id, fromSeq: turn.seq)
+        persistThread()
+        onTurnFinished?(self)
+        return draft ?? ("", [])
     }
 
     private func waitUntilIdle(timeout: Duration) async -> Bool {
@@ -725,7 +705,7 @@ final class ChatSession: Identifiable {
             self.usage = usage
 
         case let .rateLimits(windows):
-            AgentRateLimits.shared.merge(windows, for: provider)
+            rateLimits.merge(windows, for: provider)
 
         case let .runtimeModeChanged(mode):
             if runtimeMode != mode {
@@ -902,7 +882,7 @@ final class ChatSession: Identifiable {
     private func startNextQueued() {
         guard !isWorking, !isRetired, let next = queued.first else { return }
         queued.removeFirst()
-        startTurn(text: next.text, images: next.images)
+        startTurn(text: next.text, images: next.images.map { URL(fileURLWithPath: $0) })
     }
 
     // MARK: - Deltas

@@ -1,3 +1,4 @@
+#if os(macOS)
 import XCTest
 @testable import JetlineApp
 
@@ -217,3 +218,4 @@ final class MarkdownParserTests: XCTestCase {
         XCTAssertEqual(MarkdownParser.parse("\n\n   \n"), [])
     }
 }
+#endif

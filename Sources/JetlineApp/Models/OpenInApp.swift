@@ -5,7 +5,7 @@ import AppKit
 import GRDB
 
 /// External applications that can open a workspace's worktree directory.
-enum OpenInApp: String, Codable, CaseIterable, DatabaseValueConvertible, Hashable {
+enum OpenInApp: String, Codable, Sendable, CaseIterable, DatabaseValueConvertible, Hashable {
     case finder
     case terminal
     case ghostty

@@ -4,7 +4,7 @@ import Foundation
 /// except `mergePR` spawn a new agent tab with a prompt; merge runs
 /// `gh pr merge` directly because the user explicitly wants merging to stay
 /// out of the agent's hands.
-enum GitAction: String, CaseIterable, Hashable {
+enum GitAction: String, CaseIterable, Hashable, Codable, Sendable {
     case commit
     case createPR
     case pullUpdates

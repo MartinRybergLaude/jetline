@@ -117,6 +117,9 @@ final class PTYProcess: @unchecked Sendable {
             free(cwdC)
         }
 
+        // Computed here: nothing between fork and exec may allocate or
+        // consult the rlimit machinery.
+        let maxFD = Int32(min(Int(getdtablesize()), 65_536))
         var master: Int32 = -1
         let pid = jl_forkpty(&master, &ws)
 
@@ -130,6 +133,7 @@ final class PTYProcess: @unchecked Sendable {
             // descendant the agent spawns. argv[0] is the executable's
             // basename because Claude Code re-execs itself by argv[0].
             _ = setpgid(0, 0)
+            jl_close_from(3, maxFD)
             _ = chdir(cwdC!)
             _ = execve(executableC!, argv, envp)
             _exit(127)

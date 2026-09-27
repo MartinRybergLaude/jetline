@@ -8,9 +8,9 @@ import XCTest
 /// off rather than leave a task that spawns into a workspace the user has
 /// already moved on from.
 @MainActor
-final class RunControllerQueueTests: XCTestCase {
+final class ScriptRunQueueTests: XCTestCase {
     func testQueuedRunIsDistinctFromStartingAndHasNoSurface() {
-        let controller = RunController(workspaceId: "ws")
+        let controller = ScriptRun(kind: .run, workspaceId: "ws", settings: { AppSettings() })
         controller.start(script: "true", cwd: NSTemporaryDirectory(), env: [:]) {
             try? await Task.sleep(for: .seconds(60))
         }
@@ -22,13 +22,13 @@ final class RunControllerQueueTests: XCTestCase {
             "queued is not starting — the peer still owns the port, so the panel must not claim Running"
         )
         XCTAssertNil(
-            controller.emulator,
-            "a queued run must hold no surface, or the panel shows the run it is displacing"
+            controller.terminal,
+            "a queued run must hold no terminal, or the panel shows the run it is displacing"
         )
     }
 
     func testStopCancelsARunStillWaitingOnItsPeers() {
-        let controller = RunController(workspaceId: "ws")
+        let controller = ScriptRun(kind: .run, workspaceId: "ws", settings: { AppSettings() })
         controller.start(script: "true", cwd: NSTemporaryDirectory(), env: [:]) {
             try? await Task.sleep(for: .seconds(60))
         }
@@ -36,11 +36,11 @@ final class RunControllerQueueTests: XCTestCase {
         controller.stop()
 
         XCTAssertFalse(controller.isRunning, "Stop should take a queued run back to idle")
-        XCTAssertNil(controller.emulator, "cancelling should not leave a spawned process")
+        XCTAssertNil(controller.terminal, "cancelling should not leave a spawned process")
     }
 
     func testDiscardCancelsARunStillWaitingOnItsPeers() {
-        let controller = RunController(workspaceId: "ws")
+        let controller = ScriptRun(kind: .run, workspaceId: "ws", settings: { AppSettings() })
         controller.start(script: "true", cwd: NSTemporaryDirectory(), env: [:]) {
             try? await Task.sleep(for: .seconds(60))
         }
@@ -48,13 +48,13 @@ final class RunControllerQueueTests: XCTestCase {
         controller.discard()
 
         XCTAssertFalse(controller.isRunning)
-        XCTAssertNil(controller.emulator)
+        XCTAssertNil(controller.terminal)
     }
 
     /// Without a clearance the run spawns as it always did, so the queued
     /// path can't quietly become the only one that works.
     func testStopOnAQueuedRunLeavesItRestartable() {
-        let controller = RunController(workspaceId: "ws")
+        let controller = ScriptRun(kind: .run, workspaceId: "ws", settings: { AppSettings() })
         controller.start(script: "true", cwd: NSTemporaryDirectory(), env: [:]) {
             try? await Task.sleep(for: .seconds(60))
         }

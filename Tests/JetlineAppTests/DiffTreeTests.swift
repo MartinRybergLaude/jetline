@@ -46,6 +46,7 @@ final class DiffTreeTests: XCTestCase {
 }
 
 final class FileDiffLineTests: XCTestCase {
+    #if os(macOS)
     func testNumbersLinesFromHunkHeader() {
         let file = FileDiff(path: "a.txt", status: .modified, additions: 1, deletions: 1, hunks: [
             .init(header: "@@ -3,3 +3,3 @@ func x()", lines: [
@@ -63,4 +64,5 @@ final class FileDiffLineTests: XCTestCase {
     func testNewFileStartsAtOne() {
         XCTAssertEqual(FileDiffLine.newStartLine(ofHunkHeader: "@@ -0,0 +1,12 @@"), 1)
     }
+    #endif
 }

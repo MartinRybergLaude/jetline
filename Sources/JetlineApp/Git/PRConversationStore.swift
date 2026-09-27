@@ -1,4 +1,3 @@
-#if os(macOS)
 import Foundation
 
 /// On-demand loader for PR comment streams, plus the write path for
@@ -17,11 +16,11 @@ final class PRConversationStore {
     /// turning into a request per switch.
     private static let freshness: TimeInterval = 10
 
-    private weak var state: AppState?
+    private weak var state: Engine?
     private var inFlight: [String: Task<Void, Never>] = [:]
     private var lastLoaded: [String: Date] = [:]
 
-    init(state: AppState) {
+    init(state: Engine) {
         self.state = state
     }
 
@@ -219,4 +218,3 @@ final class PRConversationStore {
         return nil
     }
 }
-#endif

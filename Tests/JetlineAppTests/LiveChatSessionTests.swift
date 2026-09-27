@@ -1,7 +1,7 @@
 import XCTest
 @testable import JetlineApp
 
-/// Drives `ChatSession` — reducer, checkpoints, persistence, revert — on
+/// Drives `ChatEngine` — reducer, checkpoints, persistence, revert — on
 /// top of the real CLIs. Opt-in like `LiveAgentTests`.
 @MainActor
 final class LiveChatSessionTests: XCTestCase {
@@ -35,13 +35,14 @@ final class LiveChatSessionTests: XCTestCase {
     }
 
     private func runChat(provider: AgentProviderKind, model: String?, effort: String?) async throws {
-        let session = ChatSession(
+        let session = ChatEngine(
             workspaceId: "test-workspace",
             cwd: repo.path,
             provider: provider,
             model: model,
             effort: effort,
             runtimeMode: .supervised,
+            rateLimits: AgentRateLimits(),
             executableResolver: { await AgentLauncher.resolveOnPath($0.agentKind.executableName) }
         )
 
@@ -65,18 +66,18 @@ final class LiveChatSessionTests: XCTestCase {
         XCTAssertEqual(session.turns.count, 2)
         try await Task.sleep(for: .milliseconds(500))
         let record = try XCTUnwrap(ChatStore.thread(id: session.id))
-        let restored = ChatSession(record: record, cwd: repo.path, executableResolver: { _ in nil })
+        let restored = ChatEngine(record: record, cwd: repo.path, rateLimits: AgentRateLimits(), executableResolver: { _ in nil })
         XCTAssertEqual(restored.turns.count, 2)
         XCTAssertEqual(restored.turns.map { $0.items.count }, session.turns.map { $0.items.count })
         XCTAssertEqual(restored.title, session.title)
         XCTAssertNotNil(record.resumeCursor)
 
         // Revert turn 1: file gone, both turns gone, message back in draft.
-        session.revert(to: session.turns[0])
-        try await waitUntil(timeout: 60) { !session.isReverting && session.turns.isEmpty }
+        let draft = await session.revert(to: session.turns[0])
+        XCTAssertTrue(session.turns.isEmpty)
         XCTAssertNil(session.banner)
         XCTAssertFalse(FileManager.default.fileExists(atPath: repo.appendingPathComponent("hello.txt").path))
-        XCTAssertTrue(session.draft.hasPrefix("Create a file named hello.txt"))
+        XCTAssertTrue(draft?.text.hasPrefix("Create a file named hello.txt") == true)
         XCTAssertTrue(ChatStore.transcript(threadId: session.id).turns.isEmpty)
 
         // The chat still works after reverting.
@@ -87,7 +88,7 @@ final class LiveChatSessionTests: XCTestCase {
     }
 
     /// Wait for the running turn to end, approving whatever it asks.
-    private func runTurn(_ session: ChatSession, timeout: TimeInterval) async throws {
+    private func runTurn(_ session: ChatEngine, timeout: TimeInterval) async throws {
         let deadline = Date().addingTimeInterval(timeout)
         try await waitUntil(timeout: 30) { session.isWorking }
         while Date() < deadline {

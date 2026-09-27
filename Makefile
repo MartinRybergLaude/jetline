@@ -129,7 +129,7 @@ ship-major: KIND=major
 ship-patch ship-minor ship-major:
 	@./scripts/bump-version.sh $(KIND)
 	@NEW=$$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" BundleResources/Info.plist); \
-		git add BundleResources/Info.plist && \
+		git add BundleResources/Info.plist Sources/JetlineApp/Daemon/JetlineDaemon.swift && \
 		git commit -m "Release $$NEW" && \
 		git tag "v$$NEW" && \
 		git push origin HEAD "v$$NEW" && \

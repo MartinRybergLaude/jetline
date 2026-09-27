@@ -1,4 +1,3 @@
-#if os(macOS)
 import Foundation
 
 enum MergeCleanupPolicy {
@@ -17,6 +16,20 @@ enum MergeCleanupPolicy {
               let unpushed = try? await GitRunner.run(["rev-list", "--count", "HEAD", "--not", "--remotes"], cwd: worktreePath),
               unpushed.success else { return false }
         return unpushed.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "0"
+    }
+}
+
+enum PRTrackerStatus: String, Equatable, Codable, Sendable {
+    case ok
+    case ghMissing
+    case authRequired
+
+    var userMessage: String? {
+        switch self {
+        case .ok:           return nil
+        case .ghMissing:    return "gh CLI not found — install it (e.g. `brew install gh` or your distro's package)."
+        case .authRequired: return "gh not authenticated — run `gh auth login` in a terminal."
+        }
     }
 }
 
@@ -42,19 +55,7 @@ enum MergeCleanupPolicy {
 /// (panel opened), the workspace creation sheet, and the "Refresh" button.
 @MainActor
 final class PRTracker {
-    enum Status: Equatable {
-        case ok
-        case ghMissing
-        case authRequired
-
-        var userMessage: String? {
-            switch self {
-            case .ok:           return nil
-            case .ghMissing:    return "gh CLI not found — install via `brew install gh`."
-            case .authRequired: return "gh not authenticated — run `gh auth login` in a terminal."
-            }
-        }
-    }
+    typealias Status = PRTrackerStatus
 
     /// Per-repo tracker state. One entry per active repository; created
     /// in `startLoops`, torn down in `stop`.
@@ -92,7 +93,7 @@ final class PRTracker {
         static let github = LoopBinding(sleep: \.githubSleep, kickPending: \.githubKickPending)
     }
 
-    private weak var state: AppState?
+    private weak var state: Engine?
 
     /// Cached owner/name per repo. Outer optional = "lookup not yet attempted";
     /// inner `nil` = "looked up, repo has no GitHub remote — skip forever".
@@ -104,7 +105,7 @@ final class PRTracker {
     /// guard prevents a re-trigger before it lands.
     private var autoDeleted: Set<String> = []
 
-    init(state: AppState) {
+    init(state: Engine) {
         self.state = state
     }
 
@@ -416,7 +417,7 @@ final class PRTracker {
     private func recordError(
         _ message: String,
         for workspaces: [Workspace],
-        state: AppState
+        state: Engine
     ) {
         for ws in workspaces {
             switch state.workspaceState(for: ws.id).pr {
@@ -431,7 +432,7 @@ final class PRTracker {
     private func reconcileWorkspaceBranches(
         _ workspaces: [Workspace],
         repo: Repository,
-        state: AppState
+        state: Engine
     ) async -> [Workspace] {
         let remote = repo.remoteOrigin
         let identities: [(String, String?)] = await withTaskGroup(
@@ -464,7 +465,7 @@ final class PRTracker {
         for workspaces: [Workspace],
         repo: Repository,
         identifier: RepoIdentifier,
-        state: AppState
+        state: Engine
     ) async throws -> [String: PRSnapshot] {
         var snapshots: [String: PRSnapshot] = [:]
 
@@ -498,7 +499,7 @@ final class PRTracker {
         let needsCheckoutDiscovery = workspaces.filter { ws in
             snapshots[ws.id] == nil
                 && ws.pullRequestNumber == nil
-                && (state.selectedWorkspaceId == ws.id || state.workspaceState(for: ws.id).isRefreshingPR)
+                && (state.isFocused(ws.id) || state.workspaceState(for: ws.id).isRefreshingPR)
         }
         if !needsCheckoutDiscovery.isEmpty {
             var discoveredNumbersByWorkspace: [String: Int] = [:]
@@ -577,7 +578,7 @@ final class PRTracker {
     /// Auto-cleanup is tied to the specific PR lifetime, not just the branch
     /// name. A same-named branch recreated after an older PR merged should
     /// not be deleted by that historical merged PR.
-    private func autoDeleteIfMerged(workspace: Workspace, snapshot: PRSnapshot, state: AppState) {
+    private func autoDeleteIfMerged(workspace: Workspace, snapshot: PRSnapshot, state: Engine) {
         guard case let .loaded(pr, _) = snapshot,
               MergeCleanupPolicy.shouldDelete(workspace: workspace, pr: pr),
               !autoDeleted.contains(workspace.id) else { return }
@@ -601,4 +602,3 @@ final class PRTracker {
         state.prTrackerStatus = new
     }
 }
-#endif

@@ -1,3 +1,4 @@
+#if os(macOS)
 import XCTest
 @testable import JetlineApp
 
@@ -64,3 +65,4 @@ final class SyntaxHighlighterTests: XCTestCase {
         XCTAssertEqual(rows[1].segments?.first, SyntaxSegment(text: "int", kind: .keyword))
     }
 }
+#endif

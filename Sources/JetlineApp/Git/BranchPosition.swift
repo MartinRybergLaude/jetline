@@ -6,7 +6,7 @@ import Foundation
 /// Computed locally (after a `git fetch`) so it's available before a PR
 /// exists, and accurate even when GitHub's `mergeStateStatus` doesn't fire
 /// `BEHIND` (which only happens under specific branch-protection rules).
-struct BranchPosition: Equatable {
+struct BranchPosition: Equatable, Codable, Sendable {
     /// Commits on `origin/<branch>` that aren't on the local branch.
     var behindRemote: Int = 0
     /// Local commits not on `origin/<branch>`.

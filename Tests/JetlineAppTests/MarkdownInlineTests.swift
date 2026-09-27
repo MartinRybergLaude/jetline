@@ -1,3 +1,4 @@
+#if os(macOS)
 import XCTest
 @testable import JetlineApp
 
@@ -70,3 +71,4 @@ final class MarkdownInlineTests: XCTestCase {
         XCTAssertTrue(attributed.runs.allSatisfy { $0.link == nil })
     }
 }
+#endif

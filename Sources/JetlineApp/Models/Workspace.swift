@@ -6,7 +6,7 @@ import GRDB
 /// `<repoFolder>` is the repo-name slug and `<shortName>` is a star name
 /// allocated by `WorktreeNamer` (legacy rows: UUIDs for both components —
 /// the stored `worktreePath` is authoritative either way).
-struct Workspace: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
+struct Workspace: Codable, Identifiable, Hashable, Sendable, FetchableRecord, PersistableRecord {
     var id: String
     var repositoryId: String
     var name: String
@@ -23,7 +23,7 @@ struct Workspace: Codable, Identifiable, Hashable, FetchableRecord, PersistableR
     /// land at the top; reorders rewrite the column with 0…n-1 values.
     var sortIndex: Int = 0
 
-    enum AgentKind: String, Codable, CaseIterable, DatabaseValueConvertible {
+    enum AgentKind: String, Codable, Sendable, CaseIterable, DatabaseValueConvertible {
         case claude
         case codex
         case vibe

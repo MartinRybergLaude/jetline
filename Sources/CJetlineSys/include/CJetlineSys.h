@@ -20,4 +20,11 @@ int jl_pidfd_open(pid_t pid);
 /// `ioctl(TIOCSWINSZ)` — `ioctl` is variadic, so Swift can't call it on Linux.
 int jl_set_winsize(int fd, unsigned short rows, unsigned short cols, unsigned short xpixel, unsigned short ypixel);
 
+/// Close every descriptor from `lowfd` up (to `maxfd` where there's no
+/// `closefrom`). For a forked child before `execve`: without it the child
+/// inherits whatever pipes the parent had open at that instant — another
+/// subprocess's stdout, say, whose reader then never sees EOF.
+/// Async-signal-safe.
+void jl_close_from(int lowfd, int maxfd);
+
 #endif

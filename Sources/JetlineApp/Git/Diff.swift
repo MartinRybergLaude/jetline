@@ -1,7 +1,7 @@
 import Foundation
 
 /// Computed diff snapshot used by the inspector's Changes panel.
-struct DiffSnapshot: Equatable {
+struct DiffSnapshot: Equatable, Codable, Sendable {
     var files: [FileDiff]
     var totalAdditions: Int
     var totalDeletions: Int
@@ -11,7 +11,7 @@ struct DiffSnapshot: Equatable {
     var isEmpty: Bool { files.isEmpty }
 }
 
-struct FileDiff: Identifiable, Equatable {
+struct FileDiff: Identifiable, Equatable, Codable, Sendable {
     var id: String { path }
     var path: String
     var status: Status
@@ -23,7 +23,7 @@ struct FileDiff: Identifiable, Equatable {
     /// a "binary" hint instead.
     var isBinary: Bool = false
 
-    enum Status: String {
+    enum Status: String, Codable, Sendable {
         case added = "A"
         case modified = "M"
         case deleted = "D"
@@ -45,16 +45,16 @@ struct FileDiff: Identifiable, Equatable {
         }
     }
 
-    struct Hunk: Equatable {
+    struct Hunk: Equatable, Codable, Sendable {
         var header: String
         var lines: [Line]
     }
 
-    struct Line: Equatable {
+    struct Line: Equatable, Codable, Sendable {
         var kind: Kind
         var text: String
 
-        enum Kind {
+        enum Kind: Codable, Sendable {
             case context
             case addition
             case deletion
@@ -62,7 +62,7 @@ struct FileDiff: Identifiable, Equatable {
     }
 }
 
-enum DiffMode: Hashable {
+enum DiffMode: Hashable, Codable, Sendable {
     case combined
     case local
 

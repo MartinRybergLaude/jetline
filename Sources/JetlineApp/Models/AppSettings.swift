@@ -2,7 +2,7 @@ import Foundation
 import GRDB
 
 /// Persisted single-row settings.
-struct AppSettings: Codable, FetchableRecord, PersistableRecord {
+struct AppSettings: Codable, Equatable, Sendable, FetchableRecord, PersistableRecord {
     static let singletonId = "singleton"
 
     var id: String = AppSettings.singletonId
@@ -62,12 +62,12 @@ struct AppSettings: Codable, FetchableRecord, PersistableRecord {
     var fixCommentsPrompt: String?
     var reviewPrompt: String?
 
-    enum AgentInterface: String, Codable, CaseIterable, DatabaseValueConvertible {
+    enum AgentInterface: String, Codable, Sendable, CaseIterable, DatabaseValueConvertible {
         case terminal
         case chat
     }
 
-    enum Theme: String, Codable, CaseIterable, DatabaseValueConvertible {
+    enum Theme: String, Codable, Sendable, CaseIterable, DatabaseValueConvertible {
         case system
         case light
         case dark

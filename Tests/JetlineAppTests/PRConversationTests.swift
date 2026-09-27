@@ -59,7 +59,9 @@ final class PRConversationTests: XCTestCase {
         XCTAssertEqual(conversation.number, 7)
         XCTAssertEqual(conversation.description?.author, "alice")
         XCTAssertEqual(conversation.description?.avatarURL, "https://avatars.example/alice?s=48")
+        #if os(macOS)
         XCTAssertEqual(conversation.description?.blocks.first, .heading(level: 2, text: "Summary"))
+        #endif
         XCTAssertFalse(conversation.truncated)
     }
 

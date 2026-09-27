@@ -1,5 +1,7 @@
 #include "CJetlineSys.h"
 
+#include <unistd.h>
+
 #if defined(__APPLE__)
 #include <util.h>
 #else
@@ -28,4 +30,15 @@ int jl_set_winsize(int fd, unsigned short rows, unsigned short cols, unsigned sh
     ws.ws_xpixel = xpixel;
     ws.ws_ypixel = ypixel;
     return ioctl(fd, TIOCSWINSZ, &ws);
+}
+
+void jl_close_from(int lowfd, int maxfd) {
+#if defined(__linux__)
+    (void)maxfd;
+    closefrom(lowfd);
+#else
+    for (int fd = lowfd; fd < maxfd; fd++) {
+        close(fd);
+    }
+#endif
 }
