@@ -2,86 +2,76 @@
 import Foundation
 import AppKit
 
-/// One running agent session. Holds the terminal view + emulator backend.
-/// Sessions are kept alive while their workspace is open; switching tabs
-/// only swaps which session's view is visible — none of them are killed.
+/// One terminal tab: a Ghostty surface attached to an engine terminal (an
+/// agent TUI or a shell). The process lives in the engine — this app's own,
+/// or a remote `jetlined` — so switching tabs, and on a remote engine even
+/// quitting the app, never kills it.
 @MainActor
 final class PTYSession: ObservableObject, Identifiable {
     let id: String
     let workspaceId: String
     let agent: Workspace.AgentKind
     let cwd: String
-    /// Initial prompt to send to the agent on first start, as a positional
-    /// argument. Used by the inspector's git action bar; nil for plain new
-    /// tabs.
-    let initialPrompt: String?
-    /// Extra CLI arguments ahead of the prompt — `--resume <id>` when a
-    /// chat is handed over to the agent's own TUI.
-    let launchArgs: [String]
     let emulator: TerminalEmulatorView
+    let channel: TerminalChannel
 
     @Published private(set) var hasStarted: Bool = false
     @Published private(set) var lastError: String?
     @Published private(set) var fellBackToShell: Bool = false
+    @Published private(set) var exitCode: Int32?
 
-    init(
-        id: String = UUID().uuidString,
-        workspaceId: String,
-        agent: Workspace.AgentKind,
-        cwd: String,
-        initialPrompt: String? = nil,
-        launchArgs: [String] = []
-    ) {
-        self.id = id
-        self.launchArgs = launchArgs
-        self.workspaceId = workspaceId
-        self.agent = agent
-        self.cwd = cwd
-        self.initialPrompt = initialPrompt
+    init(info: TerminalInfo, connection: EngineConnection) {
+        self.id = info.id
+        self.workspaceId = info.workspaceId
+        self.agent = info.agent
+        self.cwd = info.cwd
         self.emulator = TerminalEmulatorFactory.make()
+        self.channel = TerminalChannel(terminalId: info.id, connection: connection)
+        apply(info)
         // Keep the AppTerminalView in a window from the moment it exists.
         // libghostty's InMemoryTerminalSession drops every byte until the
         // surface is built, and the surface only exists once the view has
-        // a window. Without this, two races produce empty-canvas tabs:
-        //   1. Fresh tab: SwiftUI hasn't yet mounted the host view when
-        //      the spawn Task fires, so the agent's startup banner is
-        //      written into a nil surface and lost.
-        //   2. Tab switch: SwiftUI dismantles the host on `.id` change,
-        //      orphaning the term (no window → surface destroyed). When
-        //      the user returns, addSubview rebuilds an empty surface.
-        // Parking offscreen by default keeps the surface alive across
-        // both transitions; SwiftUI's `addSubview` in makeNSView pulls
-        // the view back out into the active container, and
-        // `dismantleNSView` parks it back when the tab is hidden.
+        // a window. Parking offscreen keeps the surface alive across tab
+        // switches (SwiftUI dismantles the host on `.id` change) and lets
+        // it report its grid before the first byte arrives; SwiftUI's
+        // `addSubview` in makeNSView pulls the view into the active
+        // container, and `dismantleNSView` parks it back when hidden.
         TerminalIncubator.park(emulator.nsView)
         emulator.setActive(false)
     }
 
-    /// Resolve the binary path and start the agent process. Idempotent —
-    /// calling twice is a no-op. The actual `forkpty` is deferred by the
-    /// emulator until its NSView is in a window with non-zero bounds.
+    func apply(_ info: TerminalInfo) {
+        if hasStarted != info.hasStarted { hasStarted = info.hasStarted }
+        if lastError != info.lastError { lastError = info.lastError }
+        if fellBackToShell != info.fellBackToShell { fellBackToShell = info.fellBackToShell }
+        if exitCode != info.exitCode { exitCode = info.exitCode }
+    }
+
+    /// Connect the surface to the engine terminal. Idempotent; call again
+    /// after a reconnect to resume from where output left off.
     func startIfNeeded() async {
-        guard !hasStarted else { return }
-        hasStarted = true
-        do {
-            let settings = try SettingsStore.load()
-            let spec = try await AgentLauncher.spec(
-                for: agent,
-                settings: settings,
-                initialPrompt: initialPrompt,
-                launchArgs: launchArgs
-            )
-            fellBackToShell = spec.fellBackToShell
-            emulator.spawn(executable: spec.executable, args: spec.args, cwd: cwd, env: spec.env)
+        attach()
+    }
+
+    func attach() {
+        if !attached {
+            attached = true
+            emulator.attach(channel)
+            let settings = AppState.shared.settings
             emulator.updateFont(family: MonoFont.terminalFamily(settings.monospaceFontFamily), size: settings.terminalFontSize)
-        } catch {
-            lastError = error.localizedDescription
-            hasStarted = false
+        } else {
+            channel.attach()
         }
     }
 
+    private var attached = false
+
     func interrupt() { emulator.sendInterrupt() }
 
+    /// End the process and the tab.
     func terminate() { emulator.terminate() }
+
+    /// Stop showing it here; the process keeps running in the engine.
+    func detach() { emulator.detach() }
 }
 #endif

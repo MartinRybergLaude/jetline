@@ -82,6 +82,34 @@ enum OpenInApp: String, Codable, Sendable, CaseIterable, DatabaseValueConvertibl
         cfg.activates = true
         NSWorkspace.shared.open([url], withApplicationAt: app, configuration: cfg) { _, _ in }
     }
+
+    /// Editors that open a folder on another machine over ssh themselves.
+    var supportsRemote: Bool {
+        switch self {
+        case .vscode, .cursor, .zed, .zedDev: return true
+        default: return false
+        }
+    }
+
+    /// Open `path` on `sshHost` through the editor's own remote support.
+    func open(directory path: String, onSSHHost sshHost: String) {
+        let encodedPath = path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? path
+        let url: URL?
+        switch self {
+        case .vscode: url = URL(string: "vscode://vscode-remote/ssh-remote+\(sshHost)\(encodedPath)?windowId=_blank")
+        case .cursor: url = URL(string: "cursor://vscode-remote/ssh-remote+\(sshHost)\(encodedPath)?windowId=_blank")
+        case .zed, .zedDev: url = URL(string: "zed://ssh/\(sshHost)\(encodedPath)")
+        default: url = nil
+        }
+        guard let url else { return }
+        if let app = appURL {
+            let cfg = NSWorkspace.OpenConfiguration()
+            cfg.activates = true
+            NSWorkspace.shared.open([url], withApplicationAt: app, configuration: cfg) { _, _ in }
+        } else {
+            NSWorkspace.shared.open(url)
+        }
+    }
     #endif
 }
 

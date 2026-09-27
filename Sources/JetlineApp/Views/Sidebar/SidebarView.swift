@@ -52,6 +52,7 @@ struct SidebarView: View {
     /// row scrolls clear of it.
     private var sidebarFooter: some View {
         VStack(spacing: 8) {
+            EngineStatusPill(connection: state.connection)
             if let message = state.prTrackerStatus.userMessage {
                 PRTrackerStatusPill(message: message)
             }

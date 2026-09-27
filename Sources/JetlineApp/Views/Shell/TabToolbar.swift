@@ -273,7 +273,26 @@ final class TabToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
     /// it was saved — Finder is always present.
     private var currentOpenInApp: OpenInApp {
         let stored = state.settings.defaultOpenInApp
+        if state.remoteSSHHost != nil {
+            // Worktrees are on the engine's machine: only editors that can
+            // reach it over ssh make sense.
+            return availableOpenInApps.contains(stored) ? stored : (availableOpenInApps.first ?? .vscode)
+        }
         return stored.isInstalled ? stored : .finder
+    }
+
+    private var availableOpenInApps: [OpenInApp] {
+        OpenInApp.allCases.filter { app in
+            app.isInstalled && (state.connection.isLocal || app.supportsRemote)
+        }
+    }
+
+    private func open(_ app: OpenInApp, _ path: String) {
+        if let host = state.remoteSSHHost {
+            app.open(directory: path, onSSHHost: host)
+        } else if state.connection.isLocal {
+            app.open(directory: path)
+        }
     }
 
     // MARK: - Menus
@@ -300,13 +319,13 @@ final class TabToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
     }
 
     private func buildOpenInMenu(_ menu: NSMenu) {
-        for app in OpenInApp.allCases where app.isInstalled {
+        for app in availableOpenInApps {
             let item = ActionMenuItem(app.displayName) { [weak self] in
                 guard let self else { return }
                 var settings = state.settings
                 settings.defaultOpenInApp = app
                 state.saveSettings(settings)
-                if let ws = workspace { app.open(directory: ws.worktreePath) }
+                if let ws = workspace { open(app, ws.worktreePath) }
             }
             item.image = app.icon(size: 16)
             menu.addItem(item)
@@ -342,7 +361,7 @@ final class TabToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
 
     @objc private func openInCurrentApp() {
         guard let ws = workspace else { return }
-        currentOpenInApp.open(directory: ws.worktreePath)
+        open(currentOpenInApp, ws.worktreePath)
     }
 
     @objc private func toggleRun() {

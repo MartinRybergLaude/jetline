@@ -49,11 +49,10 @@ struct FileDiffView: View {
             return
         }
         do {
-            let file = try await DiffComputer.fullFileDiff(
+            let file = try await AppState.shared.fullFileDiff(
+                workspaceId: workspace.id,
                 path: tab.path,
                 status: entry.status,
-                worktreePath: workspace.worktreePath,
-                baseBranch: workspace.baseBranch,
                 mode: tab.mode
             )
             let language = SyntaxLanguage.forPath(tab.path)

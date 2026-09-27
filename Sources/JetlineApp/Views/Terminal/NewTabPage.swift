@@ -56,8 +56,8 @@ struct NewTabPage: View {
             .frame(maxWidth: .infinity)
         }
         .background(Color(nsColor: .textBackgroundColor))
-        .onAppear {
-            closedChats = ChatStore.closedThreads(workspaceId: workspace.id, limit: 8)
+        .task(id: workspace.id) {
+            closedChats = await state.closedChats(in: workspace, limit: 8)
         }
     }
 

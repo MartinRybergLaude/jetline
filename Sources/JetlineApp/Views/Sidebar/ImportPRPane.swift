@@ -267,36 +267,19 @@ struct ImportPRPane: View {
 
     private func refresh() async {
         fetchState = .loading
-        let identifier: RepoIdentifier
-        if let cached = state.repoMetadataByRepo[repository.id] {
-            identifier = cached
-        } else {
-            do {
-                guard let resolved = try await GitHubRunner.repoIdentifier(cwd: repository.path) else {
-                    fetchState = .failed("Repository has no GitHub remote.")
-                    return
-                }
-                identifier = resolved
-            } catch GitHubRunner.Error.ghMissing {
-                fetchState = .ghMissing
-                return
-            } catch GitHubRunner.Error.authRequired {
-                fetchState = .authRequired
-                return
-            } catch {
-                fetchState = .failed(error.localizedDescription)
-                return
-            }
-            state.applyRepoMetadata(identifier, for: repository.id)
-        }
-
         do {
-            let prs = try await GitHubRunner.listOpenPRs(repo: identifier, cwd: repository.path)
-            fetchState = .loaded(prs)
-        } catch GitHubRunner.Error.ghMissing {
-            fetchState = .ghMissing
-        } catch GitHubRunner.Error.authRequired {
-            fetchState = .authRequired
+            // gh runs where the repository lives: on the engine.
+            switch try await state.openPullRequests(repository) {
+            case let .loaded(identifier, prs):
+                state.applyRepoMetadata(identifier, for: repository.id)
+                fetchState = .loaded(prs)
+            case .noGitHubRemote:
+                fetchState = .failed("Repository has no GitHub remote.")
+            case .ghMissing:
+                fetchState = .ghMissing
+            case .authRequired:
+                fetchState = .authRequired
+            }
         } catch {
             fetchState = .failed(error.localizedDescription)
         }

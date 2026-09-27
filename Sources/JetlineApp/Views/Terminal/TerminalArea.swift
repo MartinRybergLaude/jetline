@@ -422,8 +422,18 @@ private final class TerminalDropContainer: NSView {
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         let paths = collectPaths(from: sender)
         guard !paths.isEmpty, let session else { return false }
-        let text = paths.map(Self.shellEscape).joined(separator: " ") + " "
-        session.emulator.paste(text)
+        // The agent reads the file where it runs: with a remote engine the
+        // drop goes up first and the pasted path is the engine's copy.
+        Task { @MainActor in
+            var enginePaths: [String] = []
+            for path in paths {
+                if let uploaded = try? await EngineFiles.shared.upload(URL(fileURLWithPath: path)) {
+                    enginePaths.append(uploaded)
+                }
+            }
+            guard !enginePaths.isEmpty else { return }
+            session.emulator.paste(enginePaths.map(Self.shellEscape).joined(separator: " ") + " ")
+        }
         return true
     }
 

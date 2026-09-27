@@ -51,8 +51,9 @@ actor ChatFileIndex {
 
     func files(in cwd: String) async -> [String] {
         if let cached = cache[cwd], Date().timeIntervalSince(cached.at) < 30 { return cached.files }
-        let out = (try? await GitRunner.runChecked(["ls-files", "-co", "--exclude-standard"], cwd: cwd)) ?? ""
-        let files = Array(out.split(separator: "\n").prefix(50_000).map(String.init))
+        // The worktree is on the engine's machine.
+        let listed = (try? await AppState.shared.connection.call(API.ListFiles(cwd: cwd))) ?? []
+        let files = Array(listed.prefix(50_000))
         cache[cwd] = (files, Date())
         return files
     }

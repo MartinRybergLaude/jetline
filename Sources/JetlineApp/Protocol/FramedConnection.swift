@@ -39,6 +39,9 @@ final class FramedConnection: @unchecked Sendable {
     private let writeQueue: DispatchQueue
     private var readSource: DispatchSourceRead?
     private var inbox = Data()
+    /// Bytes to skip up to (and including) before framing starts: a noisy
+    /// remote shell can print a banner before `jetlined attach` runs.
+    private var preamble: Data?
     private let lock = NSLock()
     private var closed = false
     private var _pendingWriteBytes = 0
@@ -49,10 +52,11 @@ final class FramedConnection: @unchecked Sendable {
     /// is called.
     var onClose: (@Sendable () -> Void)?
 
-    init(readFD: Int32, writeFD: Int32, ownsFDs: Bool = true, label: String) {
+    init(readFD: Int32, writeFD: Int32, ownsFDs: Bool = true, label: String, preamble: Data? = nil) {
         self.readFD = readFD
         self.writeFD = writeFD
         self.ownsFDs = ownsFDs
+        self.preamble = preamble
         self.readQueue = DispatchQueue(label: "jetline.conn.read.\(label)")
         self.writeQueue = DispatchQueue(label: "jetline.conn.write.\(label)")
     }
@@ -120,6 +124,18 @@ final class FramedConnection: @unchecked Sendable {
                 break
             }
         }
+        if let marker = preamble {
+            if let found = inbox.range(of: marker) {
+                inbox.removeSubrange(inbox.startIndex..<found.upperBound)
+                preamble = nil
+            } else {
+                // Keep a tail that might be the start of the marker; give up
+                // on a peer that never sends it.
+                if inbox.count > 1_000_000 { sawEOF = true }
+                if sawEOF { shutdown() }
+                return
+            }
+        }
         var frames: [Frame] = []
         var offset = inbox.startIndex
         while inbox.endIndex - offset >= 4 {
@@ -175,6 +191,11 @@ private func Glibc_or_Darwin_close(_ fd: Int32) {
 }
 
 // MARK: - Terminal frames
+
+enum AttachPreamble {
+    /// Written by `jetlined attach` before it starts relaying.
+    static let marker = Data("\u{1B}]jetline-attach;1\u{07}".utf8)
+}
 
 enum TerminalFrame {
     static func output(id: String, offset: UInt64, bytes: Data) -> Data {

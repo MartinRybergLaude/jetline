@@ -2,14 +2,12 @@
 import Foundation
 import AppKit
 
-/// One-shot setup script runner. Spawned when a workspace is first created
-/// and lives until the script exits. Output is rendered into a libghostty
-/// emulator that the inspector's Run panel adopts before any run-script
-/// runner exists, so the user can watch `npm install` (etc.) without being
-/// blocked on the workspace-creation sheet.
+/// The setup script's client side: mirrors the engine's setup `ScriptRun`
+/// (started when a workspace is created) and renders its terminal in the
+/// run panel.
 @MainActor
 final class SetupController: ObservableObject, Identifiable {
-    enum Phase {
+    enum Phase: Equatable {
         case running
         case finished(exitCode: Int32)
     }
@@ -19,6 +17,10 @@ final class SetupController: ObservableObject, Identifiable {
 
     @Published private(set) var phase: Phase = .running
     @Published private(set) var emulator: TerminalEmulatorView?
+
+    private let output = OutputCapture()
+    private var terminalId: String?
+    private weak var connection: EngineConnection?
 
     var isRunning: Bool {
         if case .running = phase { return true }
@@ -35,62 +37,36 @@ final class SetupController: ObservableObject, Identifiable {
         return nil
     }
 
-    private var capturedBytes = Data()
-    private let maxCapturedBytes = 200_000
-    private let trimTargetBytes = 150_000
-
-    init(workspaceId: String) {
+    init(workspaceId: String, connection: EngineConnection) {
         self.workspaceId = workspaceId
+        self.connection = connection
     }
 
-    func start(script: String, cwd: String, env: [String: String]) {
-        guard case .running = phase, emulator == nil else { return }
-        guard let trimmed = script.nonBlank else {
-            phase = .finished(exitCode: 0)
-            return
-        }
-        let term = GhosttyEmulator(
-            fontSize: GhosttyEmulator.outputPanelFontSize,
-            notifySurfaceOnExit: false
-        )
-        term.setExitHandler { [weak self] code in
-            Task { @MainActor [weak self] in self?.handleExit(code: code) }
-        }
-        emulator = term
-        // Park before spawning so the surface exists when the first PTY
-        // chunks arrive — see RunController.start for the full rationale.
-        TerminalIncubator.park(term.nsView)
-        term.setActive(false)
-        term.spawn(
-            executable: ShellScriptLauncher.shell,
-            args: ShellScriptLauncher.args(for: trimmed),
-            cwd: cwd,
-            env: env,
-            outputTap: { [weak self] data in
-                Task { @MainActor [weak self] in self?.appendCapture(data) }
-            }
-        )
+    func apply(_ info: ScriptRunInfo) {
+        let phase: Phase = info.phase == .finished ? .finished(exitCode: info.exitStatus ?? 0) : .running
+        if self.phase != phase { self.phase = phase }
+        guard info.terminalId != terminalId else { return }
+        terminalId = info.terminalId
+        emulator?.detach()
+        emulator?.nsView.removeFromSuperview()
+        emulator = nil
+        output.clear()
+        guard let terminalId = info.terminalId, let connection else { return }
+        emulator = OutputTerminal.make(terminalId: terminalId, connection: connection, capture: output)
     }
 
-    func terminate() {
-        emulator?.terminate()
+    func reattach() {
+        (emulator as? GhosttyEmulator)?.reattach()
     }
 
-    /// Tear the emulator down and pull its NSView out of the incubator.
-    /// Used when the owning workspace is going away — `terminate()` alone
-    /// would leave the parked view referencing nothing.
     func discard() {
-        emulator?.terminate()
+        emulator?.detach()
         emulator?.nsView.removeFromSuperview()
         emulator = nil
     }
 
-    /// Plaintext output for the copy button, with terminal control sequences
-    /// stripped. Reuses `RunController`'s helper so the two panels behave
-    /// identically.
     func copyableOutput() -> String {
-        let raw = String(data: capturedBytes, encoding: .utf8) ?? ""
-        return RunController.stripControlSequences(raw)
+        TerminalText.stripControlSequences(output.text)
     }
 
     @discardableResult
@@ -101,19 +77,6 @@ final class SetupController: ObservableObject, Identifiable {
         pb.clearContents()
         pb.setString(text, forType: .string)
         return true
-    }
-
-    private func handleExit(code: Int32) {
-        guard case .running = phase else { return }
-        phase = .finished(exitCode: code)
-    }
-
-    private func appendCapture(_ data: Data) {
-        capturedBytes.append(data)
-        if capturedBytes.count > maxCapturedBytes {
-            let drop = capturedBytes.count - trimTargetBytes
-            capturedBytes.removeFirst(drop)
-        }
     }
 }
 #endif

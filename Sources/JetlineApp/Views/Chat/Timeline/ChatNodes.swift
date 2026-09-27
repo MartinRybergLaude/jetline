@@ -698,7 +698,7 @@ final class ThumbNode: ChatNode {
 
     private var image: NSImage? {
         if let hit = Self.cache.object(forKey: path as NSString) { return hit }
-        guard let image = NSImage(contentsOfFile: path) else { return nil }
+        guard let image = NSImage(contentsOfFile: EngineFiles.shared.localPath(for: path)) else { return nil }
         Self.cache.setObject(image, forKey: path as NSString)
         return image
     }

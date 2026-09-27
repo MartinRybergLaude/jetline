@@ -11,17 +11,8 @@ protocol TerminalEmulatorView: AnyObject {
     /// The underlying NSView to host inside SwiftUI.
     var nsView: NSView { get }
 
-    /// Spawn a process inside this terminal. Replaces any existing one.
-    /// `outputTap` (when set) is called with each chunk of bytes received
-    /// from the child — used by the run-output panel to keep a copy buffer
-    /// alongside the rendered terminal.
-    func spawn(
-        executable: String,
-        args: [String],
-        cwd: String,
-        env: [String: String],
-        outputTap: (@Sendable (Data) -> Void)?
-    )
+    /// Connect the surface to an engine terminal.
+    func attach(_ channel: TerminalChannel)
 
     /// Send `^C` (or equivalent) to the process.
     func sendInterrupt()
@@ -40,33 +31,15 @@ protocol TerminalEmulatorView: AnyObject {
     /// Adopt new font/size at runtime.
     func updateFont(family: String, size: CGFloat)
 
-    /// Stop the process and tear down the PTY. `completion` fires once every
-    /// process the terminal was hosting is gone — later than the exit
-    /// handler, which reports only the direct child. Callers that need the
-    /// resources it held (a bound port, say) released must wait for this.
-    func terminate(completion: (@Sendable () -> Void)?)
+    /// End the engine terminal behind this surface.
+    func terminate()
+
+    /// Stop receiving output; the engine terminal keeps running.
+    func detach()
 
     /// Toggle Metal rendering when the tab is hidden / shown. Inactive
     /// surfaces should pause display-link work to keep the GPU idle.
     func setActive(_ active: Bool)
-
-    /// Register a handler that fires once when the underlying process
-    /// exits (clean exit, signal, or fork failure). The host uses this to
-    /// reconcile DB state — e.g. mark the persisted session row ended so
-    /// a broken `--resume` doesn't keep cycling. Set before `spawn`.
-    func setExitHandler(_ handler: @escaping (Int32) -> Void)
-}
-
-extension TerminalEmulatorView {
-    func setActive(_ active: Bool) {}
-
-    func terminate() {
-        terminate(completion: nil)
-    }
-
-    func spawn(executable: String, args: [String], cwd: String, env: [String: String]) {
-        spawn(executable: executable, args: args, cwd: cwd, env: env, outputTap: nil)
-    }
 }
 
 @MainActor

@@ -19,6 +19,8 @@ struct SettingsView: View {
                 .tabItem { Label("Agents", systemImage: "sparkles") }
             GitActionsSettingsView()
                 .tabItem { Label("Git Actions", systemImage: "arrow.triangle.branch") }
+            EngineSettingsView()
+                .tabItem { Label("Remote", systemImage: "network") }
         }
         .frame(width: 580, height: 520)
         .onChange(of: appearsActive, initial: true) { _, active in

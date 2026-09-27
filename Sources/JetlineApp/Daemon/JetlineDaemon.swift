@@ -175,6 +175,9 @@ public enum JetlineDaemon {
         guard let fd else {
             fail("the engine didn't start; see \(logFile)")
         }
+        // Mark where the byte stream starts, so the client can skip anything
+        // a login script printed before us.
+        _ = writeAll(fd: STDOUT_FILENO, AttachPreamble.marker)
         // Two blocking pumps; whichever side hangs up ends the bridge. The
         // engine carries on without us.
         let upstream = Thread {

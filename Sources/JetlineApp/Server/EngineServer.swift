@@ -469,7 +469,7 @@ final class EngineServer {
             await engine.conversationStore.postComment(workspaceId: req.workspaceId, body: req.body)
         }
         on(API.ReplyToThread.self) { req, _ in
-            await engine.conversationStore.reply(workspaceId: req.workspaceId, threadId: req.threadId, body: req.body)
+            await engine.conversationStore.reply(workspaceId: req.workspaceId, threadId: req.threadId, body: req.body, refreshAfter: req.refreshAfter)
         }
         on(API.SetThreadResolved.self) { req, _ in
             await engine.conversationStore.setResolved(workspaceId: req.workspaceId, threadId: req.threadId, resolved: req.resolved)
@@ -623,29 +623,40 @@ final class EngineServer {
     }
 }
 
-/// Terminal output fan-out, called from PTY io queues. A client that falls
-/// behind (more than `maxBacklog` unsent) misses frames; the offsets let it
-/// notice and re-attach from where it got to.
+/// Terminal output fan-out, called from PTY io queues. Each subscriber has
+/// a cursor (the next offset it should get), so output reaches it in order
+/// and without repeats. A client that falls behind (more than `maxBacklog`
+/// unsent) is skipped; once it drains, it gets the missed range from the
+/// buffer. Only bytes that fell out of the buffer are ever lost, and then
+/// the client sees the jump in offsets and resets its screen.
 final class TerminalHub: @unchecked Sendable {
+    private struct Subscriber {
+        let connection: FramedConnection
+        var next: UInt64
+    }
+
     private let lock = NSLock()
-    private var subscribers: [String: [Int: FramedConnection]] = [:]
-    private var installed = Set<String>()
+    private var subscribers: [String: [Int: Subscriber]] = [:]
+    private var buffers: [String: TerminalBuffer] = [:]
     private static let maxBacklog = 8 * 1024 * 1024
+    private static let chunk = 256 * 1024
 
     @MainActor
     func install(on terminal: EngineTerminal) {
         let id = terminal.id
-        let fresh: Bool = lock.withLock { installed.insert(id).inserted }
+        let buffer = terminal.buffer
+        let fresh: Bool = lock.withLock {
+            guard buffers[id] == nil else { return false }
+            buffers[id] = buffer
+            return true
+        }
         guard fresh else { return }
-        terminal.buffer.setSink { [weak self] offset, data in
-            self?.broadcast(terminalId: id, offset: offset, data: data)
+        buffer.setSink { [weak self] offset, data in
+            self?.broadcast(terminalId: id, offset: offset, count: data.count)
         }
     }
 
-    /// Replay the retained output (from `fromOffset`) and subscribe, under
-    /// the lock so no live chunk can slip between the replay and the
-    /// subscription out of order. A chunk may arrive twice (once in the
-    /// replay, once live); clients drop what they already have by offset.
+    /// Replay the retained output from `fromOffset` and subscribe.
     func attach(
         terminalId: String,
         buffer: TerminalBuffer,
@@ -656,19 +667,8 @@ final class TerminalHub: @unchecked Sendable {
         lock.withLock {
             let range = buffer.range
             let (from, bytes) = buffer.read(from: fromOffset)
-            if !bytes.isEmpty {
-                // Chunk the replay so a big buffer doesn't make one huge frame.
-                let chunk = 256 * 1024
-                var index = bytes.startIndex
-                var offset = from
-                while index < bytes.endIndex {
-                    let end = min(index + chunk, bytes.endIndex)
-                    connection.send(.terminalOutput, TerminalFrame.output(id: terminalId, offset: offset, bytes: bytes.subdata(in: index..<end)))
-                    offset += UInt64(end - index)
-                    index = end
-                }
-            }
-            subscribers[terminalId, default: [:]][client] = connection
+            Self.send(bytes, from: from, id: terminalId, on: connection)
+            subscribers[terminalId, default: [:]][client] = Subscriber(connection: connection, next: from + UInt64(bytes.count))
             return (range.start, from)
         }
     }
@@ -683,13 +683,32 @@ final class TerminalHub: @unchecked Sendable {
         }
     }
 
-    private func broadcast(terminalId: String, offset: UInt64, data: Data) {
+    private func broadcast(terminalId: String, offset: UInt64, count: Int) {
         lock.withLock {
-            guard let targets = subscribers[terminalId], !targets.isEmpty else { return }
-            let frame = TerminalFrame.output(id: terminalId, offset: offset, bytes: data)
-            for connection in targets.values where connection.pendingWriteBytes < Self.maxBacklog {
-                connection.send(.terminalOutput, frame)
+            guard var targets = subscribers[terminalId], !targets.isEmpty, let buffer = buffers[terminalId] else { return }
+            let end = offset + UInt64(count)
+            for (client, var sub) in targets {
+                guard sub.next < end, sub.connection.pendingWriteBytes < Self.maxBacklog else { continue }
+                // Everything from the cursor on: normally just this chunk,
+                // more when the client was skipped while behind.
+                let (from, bytes) = buffer.read(from: sub.next)
+                Self.send(bytes, from: from, id: terminalId, on: sub.connection)
+                sub.next = from + UInt64(bytes.count)
+                targets[client] = sub
             }
+            subscribers[terminalId] = targets
+        }
+    }
+
+    private static func send(_ bytes: Data, from: UInt64, id: String, on connection: FramedConnection) {
+        guard !bytes.isEmpty else { return }
+        var index = bytes.startIndex
+        var offset = from
+        while index < bytes.endIndex {
+            let end = min(index + chunk, bytes.endIndex)
+            connection.send(.terminalOutput, TerminalFrame.output(id: id, offset: offset, bytes: bytes.subdata(in: index..<end)))
+            offset += UInt64(end - index)
+            index = end
         }
     }
 }

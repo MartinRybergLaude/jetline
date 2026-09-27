@@ -10,7 +10,7 @@ import Foundation
 /// panel drives the cadence via its `.task` loop; this type only
 /// de-duplicates concurrent requests and suppresses redundant ones.
 @MainActor
-final class PRConversationStore {
+final class PRConversationLoader {
     /// A load that lands within this window of the previous one is served
     /// from what's already in `WorkspaceState`. Guards against tab flipping
     /// turning into a request per switch.

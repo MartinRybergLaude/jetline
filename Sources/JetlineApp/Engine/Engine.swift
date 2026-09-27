@@ -53,7 +53,7 @@ final class Engine {
     @ObservationIgnored private var diffRefreshTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var diffRefreshQueued: Set<String> = []
     @ObservationIgnored private(set) lazy var prTracker: PRTracker = PRTracker(state: self)
-    @ObservationIgnored private(set) lazy var conversationStore: PRConversationStore = PRConversationStore(state: self)
+    @ObservationIgnored private(set) lazy var conversationStore: PRConversationLoader = PRConversationLoader(state: self)
     @ObservationIgnored private var hasLoaded = false
 
     // MARK: Hooks for the server

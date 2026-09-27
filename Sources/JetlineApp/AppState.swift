@@ -3,59 +3,56 @@ import Foundation
 import SwiftUI
 import AppKit
 
-/// Root observable state. Owns repositories, workspaces, sessions, selection.
+/// Root observable state of the app — the client side of Jetline.
 ///
-/// Per-workspace mutable state (diff snapshots, PR snapshots, sessions,
-/// run/setup controllers, etc.) lives in `WorkspaceState` instances looked
-/// up via `workspaceState(for:)`, *not* in dicts on this object. That split
-/// keeps a single workspace's poll/diff update from invalidating every
-/// view in the app via the shared `@Published` surface. `WorkspaceState`
-/// itself uses `@Observable` so SwiftUI tracks reads per-keypath — a view
-/// that reads only `.pr` doesn't repaint when `.diff` changes.
+/// Everything durable or process-backed (repositories, worktrees, agents,
+/// terminals, git, the database) belongs to the engine, which runs either in
+/// this process or as `jetlined` on another machine; see `EngineConnection`.
+/// AppState mirrors it from the engine's events and turns user actions into
+/// requests. What stays here is purely presentation: selection, the tab
+/// strip's order and active tab, diff and new-tab pages, the inspector.
+///
+/// Per-workspace state lives in `WorkspaceState` instances looked up via
+/// `workspaceState(for:)`, *not* in dicts on this object. That split keeps a
+/// single workspace's poll/diff update from invalidating every view in the
+/// app via the shared `@Published` surface. `WorkspaceState` itself uses
+/// `@Observable` so SwiftUI tracks reads per-keypath.
 @MainActor
 final class AppState: ObservableObject {
-    nonisolated private static let repositoryBaseWorkspacePrefix = "repo-base:"
+    nonisolated private static let repositoryBaseWorkspacePrefix = Engine.repositoryBaseWorkspacePrefix
 
     /// The app's one state object. Shared rather than scene-owned because
     /// the main window is built in AppKit (`MainWindowCoordinator`) at
     /// launch, before any SwiftUI scene would have created it.
     static let shared = AppState()
 
-    @Published var repositories: [Repository] = []
-    @Published var workspacesByRepo: [String: [Workspace]] = [:]
+    @Published private(set) var repositories: [Repository] = []
+    @Published private(set) var workspacesByRepo: [String: [Workspace]] = [:]
     /// Immediate selection used by the sidebar, terminal, toolbar, and commands.
     @Published var selectedWorkspaceId: String?
     /// Lagging selection used by the inspector so heavy right-column panels
     /// don't rebuild in the same pass as terminal/workspace navigation.
     @Published var inspectorWorkspaceId: String?
-    @Published var settings: AppSettings = AppSettings() {
+    @Published private(set) var settings: AppSettings = AppSettings() {
         willSet { FontSettings.shared.apply(newValue) }
     }
-    /// Per-repo GitHub metadata (owner/name + allowed merge methods),
-    /// resolved on the first PR poll and reused for the app's lifetime.
-    /// Drives the merge confirmation dialog's button set.
-    @Published var repoMetadataByRepo: [String: RepoIdentifier] = [:]
-    @Published var prTrackerStatus: PRTracker.Status = .ok
+    /// Per-repo GitHub metadata (owner/name + allowed merge methods).
+    @Published private(set) var repoMetadataByRepo: [String: RepoIdentifier] = [:]
+    @Published private(set) var prTrackerStatus: PRTrackerStatus = .ok
     @Published var inspectorVisible: Bool = true
     /// Active inspector tab. Lifted out of `InspectorView` so workspace
     /// creation can flip it to `.run` and surface live setup-script output.
     @Published var inspectorTab: InspectorTab = .changes
     /// Repo whose settings sheet should be presented at the shell level.
-    /// Set by the File → Add Repository menu command (which has no view
-    /// of its own) so the main window can host the sheet; sidebar / welcome do
-    /// the same locally without going through this.
     @Published var repoPendingSettings: Repository?
-    /// Repo whose workspace-creation sheet should be presented at shell
-    /// level. Used by menu commands that don't have access to SidebarView's
-    /// local sheet state.
+    /// Repo whose workspace-creation sheet should be presented at shell level.
     @Published var repoPendingWorkspaceCreation: Repository?
-    /// Surfaces (repo settings sheet, app Settings window) that currently
-    /// want the ⌘⇧ navigation key equivalents released back to the text
-    /// system, so ⌘⇧←/→/↑/↓ extend the selection instead of switching
-    /// tabs/workspaces underneath the form being edited. The menu commands
-    /// disable themselves while this is non-empty; a disabled key
-    /// equivalent falls through to the field editor.
+    /// Surfaces that currently want the ⌘⇧ navigation key equivalents
+    /// released back to the text system.
     @Published private(set) var navShortcutSuppressors: Set<String> = []
+    /// Whether the mirror is current: false before the first sync and while
+    /// a remote link is down.
+    @Published private(set) var isSynced = false
 
     var navShortcutsSuppressed: Bool { !navShortcutSuppressors.isEmpty }
 
@@ -67,52 +64,43 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Per-workspace mutable state. Not `@Published` — views look up the
-    /// `WorkspaceState` for their workspace and `WorkspaceState` is
-    /// `@Observable`, so a single workspace's mutations only invalidate
-    /// views that actually read the changed keypath.
-    private var workspaceStates: [String: WorkspaceState] = [:]
-    /// Defers non-visual selection work so the selected row and terminal
-    /// region can repaint before watchers/diff/session startup run.
-    private var workspaceActivationTask: Task<Void, Never>?
-    /// Cancels pending inspector rebinds while the user is moving quickly
-    /// through the workspace list.
-    private var inspectorSelectionTask: Task<Void, Never>?
+    let connection: EngineConnection
 
-    private var watchers: [String: WorktreeWatcher] = [:]
-
-    // MARK: Idle pausing
-
-    /// Last sign of life per workspace: selection, a session spawn, or an
-    /// FSEvents tick from its worktree. Missing entry = never activated
-    /// this run.
-    private var workspaceLastActivity: [String: Date] = [:]
-    /// Workspaces whose watcher was stopped by the idle sweep. Selecting
-    /// one wakes it: the flag clears, activation re-arms the watcher and
-    /// refreshes the diff, and a tracker kick catches PR/position state up.
-    private var pausedWorkspaces: Set<String> = []
-    private var idleSweepTask: Task<Void, Never>?
-    /// Untouched for this long → the workspace is paused: its watcher stops
-    /// and it drops out of per-workspace poll work (browser-style tab
-    /// pausing). Sessions and PTYs stay alive — output from a still-working
-    /// agent hits the worktree and re-bumps activity before the sweep fires.
-    private static let idlePauseThreshold: TimeInterval = 15 * 60
-
-    private var diffRefreshTasks: [String: Task<Void, Never>] = [:]
-    private var diffRefreshQueued: Set<String> = []
-    private(set) lazy var prTracker: PRTracker = PRTracker(state: self)
-    private(set) lazy var conversationStore: PRConversationStore = PRConversationStore(state: self)
-    /// In-memory debug log of background activity (poll, fetch, FF, user
-    /// git actions). Surfaced through the hidden Activity Log window;
-    /// nothing in the normal UI surface reads it.
+    /// The ssh host of a remote engine reached over plain ssh.
+    var remoteSSHHost: String? {
+        if case let .remote(remote) = connection.target { return remote.sshHost }
+        return nil
+    }
+    private(set) lazy var prTracker = PRTrackerProxy(connection: connection)
+    private(set) lazy var conversationStore = PRConversationStore(connection: connection)
+    /// The engine's activity log, mirrored.
     let activityLog = ActivityLog()
+
+    private var workspaceStates: [String: WorkspaceState] = [:]
+    private var workspaceActivationTask: Task<Void, Never>?
+    private var inspectorSelectionTask: Task<Void, Never>?
+    /// Selection recency, most recent last. Drives where selection lands
+    /// when the selected workspace closes.
+    private var selectionHistory: [String] = []
+    /// Where a tab being opened should go in the strip, until it shows up.
+    private var pendingPlacements: [TabRef: TabRef] = [:]
+    /// Tabs closed here whose removal the engine hasn't confirmed yet, so a
+    /// status already in flight doesn't bring them back.
+    private var closingTabs: [String: String] = [:]
     private var hasLoaded = false
 
-    init() {}
+    init() {
+        connection = EngineConnection(target: EngineConnection.savedTarget())
+        EngineFiles.shared.bind(connection)
+        connection.onConnected = { [weak self] client, hello in
+            self?.didConnect(client, hello)
+        }
+        connection.onDisconnected = { [weak self] in
+            self?.didDisconnect()
+        }
+    }
 
-    /// Get-or-create the `WorkspaceState` for `id`. Lazy so callers don't
-    /// need to seed entries before mutating; orphan states from
-    /// transiently-missing workspaces get cleared in `detachWorkspace`.
+    /// Get-or-create the `WorkspaceState` for `id`.
     func workspaceState(for id: String) -> WorkspaceState {
         if let existing = workspaceStates[id] { return existing }
         let new = WorkspaceState(id: id)
@@ -120,123 +108,291 @@ final class AppState: ObservableObject {
         return new
     }
 
-    // MARK: - Load
+    // MARK: - Load & sync
 
     /// Idempotent. Driven by `MainWindowCoordinator.start()` once the main
     /// window is up.
     func load() async {
         guard !hasLoaded else { return }
         hasLoaded = true
-        do {
-            settings = try SettingsStore.load()
-            let repos = try Repositories.all()
-            repositories = repos
-            for r in repos {
-                workspacesByRepo[r.id] = (try? Workspaces.forRepository(r.id)) ?? []
-            }
-            // Hydrate PR snapshots from disk so the sidebar paints
-            // stale-but-known state immediately. The tracker overwrites these
-            // entries as fresh data lands.
-            if let cached = try? PRSnapshots.loadAll() {
-                for (wsId, snap) in cached {
-                    workspaceState(for: wsId).pr = snap
-                }
-            }
-        } catch {
-            print("AppState load error: \(error)")
+        connection.connect()
+    }
+
+    /// Point the app at another engine.
+    func switchEngine(to target: EngineTarget) {
+        guard target != connection.target else { return }
+        resetMirror()
+        connection.switchTarget(target)
+    }
+
+    private func didConnect(_ client: EngineClient, _ hello: API.HelloResult) {
+        client.onEvent = { [weak self] event in self?.handle(event) }
+        let snapshot = hello.snapshot
+        applyGlobal(snapshot.global)
+        for (id, diff) in snapshot.diffs { applyDiff(diff, to: id) }
+        for (id, pr) in snapshot.prs { applyPRSnapshot(pr, to: id) }
+        for (id, conversation) in snapshot.conversations { workspaceState(for: id).conversation = conversation }
+        for (id, status) in snapshot.statuses { applyStatus(status, to: id) }
+        // Workspaces the engine no longer runs anything in (a restarted
+        // daemon, say) lose their local runtime here.
+        for id in workspaceStates.keys where snapshot.statuses[id] == nil {
+            applyStatus(Self.emptyStatus, to: id)
         }
-        prTracker.sync()
-        startIdleSweep()
+        activityLog.clear()
+        for event in snapshot.activity { activityLog.append(event) }
+        // Resume what this client had open.
+        for ws in workspaceStates.values {
+            for session in ws.sessions { session.attach() }
+            for chat in ws.chats { chat.subscribe() }
+            ws.runController?.reattach()
+            ws.setupController?.reattach()
+        }
+        isSynced = true
+        if let id = selectedWorkspaceId {
+            if workspaceById(id) == nil {
+                clearSelectedWorkspace()
+            } else {
+                connection.send(API.SetFocus(workspaceId: id))
+                activateSelectedWorkspace(id)
+            }
+        }
         #if DEBUG
         applyDebugLaunchArguments()
         #endif
     }
 
-    #if DEBUG
-    /// Development hooks for driving the app from a script:
-    /// `-JetlineOpenWorkspace <id>` selects a workspace at launch (a repo's
-    /// base checkout is `repo-base:<repo id>`), and `-JetlineSendPrompt
-    /// <text>` sends a message to the chat that opens there
-    /// (`-JetlinePlanMode YES` sends it in plan mode).
-    private func applyDebugLaunchArguments() {
-        let defaults = UserDefaults.standard
-        guard let id = defaults.string(forKey: "JetlineOpenWorkspace"), workspaceById(id) != nil else { return }
-        selectWorkspace(id)
-        guard let prompt = defaults.string(forKey: "JetlineSendPrompt") else { return }
-        let plan = defaults.bool(forKey: "JetlinePlanMode")
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(1))
-            guard let chat = self?.workspaceState(for: id).activeChat else { return }
-            if plan { chat.setInteractionMode(.plan) }
-            chat.send(text: prompt)
+    private func didDisconnect() {
+        isSynced = false
+        for ws in workspaceStates.values {
+            for chat in ws.chats { chat.markStale() }
         }
     }
-    #endif
 
-    // MARK: - Idle pausing
-
-    /// Awake = worth spending per-workspace background work on (branch
-    /// reconciliation, ahead/behind computes, diff refreshes). Selected
-    /// always counts; otherwise an armed watcher is the signal — never-
-    /// opened, closed, and idle-paused workspaces all lack one.
-    func isWorkspaceAwake(_ id: String) -> Bool {
-        selectedWorkspaceId == id || watchers[id] != nil
+    /// Forget everything mirrored from the current engine.
+    private func resetMirror() {
+        for ws in workspaceStates.values {
+            tearDownLocalRuntime(ws)
+        }
+        workspaceStates.removeAll()
+        repositories = []
+        workspacesByRepo = [:]
+        repoMetadataByRepo = [:]
+        selectionHistory.removeAll()
+        pendingPlacements.removeAll()
+        closingTabs.removeAll()
+        clearSelectedWorkspace()
+        activityLog.clear()
+        isSynced = false
     }
 
-    private func noteWorkspaceActivity(_ id: String) {
-        workspaceLastActivity[id] = Date()
-        pausedWorkspaces.remove(id)
+    private static let emptyStatus = WorkspaceStatus(
+        branchPosition: BranchPosition(), runningGitAction: nil, isTogglingAutoMerge: false,
+        isRefreshingPR: false, terminals: [], chats: [], setup: nil, run: nil, isOpen: false
+    )
+
+    private func handle(_ event: EngineEvent) {
+        switch event {
+        case let .global(snapshot):
+            applyGlobal(snapshot)
+        case let .workspaceDiff(id, diff):
+            applyDiff(diff, to: id)
+        case let .workspacePR(id, pr):
+            applyPRSnapshot(pr, to: id)
+        case let .workspaceConversation(id, conversation):
+            let ws = workspaceState(for: id)
+            if ws.conversation != conversation { ws.conversation = conversation }
+        case let .workspaceStatus(id, status):
+            applyStatus(status, to: id)
+        case let .workspaceRemoved(id):
+            if let ws = workspaceStates.removeValue(forKey: id) {
+                tearDownLocalRuntime(ws)
+            }
+            if selectedWorkspaceId == id { reassignSelection(afterClosing: id) }
+            selectionHistory.removeAll { $0 == id }
+        case let .chat(id, patch):
+            for ws in workspaceStates.values {
+                if let chat = ws.chats.first(where: { $0.id == id }) {
+                    chat.apply(patch)
+                    break
+                }
+            }
+        case let .activity(event):
+            activityLog.append(event)
+        case let .attention(_, _, critical):
+            // Bounce the dock when Jetline isn't frontmost so a long run
+            // doesn't go unnoticed.
+            if !NSApp.isActive {
+                NSApp.requestUserAttention(critical ? .criticalRequest : .informationalRequest)
+            }
+        case let .error(message):
+            Task { await presentError(message) }
+        }
     }
 
-    private func startIdleSweep() {
-        guard idleSweepTask == nil else { return }
-        idleSweepTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(60))
-                self?.pauseIdleWorkspaces()
+    private func applyGlobal(_ snapshot: GlobalSnapshot) {
+        if repositories != snapshot.repositories { repositories = snapshot.repositories }
+        if workspacesByRepo != snapshot.workspacesByRepo { workspacesByRepo = snapshot.workspacesByRepo }
+        if settings != snapshot.settings {
+            let old = settings
+            settings = snapshot.settings
+            if old.monospaceFontFamily != settings.monospaceFontFamily || old.terminalFontSize != settings.terminalFontSize {
+                applyTerminalFont(settings)
             }
         }
+        if repoMetadataByRepo != snapshot.repoMetadataByRepo { repoMetadataByRepo = snapshot.repoMetadataByRepo }
+        if prTrackerStatus != snapshot.prTrackerStatus { prTrackerStatus = snapshot.prTrackerStatus }
+        for (provider, windows) in snapshot.rateLimits {
+            AgentRateLimits.shared.merge(windows, for: provider)
+        }
+        // A workspace that vanished (deleted elsewhere, worktree missing)
+        // takes the selection with it.
+        if let id = selectedWorkspaceId, workspaceById(id) == nil {
+            reassignSelection(afterClosing: id)
+        }
     }
 
-    private func pauseIdleWorkspaces() {
-        let cutoff = Date().addingTimeInterval(-Self.idlePauseThreshold)
-        for (id, watcher) in watchers {
-            guard id != selectedWorkspaceId,
-                  (workspaceLastActivity[id] ?? .distantPast) < cutoff
-            else { continue }
-            watcher.stop()
-            watchers.removeValue(forKey: id)
-            pausedWorkspaces.insert(id)
-            activityLog.record(
-                .lifecycle,
-                "Paused idle workspace",
-                repoId: workspaceById(id)?.repositoryId,
-                workspaceId: id
-            )
+    private func applyDiff(_ state: WorkspaceDiffState, to id: String) {
+        let ws = workspaceState(for: id)
+        if ws.diff != state.diff { ws.diff = state.diff }
+        if ws.localDiff != state.localDiff { ws.localDiff = state.localDiff }
+        if ws.hasUncommitted != state.hasUncommitted { ws.hasUncommitted = state.hasUncommitted }
+    }
+
+    private func applyPRSnapshot(_ pr: PRSnapshot, to id: String) {
+        let ws = workspaceState(for: id)
+        if ws.pr != pr { ws.pr = pr }
+    }
+
+    /// Reconcile a workspace's tabs and runtime with the engine's view.
+    private func applyStatus(_ status: WorkspaceStatus, to id: String) {
+        let ws = workspaceState(for: id)
+        if ws.branchPosition != status.branchPosition { ws.branchPosition = status.branchPosition }
+        if ws.runningGitAction != status.runningGitAction { ws.runningGitAction = status.runningGitAction }
+        if ws.isTogglingAutoMerge != status.isTogglingAutoMerge { ws.isTogglingAutoMerge = status.isTogglingAutoMerge }
+        if ws.isRefreshingPR != status.isRefreshingPR { ws.isRefreshingPR = status.isRefreshingPR }
+        let hadTabs = ws.hasAgentTabs
+
+        // A tab closed here stays closed; once the engine stops listing it,
+        // forget it was closing.
+        let listed = Set(status.terminals.map(\.id) + status.chats.map(\.id))
+        for (tabId, workspaceId) in closingTabs where workspaceId == id && !listed.contains(tabId) {
+            closingTabs.removeValue(forKey: tabId)
+        }
+        let closingHere = Set(closingTabs.keys)
+
+        // Terminals
+        let terminalIds = Set(status.terminals.map(\.id))
+        for info in status.terminals where !closingHere.contains(info.id) {
+            ensureSession(info, in: ws)
+        }
+        for session in ws.sessions where !terminalIds.contains(session.id) {
+            dropSession(session, from: ws)
+        }
+
+        // Chats
+        let chatIds = Set(status.chats.map(\.id))
+        for summary in status.chats where !closingHere.contains(summary.id) {
+            ensureChat(summary, in: ws)
+        }
+        for chat in ws.chats where !chatIds.contains(chat.id) {
+            dropChat(chat, from: ws)
+        }
+
+        // Setup / run
+        if let setup = status.setup {
+            let controller = ws.setupController ?? SetupController(workspaceId: id, connection: connection)
+            ws.setupController = controller
+            controller.apply(setup)
+        } else if let controller = ws.setupController {
+            controller.discard()
+            ws.setupController = nil
+        }
+        if let run = status.run {
+            let controller = ws.runController ?? RunController(workspaceId: id, connection: connection)
+            ws.runController = controller
+            controller.apply(run)
+        } else if let controller = ws.runController {
+            controller.discard()
+            ws.runController = nil
+        }
+
+        // The last tab closed engine-side (another client, or the workspace
+        // was closed): leave it like a closed workspace.
+        if hadTabs, !ws.hasAgentTabs, !status.isOpen {
+            ws.diffTabs.removeAll()
+            ws.tabOrder.removeAll()
+            ws.activeTab = nil
+            if selectedWorkspaceId == id { reassignSelection(afterClosing: id) }
+        }
+        // Nothing showing yet (first activation, restored chats): show the
+        // newest tab.
+        if ws.activeTab == nil, let last = ws.tabOrder.last {
+            selectTab(last, in: id)
+        }
+    }
+
+    @discardableResult
+    private func ensureSession(_ info: TerminalInfo, in ws: WorkspaceState) -> PTYSession {
+        if let existing = ws.sessions.first(where: { $0.id == info.id }) {
+            existing.apply(info)
+            return existing
+        }
+        let session = PTYSession(info: info, connection: connection)
+        ws.sessions.append(session)
+        let tab = TabRef.session(info.id)
+        ws.insertTab(tab, replacing: pendingPlacements.removeValue(forKey: tab))
+        session.attach()
+        return session
+    }
+
+    @discardableResult
+    private func ensureChat(_ summary: ChatSummary, in ws: WorkspaceState) -> ChatSession {
+        if let existing = ws.chats.first(where: { $0.id == summary.id }) {
+            existing.applySummary(summary)
+            return existing
+        }
+        let cwd = workspaceById(ws.id)?.worktreePath ?? ""
+        let chat = ChatSession(summary: summary, workspaceId: ws.id, cwd: cwd, backend: connection, files: EngineFiles.shared)
+        ws.chats.append(chat)
+        let tab = TabRef.chat(summary.id)
+        ws.insertTab(tab, replacing: pendingPlacements.removeValue(forKey: tab))
+        chat.subscribe()
+        return chat
+    }
+
+    private func dropSession(_ session: PTYSession, from ws: WorkspaceState) {
+        ws.sessions.removeAll { $0 === session }
+        session.detach()
+        // Detach from the incubator (or whichever container hosts it) so the
+        // libghostty allocations don't outlive the tab.
+        session.emulator.nsView.removeFromSuperview()
+        if let next = ws.removeTab(.session(session.id)) {
+            selectTab(next, in: ws.id)
+        }
+    }
+
+    private func dropChat(_ chat: ChatSession, from ws: WorkspaceState) {
+        ws.chats.removeAll { $0 === chat }
+        chat.unsubscribe()
+        if let next = ws.removeTab(.chat(chat.id)) {
+            selectTab(next, in: ws.id)
         }
     }
 
     // MARK: - Repositories
 
     /// Adds a repository and returns it so the caller can chain UI (e.g. open
-    /// the settings sheet so the user configures scripts before the first
-    /// workspace is spawned). Returns `nil` if the picker was dismissed or
-    /// the path failed validation.
+    /// the settings sheet). Returns `nil` if the picker was dismissed or the
+    /// engine refused the path.
     @discardableResult
     func addRepository() async -> Repository? {
-        guard let path = await pickDirectory() else { return nil }
-        guard await WorktreeOps.isGitRepo(at: path) else {
-            await presentError("Not a git repository: \(path)")
-            return nil
-        }
+        guard let path = await pickRepositoryPath() else { return nil }
         do {
-            let defaultBranch = (try? await WorktreeOps.defaultBranch(at: path)) ?? "main"
-            let name = WorktreeOps.detectName(at: path)
-            let repo = try Repositories.add(name: name, path: path, defaultBranch: defaultBranch)
-            repositories.insert(repo, at: 0)
-            workspacesByRepo[repo.id] = []
-            activityLog.record(.lifecycle, "Added repository \(repo.name)", repoId: repo.id)
-            prTracker.sync()
+            let repo = try await connection.call(API.AddRepository(path: path))
+            if !repositories.contains(where: { $0.id == repo.id }) {
+                repositories.insert(repo, at: 0)
+                workspacesByRepo[repo.id] = workspacesByRepo[repo.id] ?? []
+            }
             return repo
         } catch {
             await presentError(error.localizedDescription)
@@ -245,73 +401,53 @@ final class AppState: ObservableObject {
     }
 
     func removeRepository(_ id: String) {
-        let repo = repositories.first(where: { $0.id == id })
-        let name = repo?.name ?? id
-        if let repo {
-            detachWorkspace(repositoryBaseWorkspaceId(for: repo))
+        if let repo = repositories.first(where: { $0.id == id }) {
+            dropLocal(repositoryBaseWorkspaceId(for: repo))
         }
-        if let workspaces = workspacesByRepo[id] {
-            for ws in workspaces { detachWorkspace(ws.id) }
-        }
-        if let repo {
-            // Chats have no foreign key to cascade from (see `chat_threads`).
-            let workspaceIds = [repositoryBaseWorkspaceId(for: repo)] + (workspacesByRepo[id] ?? []).map(\.id)
-            Task { [weak self] in
-                for workspaceId in workspaceIds {
-                    await self?.deleteChats(workspaceId: workspaceId, repoPath: repo.path)
-                }
-            }
-        }
-        try? Repositories.remove(id: id)
+        for ws in workspacesByRepo[id] ?? [] { dropLocal(ws.id) }
         repositories.removeAll { $0.id == id }
         workspacesByRepo.removeValue(forKey: id)
-        repoMetadataByRepo.removeValue(forKey: id)
         if selectedWorkspaceId.flatMap({ workspaceById($0) }) == nil {
             clearSelectedWorkspace()
         }
-        activityLog.record(.lifecycle, "Removed repository \(name)")
-        prTracker.sync()
+        perform(API.RemoveRepository(repoId: id))
     }
 
     func updateRepository(_ repo: Repository) {
-        do {
-            try Repositories.update(repo)
-            if let idx = repositories.firstIndex(where: { $0.id == repo.id }) {
-                repositories[idx] = repo
-            }
-        } catch {
-            Task { await presentError(error.localizedDescription) }
+        if let idx = repositories.firstIndex(where: { $0.id == repo.id }) {
+            repositories[idx] = repo
         }
+        perform(API.UpdateRepository(repository: repo))
     }
 
-    /// Handler for `ForEach.onMove`. SwiftUI hands us the source offsets
-    /// and a destination offset using its standard "insert before this
-    /// index" convention — `Array.move(fromOffsets:toOffset:)` consumes
-    /// the same convention, so the in-memory reorder is a one-liner.
-    /// Persists the resulting order so the arrangement survives a
-    /// relaunch.
+    /// Handler for `ForEach.onMove` (SwiftUI's "insert before this index"
+    /// convention, which `Array.move` shares).
     func moveRepositorySections(from offsets: IndexSet, to destination: Int) {
         repositories.move(fromOffsets: offsets, toOffset: destination)
-        do {
-            try Repositories.reorder(orderedIds: repositories.map(\.id))
-        } catch {
-            Task { await presentError(error.localizedDescription) }
-        }
+        perform(API.ReorderRepositories(orderedIds: repositories.map(\.id)))
     }
 
-    /// Same convention as `moveRepositorySections`, scoped to one repo's
-    /// workspace rows. Reordering never crosses repositories.
+    /// Same convention, scoped to one repo's workspace rows.
     func moveWorkspaces(in repoId: String, from offsets: IndexSet, to destination: Int) {
         guard var list = workspacesByRepo[repoId],
               offsets.allSatisfy({ list.indices.contains($0) }),
               (0...list.count).contains(destination) else { return }
         list.move(fromOffsets: offsets, toOffset: destination)
         workspacesByRepo[repoId] = list
-        do {
-            try Workspaces.reorder(orderedIds: list.map(\.id))
-        } catch {
-            Task { await presentError(error.localizedDescription) }
-        }
+        perform(API.ReorderWorkspaces(repoId: repoId, orderedIds: list.map(\.id)))
+    }
+
+    /// Git refs for the repo settings sheet.
+    func repoRefs(_ repo: Repository) async -> API.RepoRefsResult? {
+        try? await connection.call(API.RepoRefs(repoId: repo.id))
+    }
+
+    func remoteBranches(_ repo: Repository) async -> [API.RemoteBranch] {
+        (try? await connection.call(API.RemoteBranches(repoId: repo.id))) ?? []
+    }
+
+    func openPullRequests(_ repo: Repository) async throws -> API.OpenPullRequestsResult {
+        try await connection.call(API.OpenPullRequests(repoId: repo.id))
     }
 
     // MARK: - Workspaces
@@ -355,243 +491,52 @@ final class AppState: ObservableObject {
     }
 
     func createWorkspace(in repo: Repository, name: String) async {
-        let id = UUID().uuidString
-        let (worktreePath, shortName) = allocateWorktreePath(for: repo)
-        let slug = WorktreeOps.slug(name)
-        let prefix = await effectiveBranchPrefix(for: repo)
-        let branch = branchName(prefix: prefix, slug: slug, suffix: shortName, repo: repo)
-        let agent = settings.defaultAgent
-
-        do {
-            guard try await createWorktreeResolvingBranchCollision(
-                in: repo,
-                branchName: branch,
-                operation: {
-                    try await WorktreeOps.create(
-                        repoPath: repo.path,
-                        worktreePath: worktreePath,
-                        branchName: branch,
-                        baseBranch: repo.defaultBranch
-                    )
-                }
-            ) else { return }
-            let now = Date()
-            let ws = Workspace(
-                id: id,
-                repositoryId: repo.id,
-                name: name,
-                branchName: branch,
-                baseBranch: repo.defaultBranch,
-                worktreePath: worktreePath,
-                agent: agent,
-                createdAt: now,
-                lastActiveAt: now
-            )
-            try Workspaces.insert(ws)
-            workspacesByRepo[repo.id, default: []].insert(ws, at: 0)
-            // Seed the PR snapshot to `.absent` — a freshly minted local
-            // branch can't have a PR yet, and without this seed the row is
-            // iconless and the inspector reads "Loading PR…" until the
-            // next GitHub poll lands (up to ~60s away).
-            applyPR(.absent, for: ws.id)
-            activityLog.record(
-                .lifecycle,
-                "Created workspace \(name) (\(branch))",
-                repoId: repo.id,
-                workspaceId: ws.id
-            )
-            prTracker.kick(repoId: repo.id)
-            selectWorkspace(ws.id)
-            startSetupIfNeeded(workspace: ws, repository: repo)
-        } catch {
-            await presentError(error.localizedDescription)
+        let connection = self.connection
+        await create(in: repo) { override in
+            try await connection.call(API.CreateWorkspace(repoId: repo.id, name: name, overrideExisting: override))
         }
     }
 
-    /// Spin up a workspace against an existing PR's head branch. Picker
-    /// already filters forks; if a fork slips through, the underlying
-    /// `git fetch` will fail with a clear message.
-    func createWorkspaceFromPR(
-        in repo: Repository,
-        pr: PRSummary,
-        name: String
-    ) async {
-        await importBranchAsWorkspace(
-            in: repo,
-            branchName: pr.headRefName,
-            baseBranch: pr.baseRefName,
-            name: name,
-            pullRequestNumber: pr.number,
-            pullRequestURL: pr.url
-        )
-    }
-
-    /// Spin up a workspace against an existing remote branch. `remoteRef` is
-    /// what `git for-each-ref` emits — e.g. `origin/feature`. The remote
-    /// prefix is stripped to derive the local branch name.
-    func createWorkspaceFromBranch(
-        in repo: Repository,
-        remoteRef: String,
-        name: String
-    ) async {
-        await importBranchAsWorkspace(
-            in: repo,
-            branchName: repo.localName(forRemoteRef: remoteRef),
-            baseBranch: repo.defaultBranch,
-            name: name
-        )
-    }
-
-    /// Shared body for the two import entry points. Branch identity is
-    /// preserved verbatim — none of `effectiveBranchPrefix` / slug / id-suffix
-    /// applies here.
-    private func importBranchAsWorkspace(
-        in repo: Repository,
-        branchName: String,
-        baseBranch: String,
-        name: String,
-        pullRequestNumber: Int? = nil,
-        pullRequestURL: String? = nil
-    ) async {
-        let id = UUID().uuidString
-        let (worktreePath, _) = allocateWorktreePath(for: repo)
-        let agent = settings.defaultAgent
-        do {
-            guard try await createWorktreeResolvingBranchCollision(
-                in: repo,
-                branchName: branchName,
-                operation: {
-                    try await WorktreeOps.importExisting(
-                        repoPath: repo.path,
-                        worktreePath: worktreePath,
-                        branchName: branchName,
-                        remote: repo.remoteOrigin
-                    )
-                }
-            ) else { return }
-        } catch {
-            await presentError(error.localizedDescription)
-            return
+    /// Spin up a workspace against an existing PR's head branch.
+    func createWorkspaceFromPR(in repo: Repository, pr: PRSummary, name: String) async {
+        let connection = self.connection
+        await create(in: repo) { override in
+            try await connection.call(API.ImportBranch(repoId: repo.id, remoteRef: nil, pullRequest: pr, name: name, overrideExisting: override))
         }
-
-        let now = Date()
-        let ws = Workspace(
-            id: id,
-            repositoryId: repo.id,
-            name: name,
-            branchName: branchName,
-            baseBranch: baseBranch,
-            pullRequestNumber: pullRequestNumber,
-            pullRequestURL: pullRequestURL,
-            worktreePath: worktreePath,
-            agent: agent,
-            createdAt: now,
-            lastActiveAt: now
-        )
-        do {
-            try Workspaces.insert(ws)
-        } catch {
-            // Worktree was created; the DB insert is the only thing that
-            // failed. Tear the worktree down again so we don't leak it.
-            // Pass `branchName: nil` — the local branch is the user's, not
-            // ours, and they may want it for a retry.
-            try? await WorktreeOps.remove(
-                repoPath: repo.path,
-                worktreePath: worktreePath,
-                branchName: nil,
-                force: true
-            )
-            await presentError(error.localizedDescription)
-            return
-        }
-        workspacesByRepo[repo.id, default: []].insert(ws, at: 0)
-        activityLog.record(
-            .lifecycle,
-            "Imported branch \(branchName) as workspace \(name)",
-            repoId: repo.id,
-            workspaceId: ws.id
-        )
-        prTracker.kick(repoId: repo.id)
-        selectWorkspace(ws.id)
-        startSetupIfNeeded(workspace: ws, repository: repo)
     }
 
-    /// Runs `operation`, resolving a `branchInUse` collision by asking the
-    /// user and force-removing the offending worktree. Returns `false` when
-    /// the user declined the override.
-    private func createWorktreeResolvingBranchCollision(
-        in repo: Repository,
-        branchName: String,
-        operation: () async throws -> Void
-    ) async throws -> Bool {
+    /// Spin up a workspace against an existing remote branch (`origin/x`).
+    func createWorkspaceFromBranch(in repo: Repository, remoteRef: String, name: String) async {
+        let connection = self.connection
+        await create(in: repo) { override in
+            try await connection.call(API.ImportBranch(repoId: repo.id, remoteRef: remoteRef, pullRequest: nil, name: name, overrideExisting: override))
+        }
+    }
+
+    /// Run a create request, asking before overriding a worktree that holds
+    /// the branch, then select the new workspace (and show its setup output).
+    private func create(in repo: Repository, _ request: (Bool) async throws -> API.CreateWorkspaceResult) async {
         do {
-            try await operation()
-            return true
-        } catch WorktreeOps.ImportError.branchInUse(branch: let branch, byPath: let path) {
-            let dirty = await DiffComputer.hasUncommittedChanges(worktreePath: path)
-            guard confirmWorktreeOverride(
-                branchName: branch,
-                worktreePath: path,
-                hasUncommittedChanges: dirty
-            ) else {
-                return false
+            var result = try await request(false)
+            if case let .branchInUse(branch, path, dirty) = result {
+                guard confirmWorktreeOverride(branchName: branch, worktreePath: path, hasUncommittedChanges: dirty) else { return }
+                result = try await request(true)
             }
-            deleteWorkspaceRecordsForOverriddenWorktree(
-                repoId: repo.id,
-                branchName: branch,
-                worktreePath: path
-            )
-            try await WorktreeOps.remove(
-                repoPath: repo.path,
-                worktreePath: path,
-                branchName: branch,
-                force: true
-            )
-            activityLog.record(
-                .lifecycle,
-                "Overrode existing worktree for \(branch)",
-                repoId: repo.id
-            )
-            try await operation()
-            return true
+            guard case let .created(ws) = result else { return }
+            if workspacesByRepo[repo.id]?.contains(where: { $0.id == ws.id }) != true {
+                workspacesByRepo[repo.id, default: []].insert(ws, at: 0)
+            }
+            selectWorkspace(ws.id)
+            if repo.trimmedSetupScript != nil {
+                inspectorTab = .run
+                inspectorVisible = true
+            }
+        } catch {
+            await presentError(error.localizedDescription)
         }
     }
 
-    private func deleteWorkspaceRecordsForOverriddenWorktree(
-        repoId: String,
-        branchName: String,
-        worktreePath: String
-    ) {
-        let matches = (workspacesByRepo[repoId] ?? []).filter {
-            $0.worktreePath == worktreePath || $0.branchName == branchName
-        }
-        guard !matches.isEmpty else { return }
-
-        let ids = Set(matches.map(\.id))
-        let repoPath = repositories.first(where: { $0.id == repoId })?.path
-        for ws in matches {
-            detachWorkspace(ws.id)
-            Task { [weak self] in await self?.deleteChats(workspaceId: ws.id, repoPath: repoPath) }
-            try? Workspaces.delete(id: ws.id)
-            activityLog.record(
-                .lifecycle,
-                "Deleted workspace \(ws.name) because its worktree was overridden",
-                repoId: repoId,
-                workspaceId: ws.id
-            )
-        }
-        workspacesByRepo[repoId]?.removeAll { ids.contains($0.id) }
-        if let selectedWorkspaceId, ids.contains(selectedWorkspaceId) {
-            clearSelectedWorkspace()
-        }
-        prTracker.sync()
-    }
-
-    private func confirmWorktreeOverride(
-        branchName: String,
-        worktreePath: String,
-        hasUncommittedChanges: Bool
-    ) -> Bool {
+    private func confirmWorktreeOverride(branchName: String, worktreePath: String, hasUncommittedChanges: Bool) -> Bool {
         let alert = NSAlert()
         alert.messageText = "Override existing worktree?"
         let dirtyWarning = hasUncommittedChanges
@@ -610,144 +555,34 @@ final class AppState: ObservableObject {
         return alert.runModal() == .alertFirstButtonReturn
     }
 
-    /// Spawn the repo's setup script for `workspace` and route its output
-    /// into the inspector's run panel. No-ops for blank scripts. The
-    /// inspector flips to `.run` so the user lands on live output instead of
-    /// the diff (which is empty for a brand-new worktree anyway).
-    private func startSetupIfNeeded(workspace: Workspace, repository: Repository) {
-        guard let script = repository.trimmedSetupScript else { return }
-        let controller = SetupController(workspaceId: workspace.id)
-        workspaceState(for: workspace.id).setupController = controller
-        controller.start(
-            script: script,
-            cwd: workspace.worktreePath,
-            env: ScriptRunner.defaultEnv(repoPath: repository.path)
-        )
-        inspectorTab = .run
-        inspectorVisible = true
-    }
-
     func setupController(for workspaceId: String) -> SetupController? {
         workspaceState(for: workspaceId).setupController
     }
 
-    /// Remove the worktree and its branch, the workspace's chats and its
-    /// row.
+    /// Remove the worktree and its branch, the workspace's chats and its row.
     func deleteWorkspace(_ workspace: Workspace) async {
-        // Stop tabs/run/setup controllers first; otherwise they can keep
-        // writing to a worktree that is about to disappear.
-        detachWorkspace(workspace.id)
-
-        let repo = repositories.first(where: { $0.id == workspace.repositoryId })
-        if let repo {
-            try? await WorktreeOps.remove(
-                repoPath: repo.path,
-                worktreePath: workspace.worktreePath,
-                branchName: workspace.branchName,
-                force: true
-            )
-        }
-        await deleteChats(workspaceId: workspace.id, repoPath: repo?.path)
-        try? Workspaces.delete(id: workspace.id)
         reassignSelection(afterClosing: workspace.id)
+        dropLocal(workspace.id)
         workspacesByRepo[workspace.repositoryId]?.removeAll { $0.id == workspace.id }
-        activityLog.record(
-            .lifecycle,
-            "Deleted workspace \(workspace.name)",
-            repoId: workspace.repositoryId,
-            workspaceId: workspace.id
-        )
-        prTracker.sync()
-    }
-
-    /// Drop a workspace's chats and their checkpoint refs, which live in
-    /// the shared repository and would outlive the worktree.
-    private func deleteChats(workspaceId: String, repoPath: String?) async {
-        if let repoPath {
-            for threadId in ChatStore.threadIds(workspaceId: workspaceId) {
-                await Checkpointer.deleteRefs(worktree: repoPath, thread: threadId)
-            }
-        }
-        ChatStore.deleteThreads(workspaceId: workspaceId)
-    }
-
-    /// Compute the prefix prepended to a fresh workspace's branch name.
-    ///
-    /// The `branchPrefixMode` field is the source of truth when set:
-    /// `.username` derives from `git config user.name`, `.custom` uses the
-    /// stored `branchPrefix`, `.none` produces an empty string. Legacy rows
-    /// with nil mode follow the same migrate-on-display rule as
-    /// `RepositorySettingsSheet`: `.custom` if a stored prefix exists,
-    /// otherwise `.username`.
-    private func effectiveBranchPrefix(for repo: Repository) async -> String {
-        let mode: BranchPrefixMode
-        if let raw = repo.branchPrefixMode, let resolved = BranchPrefixMode(rawValue: raw) {
-            mode = resolved
-        } else {
-            mode = repo.branchPrefix?.nonBlank == nil ? .username : .custom
-        }
-        switch mode {
-        case .username:
-            let slug = await WorktreeOps.usernameSlug(at: repo.path)
-            return slug.isEmpty ? "" : slug + "/"
-        case .custom:
-            return repo.branchPrefix?.nonBlank ?? ""
-        case .none:
-            return ""
+        do {
+            _ = try await connection.call(API.DeleteWorkspace(workspaceId: workspace.id))
+        } catch {
+            await presentError(error.localizedDescription)
         }
     }
-
-    /// Allocate the path for a new worktree:
-    /// `~/.jetline/worktrees/<repo-slug>/<star>` (legacy repos keep their
-    /// UUID folder). `shortName` is the star component, reused as the
-    /// branch suffix.
-    private func allocateWorktreePath(for repo: Repository) -> (path: String, shortName: String) {
-        let folder = Database.worktreesDirectory
-            .appendingPathComponent(repo.worktreeFolderName, isDirectory: true)
-        let shortName = WorktreeNamer.allocate(in: folder)
-        return (folder.appendingPathComponent(shortName, isDirectory: true).path, shortName)
-    }
-
-    /// `suffix` is the worktree's short name (e.g. `vega`) — readable in a
-    /// prompt, and unique among the repo's live worktrees. A deleted
-    /// worktree's name can be re-allocated while its branch still exists;
-    /// the `branchInUse` collision path catches that like any other clash.
-    private func branchName(prefix: String, slug: String, suffix: String, repo: Repository) -> String {
-        let base = "\(prefix)\(slug)"
-        return repo.addUniqueBranchSuffix ? "\(base)-\(suffix)" : base
-    }
-
-    /// Selection recency, most recent last. Drives where selection lands
-    /// when the selected workspace closes. In-memory only: after a relaunch
-    /// there is no "previous tab" worth restoring.
-    private var selectionHistory: [String] = []
 
     func selectWorkspace(_ id: String) {
-        if pausedWorkspaces.contains(id) {
-            // Waking from idle pause. Activation below re-arms the watcher
-            // and refreshes the diff; the kick catches branch position and
-            // PR state up without waiting for the next scheduled poll.
-            prTracker.kick(workspaceId: id)
-            activityLog.record(
-                .lifecycle,
-                "Woke idle workspace",
-                repoId: workspaceById(id)?.repositoryId,
-                workspaceId: id
-            )
-        }
-        noteWorkspaceActivity(id)
         selectionHistory.removeAll { $0 == id }
         selectionHistory.append(id)
         selectedWorkspaceId = id
+        connection.send(API.SetFocus(workspaceId: id))
         scheduleInspectorWorkspace(id)
         scheduleWorkspaceActivation(id)
     }
 
     /// Where selection should land after `id` closes: the most recently
     /// selected workspace that is still open, else the nearest open sidebar
-    /// row above the closed one (below when nothing is open above). Only
-    /// open workspaces qualify — landing on a closed row would spawn a
-    /// session as a side effect.
+    /// row above the closed one (below when nothing is open above).
     private func nextSelection(afterClosing id: String) -> String? {
         let openOrder = loadedSidebarWorkspaceOrder().filter { $0 != id }
         guard !openOrder.isEmpty else { return nil }
@@ -763,8 +598,6 @@ final class AppState: ObservableObject {
         return openOrder.first
     }
 
-    /// Re-point selection after `id` closed or vanished. Falls back to an
-    /// empty selection when no other workspace is open.
     private func reassignSelection(afterClosing id: String) {
         guard selectedWorkspaceId == id else { return }
         if let next = nextSelection(afterClosing: id) {
@@ -779,6 +612,7 @@ final class AppState: ObservableObject {
         workspaceActivationTask?.cancel()
         inspectorSelectionTask?.cancel()
         inspectorWorkspaceId = nil
+        connection.send(API.SetFocus(workspaceId: nil))
     }
 
     private func scheduleWorkspaceActivation(_ id: String) {
@@ -786,22 +620,30 @@ final class AppState: ObservableObject {
         workspaceActivationTask = Task { [weak self] in
             await Task.yield()
             guard !Task.isCancelled else { return }
-            guard let self,
-                  self.selectedWorkspaceId == id else { return }
+            guard let self, self.selectedWorkspaceId == id else { return }
             self.activateSelectedWorkspace(id)
         }
     }
 
+    /// Ask the engine to bring the workspace up (restoring its chats, or a
+    /// first tab). Its tabs arrive with the next status.
     private func activateSelectedWorkspace(_ id: String) {
-        guard let ws = workspaceById(id) else { return }
-        persistSelectionTouch(id)
-        guard worktreeExists(for: ws) else {
-            handleMissingWorktree(ws)
-            return
+        guard workspaceById(id) != nil, connection.isConnected else { return }
+        // Tabs closed with the workspace come back on activation (restored
+        // chats keep their ids); stop suppressing them.
+        closingTabs = closingTabs.filter { $0.value != id }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                if case .missing = try await self.connection.call(API.ActivateWorkspace(workspaceId: id, terminalSize: nil)) {
+                    self.reassignSelection(afterClosing: id)
+                }
+            } catch {
+                if (error as? WireError)?.code != "disconnected" {
+                    await self.presentError(error.localizedDescription)
+                }
+            }
         }
-        ensureSessionExists(for: ws)
-        startWatcher(for: ws)
-        Task { await refreshDiff(for: ws) }
     }
 
     private func scheduleInspectorWorkspace(_ id: String) {
@@ -810,42 +652,12 @@ final class AppState: ObservableObject {
         inspectorSelectionTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(0.12))
             guard !Task.isCancelled else { return }
-            guard let self,
-                  self.selectedWorkspaceId == id,
-                  self.workspaceById(id) != nil else { return }
+            guard let self, self.selectedWorkspaceId == id, self.workspaceById(id) != nil else { return }
             self.inspectorWorkspaceId = id
         }
     }
 
-    private nonisolated func persistSelectionTouch(_ id: String) {
-        Task.detached(priority: .utility) {
-            if id.hasPrefix(Self.repositoryBaseWorkspacePrefix) {
-                let repoId = String(id.dropFirst(Self.repositoryBaseWorkspacePrefix.count))
-                try? Repositories.touch(id: repoId)
-            } else {
-                try? Workspaces.touch(id: id)
-            }
-        }
-    }
-
     // MARK: - Sessions
-
-    /// The first time a workspace is activated this app run: bring back its
-    /// open chats, or spawn a fresh tab when it has none.
-    private func ensureSessionExists(for workspace: Workspace) {
-        let ws = workspaceState(for: workspace.id)
-        guard !ws.hasAgentTabs else { return }
-        let restored = ChatStore.openThreads(workspaceId: workspace.id)
-        if !restored.isEmpty {
-            for record in restored {
-                let chat = ChatSession(record: record, cwd: workspace.worktreePath, executableResolver: resolveAgentExecutable)
-                attach(chat, to: workspace.id)
-            }
-            selectChat(restored[restored.count - 1].id, in: workspace.id)
-            return
-        }
-        startNewSession(for: workspace, agent: workspace.agent)
-    }
 
     /// Open a new tab for `agent` in whichever interface the settings pick.
     func startNewSession(for workspace: Workspace, agent: Workspace.AgentKind) {
@@ -858,23 +670,43 @@ final class AppState: ObservableObject {
 
     /// `replacing` is a new-tab page the terminal takes the place of.
     func startNewTerminal(for workspace: Workspace, agent: Workspace.AgentKind, replacing: TabRef? = nil) {
-        noteWorkspaceActivity(workspace.id)
-        let session = PTYSession(
-            workspaceId: workspace.id,
-            agent: agent,
-            cwd: workspace.worktreePath
-        )
-        addSession(session, to: workspace.id, replacing: replacing)
+        let request = API.CreateTerminal(workspaceId: workspace.id, agent: agent)
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let info = try await self.connection.call(request)
+                self.show(.terminal(info), in: workspace.id, replacing: replacing)
+            } catch {
+                await self.presentError(error.localizedDescription)
+            }
+        }
     }
 
-    /// Adds `session` to the strip (in `replacing`'s place, else at the
-    /// end), shows it, and starts it.
-    private func addSession(_ session: PTYSession, to workspaceId: String, replacing: TabRef? = nil) {
+    /// Put a tab the engine opened into the strip (in `replacing`'s place
+    /// when given) and select it — whether its status got here first or not.
+    private func show(_ opened: OpenedTab, in workspaceId: String, replacing: TabRef? = nil) {
         let ws = workspaceState(for: workspaceId)
-        ws.sessions.append(session)
-        ws.insertTab(.session(session.id), replacing: replacing)
-        selectSession(session.id, in: workspaceId)
-        Task { await session.startIfNeeded() }
+        let tab: TabRef
+        switch opened {
+        case let .terminal(info): tab = .session(info.id)
+        case let .chat(summary): tab = .chat(summary.id)
+        }
+        if let replacing {
+            if ws.tabOrder.contains(tab) {
+                // Already appended by a status: move it into the slot.
+                if ws.tabOrder.contains(replacing) {
+                    ws.tabOrder.removeAll { $0 == tab }
+                    if let index = ws.tabOrder.firstIndex(of: replacing) { ws.tabOrder[index] = tab }
+                }
+            } else {
+                pendingPlacements[tab] = replacing
+            }
+        }
+        switch opened {
+        case let .terminal(info): ensureSession(info, in: ws)
+        case let .chat(summary): ensureChat(summary, in: ws)
+        }
+        selectTab(tab, in: workspaceId)
     }
 
     func selectSession(_ sessionId: String, in workspaceId: String) {
@@ -885,25 +717,18 @@ final class AppState: ObservableObject {
 
     /// Open a native chat tab. `prompt` is sent as the first message;
     /// `replacing` is a new-tab page the chat takes the place of.
-    @discardableResult
     func startNewChat(
         for workspace: Workspace, provider: AgentProviderKind, prompt: String? = nil, replacing: TabRef? = nil
-    ) -> ChatSession {
-        noteWorkspaceActivity(workspace.id)
-        let chat = ChatSession(
-            workspaceId: workspace.id,
-            cwd: workspace.worktreePath,
-            provider: provider,
-            model: settings.chatModel(for: provider),
-            effort: settings.chatEffort(for: provider),
-            runtimeMode: settings.chatRuntimeMode,
-            executableResolver: resolveAgentExecutable
-        )
-        attach(chat, to: workspace.id, replacing: replacing)
-        selectChat(chat.id, in: workspace.id)
-        chat.connectIfNeeded()
-        if let prompt { chat.send(text: prompt) }
-        return chat
+    ) {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let summary = try await self.connection.call(API.StartChat(workspaceId: workspace.id, provider: provider, prompt: prompt))
+                self.show(.chat(summary), in: workspace.id, replacing: replacing)
+            } catch {
+                await self.presentError(error.localizedDescription)
+            }
+        }
     }
 
     /// Bring a closed chat back as a tab, in `replacing`'s place if given.
@@ -914,24 +739,20 @@ final class AppState: ObservableObject {
             selectChat(record.id, in: workspace.id)
             return
         }
-        ChatStore.setClosed(record.id, closed: false)
-        let chat = ChatSession(record: record, cwd: workspace.worktreePath, executableResolver: resolveAgentExecutable)
-        attach(chat, to: workspace.id, replacing: replacing)
-        selectChat(chat.id, in: workspace.id)
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let summary = try await self.connection.call(API.ReopenChat(workspaceId: workspace.id, threadId: record.id))
+                self.show(.chat(summary), in: workspace.id, replacing: replacing)
+            } catch {
+                await self.presentError(error.localizedDescription)
+            }
+        }
     }
 
-    private func attach(_ chat: ChatSession, to workspaceId: String, replacing: TabRef? = nil) {
-        let ws = workspaceState(for: workspaceId)
-        ws.chats.append(chat)
-        ws.insertTab(.chat(chat.id), replacing: replacing)
-        chat.onTurnFinished = { [weak self] chat in
-            guard let self, let workspace = self.workspaceById(chat.workspaceId) else { return }
-            self.noteWorkspaceActivity(chat.workspaceId)
-            Task { await self.refreshDiff(for: workspace) }
-        }
-        chat.onAttention = { [weak self] chat in
-            self?.chatNeedsAttention(chat)
-        }
+    /// Closed chats for the new-tab page.
+    func closedChats(in workspace: Workspace, limit: Int) async -> [ChatThreadRecord] {
+        (try? await connection.call(API.ClosedChats(workspaceId: workspace.id, limit: limit))) ?? []
     }
 
     func selectChat(_ chatId: String, in workspaceId: String) {
@@ -946,8 +767,10 @@ final class AppState: ObservableObject {
         let ws = workspaceState(for: workspaceId)
         guard let idx = ws.chats.firstIndex(where: { $0.id == chatId }) else { return }
         let chat = ws.chats.remove(at: idx)
+        closingTabs[chatId] = workspaceId
         let next = ws.removeTab(.chat(chatId))
-        chat.close()
+        chat.unsubscribe()
+        perform(API.CloseChat(chatId: chatId))
         if !ws.hasAgentTabs {
             closeWorkspace(workspaceId)
         } else if let next {
@@ -955,35 +778,20 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Continue a chat in the agent's own TUI: stop the chat's process (two
-    /// writers on one transcript would fork it) and open a terminal tab
-    /// resuming the same conversation.
+    /// Continue a chat in the agent's own TUI.
     func openChatInTerminal(_ chat: ChatSession) {
-        guard let args = chat.terminalResumeArgs, let workspace = workspaceById(chat.workspaceId) else { return }
-        chat.disconnect()
-        let session = PTYSession(
-            workspaceId: workspace.id,
-            agent: chat.provider.agentKind,
-            cwd: workspace.worktreePath,
-            launchArgs: args
-        )
-        addSession(session, to: workspace.id)
-    }
-
-    /// Resolve the CLI for a chat: the configured path, else a PATH probe.
-    private func resolveAgentExecutable(_ provider: AgentProviderKind) async -> String? {
-        let configured = provider == .claude ? settings.claudeBinaryPath : settings.codexBinaryPath
-        if let configured, !configured.isEmpty, FileManager.default.isExecutableFile(atPath: configured) {
-            return configured
+        let workspaceId = chat.workspaceId
+        let chatId = chat.id
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                if let info = try await self.connection.call(API.OpenChatInTerminal(chatId: chatId, size: nil)) {
+                    self.show(.terminal(info), in: workspaceId)
+                }
+            } catch {
+                await self.presentError(error.localizedDescription)
+            }
         }
-        return await AgentLauncher.resolveOnPath(provider.agentKind.executableName)
-    }
-
-    /// A chat finished a turn or is waiting on the user. Bounce the dock
-    /// when Jetline isn't frontmost so a long run doesn't go unnoticed.
-    private func chatNeedsAttention(_ chat: ChatSession) {
-        guard !NSApp.isActive else { return }
-        NSApp.requestUserAttention(chat.activity == .needsInput ? .criticalRequest : .informationalRequest)
     }
 
     /// Remember a chat's model and effort as the default for new chats.
@@ -1008,15 +816,11 @@ final class AppState: ObservableObject {
         saveSettings(s)
     }
 
-    /// Stop every chat's agent process. Chats run in their own sessions
-    /// (see `JSONLineProcess`), so nothing else would signal them on quit.
+    /// App quitting. A local engine takes its agents and terminals with it;
+    /// a remote one keeps them running for the next connection.
     func shutdownAgents() async {
-        await withTaskGroup(of: Void.self) { group in
-            for ws in workspaceStates.values {
-                for chat in ws.chats {
-                    group.addTask { await chat.shutdown() }
-                }
-            }
+        if let engine = connection.localEngine {
+            await engine.shutdown()
         }
     }
 
@@ -1050,9 +854,13 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// The full-file diff for a diff tab.
+    func fullFileDiff(workspaceId: String, path: String, status: FileDiff.Status, mode: DiffMode) async throws -> FileDiff? {
+        try await connection.call(API.FullFileDiff(workspaceId: workspaceId, path: path, status: status, mode: mode))
+    }
+
     // MARK: - New-tab pages
 
-    /// Open a new-tab page at the end of the strip and show it.
     func openLauncherTab(in workspaceId: String) {
         let ws = workspaceState(for: workspaceId)
         let id = UUID().uuidString
@@ -1064,7 +872,6 @@ final class AppState: ObservableObject {
         workspaceState(for: workspaceId).activeTab = .launcher(id)
     }
 
-    /// Close a new-tab page. An active one hands over to its strip neighbour.
     func closeLauncherTab(_ id: String, in workspaceId: String) {
         if let next = workspaceState(for: workspaceId).removeTab(.launcher(id)) {
             selectTab(next, in: workspaceId)
@@ -1093,316 +900,85 @@ final class AppState: ObservableObject {
 
     // MARK: - Git actions
 
-    /// Spawns a fresh tab with the user-selected agent and the rendered
-    /// prompt as its first message. Merge has its own path (`performMerge`)
-    /// because the caller picks a strategy from the confirmation dialog.
+    /// A fresh tab with the configured agent and the rendered prompt as its
+    /// first message.
     func startGitActionSession(for workspace: Workspace, action: GitAction) {
-        let agent = resolveAgent(for: action)
-        let repo = repositories.first(where: { $0.id == workspace.repositoryId })
-        guard let template = GitActionPrompts.template(
-            for: action,
-            repository: repo,
-            settings: settings
-        ) else { return }
-
-        let pr: PullRequest?
-        let checks: [CheckRun]
-        if case let .loaded(pull, runs) = workspaceState(for: workspace.id).pr {
-            pr = pull
-            checks = runs
-        } else {
-            pr = nil
-            checks = []
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let tab = try await self.connection.call(API.StartGitAction(workspaceId: workspace.id, action: action, terminalSize: nil))
+                self.show(tab, in: workspace.id)
+            } catch {
+                await self.presentError(error.localizedDescription)
+            }
         }
-        let prompt = GitActionPrompts.render(template, workspace: workspace, pr: pr, checks: checks)
-
-        if settings.opensChat(for: agent), let provider = AgentProviderKind(agent: agent) {
-            startNewChat(for: workspace, provider: provider, prompt: prompt)
-            return
-        }
-
-        let session = PTYSession(
-            workspaceId: workspace.id,
-            agent: agent,
-            cwd: workspace.worktreePath,
-            initialPrompt: prompt
-        )
-        addSession(session, to: workspace.id)
     }
 
-    /// Resolve the agent for a given action through the fallback chain:
-    /// review → reviewAgent → defaultAgent; everything else → gitAgent →
-    /// defaultAgent. `.shell` is filtered out because it can't act on a
-    /// prompt autonomously.
-    private func resolveAgent(for action: GitAction) -> Workspace.AgentKind {
-        let preferred: Workspace.AgentKind? =
-            action.usesReviewAgent ? settings.reviewAgent : settings.gitAgent
-        let chosen = preferred ?? settings.defaultAgent
-        return chosen == .shell ? .claude : chosen
-    }
-
-    /// Run `gh pr merge` with the user-picked strategy (no agent involved).
-    /// On success persists the method as the repo's `lastMergeMethod` so
-    /// next time it becomes the dialog's default. Kicks the PR tracker so
-    /// the sidebar reflects the merged state without waiting for the next
-    /// scheduled poll.
+    /// `gh pr merge` with the picked strategy (no agent involved).
     func performMerge(for workspace: Workspace, method: MergeMethod) async {
-        let ws = workspaceState(for: workspace.id)
-        guard case let .loaded(pr, _) = ws.pr else { return }
-        ws.runningGitAction = .mergePR
-        defer { ws.runningGitAction = nil }
-        activityLog.record(
-            .gitAction,
-            "Merging PR #\(pr.number) (\(method.rawValue))",
-            repoId: workspace.repositoryId,
-            workspaceId: workspace.id
-        )
         do {
-            try await GitHubRunner.mergePR(pr.number, method: method, cwd: workspace.worktreePath)
+            _ = try await connection.call(API.Merge(workspaceId: workspace.id, method: method))
         } catch {
-            activityLog.record(
-                .error,
-                "Merge failed for PR #\(pr.number): \(error.localizedDescription)",
-                repoId: workspace.repositoryId,
-                workspaceId: workspace.id
-            )
             await presentError(error.localizedDescription)
-            return
         }
-        activityLog.record(
-            .gitAction,
-            "Merged PR #\(pr.number)",
-            repoId: workspace.repositoryId,
-            workspaceId: workspace.id
-        )
-        if var repo = repositories.first(where: { $0.id == workspace.repositoryId }),
-           repo.lastMergeMethod != method.rawValue {
-            repo.lastMergeMethod = method.rawValue
-            updateRepository(repo)
-        }
-        prTracker.kick(workspaceId: workspace.id)
     }
 
-    /// Queue an auto-merge: GitHub lands the PR itself once every
-    /// protection rule is satisfied. Unlike `performMerge` this needs no
-    /// confirmation — nothing lands now, and cancelling is one click away.
-    /// The chosen strategy sticks as the repo's default, same as a manual
-    /// merge, since it's the same decision.
+    /// Queue an auto-merge: GitHub lands the PR once every protection rule
+    /// is satisfied.
     func enableAutoMerge(for workspace: Workspace, method: MergeMethod) async {
-        await toggleAutoMerge(for: workspace, enabling: true, method: method)
-    }
-
-    /// Cancel a queued auto-merge. The PR is left exactly as it was.
-    func disableAutoMerge(for workspace: Workspace) async {
-        await toggleAutoMerge(for: workspace, enabling: false, method: nil)
-    }
-
-    private func toggleAutoMerge(
-        for workspace: Workspace,
-        enabling: Bool,
-        method: MergeMethod?
-    ) async {
-        let ws = workspaceState(for: workspace.id)
-        guard case let .loaded(pr, _) = ws.pr, !ws.isTogglingAutoMerge else { return }
-        ws.isTogglingAutoMerge = true
-        defer { ws.isTogglingAutoMerge = false }
-
-        let verb = enabling ? "Enabling" : "Cancelling"
-        activityLog.record(
-            .gitAction,
-            "\(verb) auto-merge on PR #\(pr.number)",
-            repoId: workspace.repositoryId,
-            workspaceId: workspace.id
-        )
         do {
-            if enabling, let method {
-                try await GitHubRunner.enableAutoMerge(
-                    pr.number, method: method, cwd: workspace.worktreePath
-                )
-            } else {
-                try await GitHubRunner.disableAutoMerge(pr.number, cwd: workspace.worktreePath)
-            }
+            _ = try await connection.call(API.SetAutoMerge(workspaceId: workspace.id, enabled: true, method: method))
         } catch {
-            activityLog.record(
-                .error,
-                "Auto-merge \(enabling ? "enable" : "cancel") failed for PR #\(pr.number): \(error.localizedDescription)",
-                repoId: workspace.repositoryId,
-                workspaceId: workspace.id
-            )
             await presentError(error.localizedDescription)
-            return
         }
-        activityLog.record(
-            .gitAction,
-            enabling ? "Auto-merge enabled on PR #\(pr.number)" : "Auto-merge cancelled on PR #\(pr.number)",
-            repoId: workspace.repositoryId,
-            workspaceId: workspace.id
-        )
-        if enabling, let method,
-           var repo = repositories.first(where: { $0.id == workspace.repositoryId }),
-           repo.lastMergeMethod != method.rawValue {
-            repo.lastMergeMethod = method.rawValue
-            updateRepository(repo)
-        }
-        prTracker.kick(workspaceId: workspace.id)
     }
 
-    /// Fast path for `Rebase`. Tries `git fetch` + `git rebase --autostash`
-    /// directly so the common no-conflict case completes without spending
-    /// agent tokens; `--autostash` lets a dirty working tree go through
-    /// untouched. On success, force-pushes with `--force-with-lease` so the
-    /// remote branch (and thus the open PR) tracks the rewritten history,
-    /// matching what the agent prompt does. Anything that goes wrong —
-    /// conflicts, missing refs, fetch failure, lease rejection — aborts the
-    /// partial rebase and hands off to the agent flow that already knows
-    /// how to recover.
-    func performRebase(for workspace: Workspace) async {
-        guard let repo = repositories.first(where: { $0.id == workspace.repositoryId }) else {
-            startGitActionSession(for: workspace, action: .rebaseOnMain)
-            return
-        }
-        let ws = workspaceState(for: workspace.id)
-        ws.runningGitAction = .rebaseOnMain
-        defer { ws.runningGitAction = nil }
-        activityLog.record(
-            .gitAction,
-            "Rebasing on \(workspace.baseBranch)",
-            repoId: repo.id,
-            workspaceId: workspace.id
-        )
-
-        let cwd = workspace.worktreePath
-        let baseRef = "\(repo.remoteOrigin)/\(repo.localName(forRemoteRef: workspace.baseBranch))"
-        let hasRemote = ws.branchPosition.remoteTrackingExists
-
-        WorktreeOps.beginIndexWrite(worktreePath: cwd)
-        defer { WorktreeOps.endIndexWrite(worktreePath: cwd) }
-
-        let fellBack: Bool
+    func disableAutoMerge(for workspace: Workspace) async {
         do {
-            await BranchPositionOps.fetch(repoPath: cwd, remote: repo.remoteOrigin)
-            let rebase = try await GitRunner.run(["rebase", "--autostash", baseRef], cwd: cwd)
-            if !rebase.success {
-                fellBack = true
-            } else if hasRemote {
-                let push = try await GitRunner.run(
-                    ["push", "--force-with-lease", repo.remoteOrigin, workspace.branchName],
-                    cwd: cwd
-                )
-                fellBack = !push.success
-            } else {
-                fellBack = false
+            _ = try await connection.call(API.SetAutoMerge(workspaceId: workspace.id, enabled: false, method: nil))
+        } catch {
+            await presentError(error.localizedDescription)
+        }
+    }
+
+    /// Fast-path rebase; an agent tab opens if it can't finish cleanly.
+    func performRebase(for workspace: Workspace) async {
+        await fastPath(.rebaseOnMain, workspace)
+    }
+
+    /// Fast-path pull; an agent tab opens if it can't finish cleanly.
+    func performPull(for workspace: Workspace) async {
+        await fastPath(.pullUpdates, workspace)
+    }
+
+    private func fastPath(_ action: GitAction, _ workspace: Workspace) async {
+        do {
+            if let tab = try await connection.call(API.FastPathGitAction(workspaceId: workspace.id, action: action, terminalSize: nil)) {
+                show(tab, in: workspace.id)
             }
         } catch {
-            fellBack = true
+            await presentError(error.localizedDescription)
         }
-
-        if fellBack {
-            _ = try? await GitRunner.run(["rebase", "--abort"], cwd: cwd)
-            activityLog.record(
-                .gitAction,
-                "Rebase fell back to agent",
-                repoId: repo.id,
-                workspaceId: workspace.id
-            )
-            startGitActionSession(for: workspace, action: .rebaseOnMain)
-            return
-        }
-
-        activityLog.record(
-            .gitAction,
-            "Rebase completed",
-            repoId: repo.id,
-            workspaceId: workspace.id
-        )
-        prTracker.kick(workspaceId: workspace.id)
-        await refreshDiff(for: workspace)
-    }
-
-    /// Fast path for `Pull updates`. Mirrors `performRebase`: tries
-    /// `git pull --rebase --autostash` directly and falls back to the agent
-    /// flow on conflict / failure. Pull-rebase leaves a partial state in
-    /// `.git/rebase-merge` on conflict; `git rebase --abort` clears it.
-    func performPull(for workspace: Workspace) async {
-        guard let repo = repositories.first(where: { $0.id == workspace.repositoryId }) else {
-            startGitActionSession(for: workspace, action: .pullUpdates)
-            return
-        }
-        let ws = workspaceState(for: workspace.id)
-        ws.runningGitAction = .pullUpdates
-        defer { ws.runningGitAction = nil }
-        activityLog.record(
-            .gitAction,
-            "Pulling \(workspace.branchName)",
-            repoId: repo.id,
-            workspaceId: workspace.id
-        )
-
-        let cwd = workspace.worktreePath
-
-        WorktreeOps.beginIndexWrite(worktreePath: cwd)
-        defer { WorktreeOps.endIndexWrite(worktreePath: cwd) }
-
-        let fellBack: Bool
-        do {
-            let result = try await GitRunner.run(
-                ["pull", "--rebase", "--autostash", repo.remoteOrigin, workspace.branchName],
-                cwd: cwd
-            )
-            fellBack = !result.success
-        } catch {
-            fellBack = true
-        }
-
-        if fellBack {
-            _ = try? await GitRunner.run(["rebase", "--abort"], cwd: cwd)
-            activityLog.record(
-                .gitAction,
-                "Pull fell back to agent",
-                repoId: repo.id,
-                workspaceId: workspace.id
-            )
-            startGitActionSession(for: workspace, action: .pullUpdates)
-            return
-        }
-
-        activityLog.record(
-            .gitAction,
-            "Pull completed",
-            repoId: repo.id,
-            workspaceId: workspace.id
-        )
-        prTracker.kick(workspaceId: workspace.id)
-        await refreshDiff(for: workspace)
     }
 
     /// Merge methods this workspace's repo allows, in GitHub's display
-    /// order. Falls back to all three when the repo metadata hasn't loaded
-    /// yet — better to offer a method `gh` will reject with a clear message
-    /// than to hide the merge affordance behind a cold start.
+    /// order. Falls back to all three before the repo metadata loads.
     func allowedMergeMethods(for workspace: Workspace) -> [MergeMethod] {
         let allowed = repoMetadataByRepo[workspace.repositoryId]?.allowedMergeMethods
             ?? Set(MergeMethod.allCases)
         return MergeMethod.displayOrder.filter { allowed.contains($0) }
     }
 
-    /// Whether the repo has "Allow auto-merge" turned on. False until the
-    /// metadata lands, so the affordance appears rather than disappears as
-    /// a cold start warms up.
     func allowsAutoMerge(for workspace: Workspace) -> Bool {
         repoMetadataByRepo[workspace.repositoryId]?.allowsAutoMerge ?? false
     }
 
-    /// The method a one-click merge should use: what the user picked last
-    /// time in this repo, else the first one the repo allows.
     func defaultMergeMethod(for workspace: Workspace) -> MergeMethod? {
         let methods = allowedMergeMethods(for: workspace)
         if let last = lastMergeMethod(for: workspace), methods.contains(last) { return last }
         return methods.first
     }
 
-    /// Last merge method the user chose for this workspace's repo. `nil`
-    /// when the user has never merged here.
     func lastMergeMethod(for workspace: Workspace) -> MergeMethod? {
         repositories
             .first(where: { $0.id == workspace.repositoryId })?
@@ -1410,28 +986,22 @@ final class AppState: ObservableObject {
             .flatMap(MergeMethod.init(rawValue:))
     }
 
-    /// True iff at least one workspace currently has open tabs. Drives the
-    /// quit-confirmation dialog so the user doesn't lose an in-flight agent
-    /// run by reflex-quitting.
+    /// Drives the quit-confirmation dialog. Only a local engine loses its
+    /// runs when the app quits.
     var hasOpenTabs: Bool {
-        workspaceStates.values.contains { $0.hasAgentTabs }
+        connection.isLocal && workspaceStates.values.contains { $0.hasAgentTabs }
     }
 
     /// Close one session tab, handing the strip over to its neighbour when it
-    /// was showing. Closing the last session closes the workspace, diff tabs
-    /// and all — they have nothing to show without a live worktree session.
+    /// was showing. Closing the last session closes the workspace.
     func closeSession(_ sessionId: String, in workspaceId: String) {
         let ws = workspaceState(for: workspaceId)
         guard let idx = ws.sessions.firstIndex(where: { $0.id == sessionId }) else { return }
         let session = ws.sessions.remove(at: idx)
+        closingTabs[sessionId] = workspaceId
         let next = ws.removeTab(.session(sessionId))
         session.terminate()
-        // Detach from the incubator (or whichever container hosts it) so
-        // dropping the PTYSession actually releases the AppTerminalView —
-        // otherwise the parked subview keeps a strong ref and the
-        // libghostty allocations outlive the close.
         session.emulator.nsView.removeFromSuperview()
-
         if !ws.hasAgentTabs {
             closeWorkspace(workspaceId)
         } else if let next {
@@ -1440,7 +1010,7 @@ final class AppState: ObservableObject {
     }
 
     /// Adopt a whole new strip order — what the native tab bar reports after
-    /// a drag-reorder. Ignored unless it's a permutation of the current one.
+    /// a drag-reorder.
     func setTabOrder(_ order: [TabRef], in workspaceId: String) {
         let ws = workspaceState(for: workspaceId)
         guard order != ws.tabOrder,
@@ -1449,7 +1019,7 @@ final class AppState: ObservableObject {
         ws.tabOrder = order
     }
 
-    /// Activate the Nth tab (1-indexed) of the active workspace. Used by ⌘1…⌘9.
+    /// Activate the Nth tab (1-indexed) of the active workspace.
     func selectTabByIndex(_ oneBased: Int) {
         guard let wsId = selectedWorkspaceId else { return }
         let tabs = workspaceState(for: wsId).tabOrder
@@ -1459,60 +1029,9 @@ final class AppState: ObservableObject {
 
     // MARK: - Run script
 
-    /// Toggle the run script for a workspace. Honours the per-repo
-    /// `runExclusive` flag — starting an exclusive run stops every other
-    /// active runner in the same repository first.
+    /// Start or stop the run script (exclusive runs are handled engine-side).
     func toggleRun(for workspace: Workspace) {
-        let ws = workspaceState(for: workspace.id)
-        if let runner = ws.runController, runner.isRunning {
-            runner.stop()
-            return
-        }
-        guard let repo = repositories.first(where: { $0.id == workspace.repositoryId }),
-              let script = repo.trimmedRunScript else { return }
-
-        let peers = repo.runExclusive
-            ? activeRunners(in: repo, excluding: workspace.id)
-            : []
-
-        // Drop the setup transcript so that when the run eventually exits
-        // the panel falls back to the placeholder, not to "Setup complete".
-        if let setup = ws.setupController {
-            setup.discard()
-            ws.setupController = nil
-        }
-
-        let runner = ws.runController ?? RunController(workspaceId: workspace.id)
-        ws.runController = runner
-        let cwd = workspace.worktreePath
-        let env = ScriptRunner.defaultEnv(repoPath: repo.path)
-        guard !peers.isEmpty else {
-            runner.start(script: script, cwd: cwd, env: env)
-            return
-        }
-        // Exclusive run: hold the new run until the displaced ones are
-        // actually gone. Signalling them and spawning straight away left the
-        // old dev server holding the port the new one was about to bind.
-        runner.start(script: script, cwd: cwd, env: env) {
-            await withTaskGroup(of: Void.self) { group in
-                for peer in peers {
-                    group.addTask { await peer.stopAndWait() }
-                }
-            }
-        }
-    }
-
-    /// Runners currently going in `repo`, other than `workspaceId`'s — the
-    /// set an exclusive run has to displace. Covers the repo's worktree
-    /// workspaces plus its base checkout.
-    private func activeRunners(in repo: Repository, excluding workspaceId: String) -> [RunController] {
-        var peerIds = Set(workspacesByRepo[repo.id]?.map(\.id) ?? [])
-        peerIds.insert(repositoryBaseWorkspaceId(for: repo))
-        return workspaceStates.compactMap { otherId, peer in
-            guard otherId != workspaceId, peerIds.contains(otherId),
-                  let runner = peer.runController, runner.isRunning else { return nil }
-            return runner
-        }
+        perform(API.ToggleRun(workspaceId: workspace.id))
     }
 
     func runController(for workspaceId: String) -> RunController? {
@@ -1531,7 +1050,6 @@ final class AppState: ObservableObject {
         repositories.first { $0.id == workspace.repositoryId }?.trimmedRunScript != nil
     }
 
-    /// Cycle to the next or previous tab of the active workspace. Wraps.
     func cycleTab(forward: Bool) {
         guard let wsId = selectedWorkspaceId else { return }
         let ws = workspaceState(for: wsId)
@@ -1542,9 +1060,7 @@ final class AppState: ObservableObject {
         selectTab(tabs[next], in: wsId)
     }
 
-    /// Move through already-open workspaces as a vertical axis. Keyboard
-    /// navigation should not open a new worktree just because it sits between
-    /// two loaded rows in the sidebar.
+    /// Move through already-open workspaces as a vertical axis.
     func cycleWorkspaceSelection(forward: Bool) {
         let ids = loadedSidebarWorkspaceOrder()
         guard !ids.isEmpty else { return }
@@ -1568,327 +1084,64 @@ final class AppState: ObservableObject {
         }
     }
 
-    // MARK: - Diff & watcher
+    // MARK: - Diff & PR
 
     func refreshDiff(for workspace: Workspace) async {
-        let id = workspace.id
-        if let running = diffRefreshTasks[id] {
-            diffRefreshQueued.insert(id)
-            await running.value
-            return
-        }
-        let task = Task { [weak self] in
-            await self?.performDiffRefresh(for: workspace)
-            while let self, self.diffRefreshQueued.remove(id) != nil {
-                await self.performDiffRefresh(for: workspace)
-            }
-            self?.diffRefreshTasks[id] = nil
-        }
-        diffRefreshTasks[id] = task
-        await task.value
+        _ = try? await connection.call(API.RefreshDiff(workspaceId: workspace.id))
     }
 
-    private func performDiffRefresh(for workspace: Workspace) async {
-        guard worktreeExists(for: workspace) else {
-            handleMissingWorktree(workspace)
-            return
-        }
-
-        // nil means the lookup itself failed (offline base / brand-new
-        // repo); the combined compute then falls back to its own
-        // resolution and surfaces the error there.
-        let mergeBase = try? await DiffComputer.mergeBase(
-            worktreePath: workspace.worktreePath,
-            baseBranch: workspace.baseBranch
-        )
-
-        async let combined: DiffSnapshot? = {
-            try? await DiffComputer.compute(
-                worktreePath: workspace.worktreePath,
-                baseBranch: workspace.baseBranch,
-                mode: .combined,
-                precomputedMergeBase: mergeBase
-            )
-        }()
-        async let localSnap: DiffSnapshot? = {
-            try? await DiffComputer.compute(
-                worktreePath: workspace.worktreePath,
-                baseBranch: workspace.baseBranch,
-                mode: .local
-            )
-        }()
-        async let uncommitted = DiffComputer.hasUncommittedChanges(
-            worktreePath: workspace.worktreePath
-        )
-
-        let ws = workspaceState(for: workspace.id)
-        if let snap = await combined, ws.diff != snap {
-            ws.diff = snap
-        }
-        if let snap = await localSnap, ws.localDiff != snap {
-            ws.localDiff = snap
-        }
-        let dirty = await uncommitted
-        if ws.hasUncommitted != dirty {
-            ws.hasUncommitted = dirty
-        }
-    }
-
-    /// Single write path for PR snapshots. `PRTracker` calls this with fresh
-    /// data; the in-memory state drives the UI and the same value is mirrored
-    /// to disk so the next launch can paint immediately. No-op writes are
-    /// suppressed so we don't kick observers — and the same guard skips the
-    /// disk write, so steady-state polls that return identical data don't
-    /// re-encode JSON or hit SQLite. The persist itself hops off the main
-    /// actor so the writer queue's fsync can't stall the UI on every tick.
-    func applyPR(_ snapshot: PRSnapshot, for workspaceId: String) {
-        let ws = workspaceState(for: workspaceId)
-        guard ws.pr != snapshot else { return }
-        ws.pr = snapshot
-        Task.detached(priority: .utility) {
-            try? PRSnapshots.save(snapshot, for: workspaceId)
-        }
-    }
-
-    /// Single write path for PR conversations. In-memory only: unlike PR
-    /// snapshots these aren't persisted, because a stale comment stream is
-    /// worth less than the disk churn of storing every body, and the panel
-    /// refetches the moment it opens.
-    func applyConversation(_ snapshot: PRConversationSnapshot, for workspaceId: String) {
-        let ws = workspaceState(for: workspaceId)
-        guard ws.conversation != snapshot else { return }
-        ws.conversation = snapshot
-    }
-
-    /// Correct stale workspace branch metadata when the underlying worktree or
-    /// upstream branch changed outside Jetline (for example, an agent pushed
-    /// `HEAD` to a renamed remote branch before opening a PR).
-    @discardableResult
-    func updateWorkspaceBranchName(_ branchName: String, for workspaceId: String) -> Workspace? {
-        guard var workspace = workspaceById(workspaceId),
-              !isRepositoryBaseWorkspace(workspace) else { return nil }
-        guard workspace.branchName != branchName else { return workspace }
-
-        let previous = workspace.branchName
-        workspace.branchName = branchName
-        let hadPRIdentity = workspace.pullRequestNumber != nil || workspace.pullRequestURL != nil
-        workspace.pullRequestNumber = nil
-        workspace.pullRequestURL = nil
-        replaceWorkspace(workspace)
-        activityLog.record(
-            .prPoll,
-            "Reconciled branch \(previous) → \(branchName)",
-            repoId: workspace.repositoryId,
-            workspaceId: workspace.id
-        )
-        Task.detached(priority: .utility) {
-            try? Workspaces.updateBranchName(id: workspaceId, branchName: branchName)
-            if hadPRIdentity {
-                try? Workspaces.updatePRIdentity(id: workspaceId, number: nil, url: nil)
-            }
-        }
-        return workspace
-    }
-
-    /// Persist a durable PR identity once a poll or import has discovered it.
-    /// Future polls can refresh by number instead of relying on branch-name
-    /// lookup, which is fragile when tools rename/switch branches.
-    func applyPRIdentity(number: Int, url: String, for workspaceId: String) {
-        guard var workspace = workspaceById(workspaceId),
-              !isRepositoryBaseWorkspace(workspace) else { return }
-        guard workspace.pullRequestNumber != number || workspace.pullRequestURL != url else { return }
-
-        workspace.pullRequestNumber = number
-        workspace.pullRequestURL = url
-        replaceWorkspace(workspace)
-        Task.detached(priority: .utility) {
-            try? Workspaces.updatePRIdentity(id: workspaceId, number: number, url: url)
-        }
-    }
-
-    /// User-initiated refresh: mark the workspace as awaiting a poll result
-    /// (drives the spinner) and wake the tracker. The marker is cleared by
-    /// `endPRRefresh` from `pollGitHub`'s defer; the timeout is a backstop
-    /// in case the poll never reaches the defer (e.g. tracker was torn down).
-    func requestPRRefresh(workspaceId: String) {
-        let ws = workspaceState(for: workspaceId)
-        if !ws.isRefreshingPR {
-            ws.isRefreshingPR = true
-        }
-        activityLog.record(
-            .gitAction,
-            "User requested PR refresh",
-            repoId: workspaceById(workspaceId)?.repositoryId,
-            workspaceId: workspaceId
-        )
-        prTracker.kick(workspaceId: workspaceId)
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(15))
-            self?.endPRRefresh(workspaceId: workspaceId)
-        }
-    }
-
-    func endPRRefresh(workspaceId: String) {
-        // Guard so the per-poll defer doesn't notify observers for every
-        // workspace whose marker was already cleared.
-        let ws = workspaceState(for: workspaceId)
-        if ws.isRefreshingPR {
-            ws.isRefreshingPR = false
-        }
-    }
-
-    /// Single write path for the repo metadata cache. PRTracker calls this
-    /// when it first resolves a repo's owner/name + allowed merge methods.
-    /// No-op writes are suppressed so Combine doesn't notify on every poll.
+    /// Kept for views that resolve repo metadata themselves; the engine
+    /// broadcasts the same thing.
     func applyRepoMetadata(_ metadata: RepoIdentifier, for repoId: String) {
         if repoMetadataByRepo[repoId] != metadata {
             repoMetadataByRepo[repoId] = metadata
         }
     }
 
-    /// Single write path for branch positions. No-op writes are suppressed
-    /// so an unchanged ahead/behind state doesn't kick observers.
-    func applyBranchPosition(_ position: BranchPosition, for workspaceId: String) {
-        let ws = workspaceState(for: workspaceId)
-        if ws.branchPosition != position {
-            ws.branchPosition = position
-        }
+    /// User-initiated refresh (drives the inspector spinner).
+    func requestPRRefresh(workspaceId: String) {
+        workspaceState(for: workspaceId).isRefreshingPR = true
+        perform(API.RefreshPR(workspaceId: workspaceId))
     }
 
-    private func startWatcher(for workspace: Workspace) {
-        guard worktreeExists(for: workspace) else {
-            handleMissingWorktree(workspace)
-            return
-        }
-        guard watchers[workspace.id] == nil else { return }
-        let id = workspace.id
-        let worktreePath = workspace.worktreePath
-        // Resolve the worktree's git-dir asynchronously so we can watch
-        // both. Without watching the git-dir, `git commit` (which mutates
-        // `<repo>/.git/worktrees/<id>/{HEAD,index}` outside the worktree
-        // path) doesn't fire FSEvents and the diff snapshot stays stale.
-        // selectWorkspace already kicks off a refreshDiff so the brief
-        // window before the watcher arms is covered.
-        Task { [weak self] in
-            guard let self else { return }
-            let gitDir = await WorktreeOps.gitDir(at: worktreePath)
-            // A git proc SIGKILL'd mid-write (tab closed during commit, app
-            // crash during rebase) strands `index.lock` and blocks every
-            // later index write. Workspace attach is the natural recovery
-            // point — clear it if it's verifiably stale.
-            if let gitDir, !WorktreeOps.hasActiveIndexWrite(worktreePath: worktreePath) {
-                WorktreeOps.removeStaleIndexLock(gitDir: gitDir)
-            }
-            await MainActor.run {
-                guard self.watchers[id] == nil,
-                      self.workspaceById(id) != nil else { return }
-                var additional: [String] = []
-                if let gitDir, gitDir != worktreePath {
-                    additional.append(gitDir)
-                }
-                let watcher = WorktreeWatcher(
-                    worktreePath: worktreePath,
-                    additionalPaths: additional
-                ) { [weak self] in
-                    guard let self else { return }
-                    guard let ws = self.workspaceById(id) else { return }
-                    // Worktree writes count as activity — a background
-                    // agent that is still working keeps its workspace out
-                    // of the idle-pause sweep.
-                    self.noteWorkspaceActivity(id)
-                    if let gitDir, !WorktreeOps.hasActiveIndexWrite(worktreePath: worktreePath) {
-                        WorktreeOps.removeStaleIndexLock(gitDir: gitDir)
-                    }
-                    Task { await self.refreshDiff(for: ws) }
-                    // Worktree changed — likely a commit or push. Wake the
-                    // PR tracker so the sidebar reflects new state without
-                    // waiting up to a minute for the next scheduled poll.
-                    self.prTracker.kick(workspaceId: id)
-                }
-                watcher.start()
-                self.watchers[id] = watcher
-            }
-        }
-    }
-
-    /// Close a workspace's live runtime — sessions, watcher, run/setup
-    /// controllers — while keeping its sidebar entry and cached diff/PR
-    /// state. With no sessions left it drops out of ⌘⇧↑/↓ cycling.
+    /// Close a workspace's live runtime — sessions, chats, run/setup —
+    /// while keeping its sidebar entry and cached diff/PR state.
     func closeWorkspace(_ id: String) {
-        watchers[id]?.stop()
-        watchers.removeValue(forKey: id)
-        pausedWorkspaces.remove(id)
         if let ws = workspaceStates[id] {
-            tearDownWorkspaceRuntime(ws)
+            tearDownLocalRuntime(ws)
         }
-        removeStrandedIndexLock(workspaceId: id)
+        perform(API.CloseWorkspace(workspaceId: id))
         reassignSelection(afterClosing: id)
         selectionHistory.removeAll { $0 == id }
     }
 
-    private func detachWorkspace(_ id: String) {
-        watchers[id]?.stop()
-        watchers.removeValue(forKey: id)
-        pausedWorkspaces.remove(id)
-        if let ws = workspaceStates[id] {
-            tearDownWorkspaceRuntime(ws)
+    /// Drop a workspace's local state (it's going away engine-side).
+    private func dropLocal(_ id: String) {
+        if let ws = workspaceStates.removeValue(forKey: id) {
+            tearDownLocalRuntime(ws)
         }
-        removeStrandedIndexLock(workspaceId: id)
-        workspaceStates.removeValue(forKey: id)
         selectionHistory.removeAll { $0 == id }
     }
 
-    private func removeStrandedIndexLock(workspaceId: String) {
-        guard let workspace = workspaceById(workspaceId) else { return }
-        let worktreePath = workspace.worktreePath
-        Task {
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
-            guard let gitDir = await WorktreeOps.gitDir(at: worktreePath) else { return }
-            guard !WorktreeOps.hasActiveIndexWrite(worktreePath: worktreePath) else { return }
-            WorktreeOps.removeIndexLock(gitDir: gitDir)
-        }
-    }
-
-    private func tearDownWorkspaceRuntime(_ ws: WorkspaceState) {
+    private func tearDownLocalRuntime(_ ws: WorkspaceState) {
         for session in ws.sessions {
-            session.terminate()
+            closingTabs[session.id] = ws.id
+            session.detach()
             session.emulator.nsView.removeFromSuperview()
         }
         ws.sessions.removeAll()
-        // Chats stay open in the database and come back next activation;
-        // only their processes stop.
-        for chat in ws.chats { chat.retire() }
+        for chat in ws.chats {
+            closingTabs[chat.id] = ws.id
+            chat.unsubscribe()
+        }
         ws.chats.removeAll()
         ws.diffTabs.removeAll()
         ws.activeTab = nil
         ws.tabOrder.removeAll()
-
         ws.setupController?.discard()
         ws.setupController = nil
         ws.runController?.discard()
         ws.runController = nil
-    }
-
-    private func worktreeExists(for workspace: Workspace) -> Bool {
-        FileManager.default.fileExists(atPath: workspace.worktreePath)
-    }
-
-    private func handleMissingWorktree(_ workspace: Workspace) {
-        guard workspaceById(workspace.id) != nil else { return }
-
-        detachWorkspace(workspace.id)
-        let repoPath = repositories.first(where: { $0.id == workspace.repositoryId })?.path
-        Task { [weak self] in await self?.deleteChats(workspaceId: workspace.id, repoPath: repoPath) }
-        try? Workspaces.delete(id: workspace.id)
-        reassignSelection(afterClosing: workspace.id)
-        workspacesByRepo[workspace.repositoryId]?.removeAll { $0.id == workspace.id }
-        activityLog.record(
-            .lifecycle,
-            "Deleted workspace \(workspace.name) because its worktree is missing",
-            repoId: workspace.repositoryId,
-            workspaceId: workspace.id
-        )
-        prTracker.sync()
     }
 
     // MARK: - Helpers
@@ -1906,31 +1159,18 @@ final class AppState: ObservableObject {
         return nil
     }
 
-    private func replaceWorkspace(_ workspace: Workspace) {
-        guard var list = workspacesByRepo[workspace.repositoryId],
-              let idx = list.firstIndex(where: { $0.id == workspace.id }) else { return }
-        list[idx] = workspace
-        workspacesByRepo[workspace.repositoryId] = list
-    }
-
     func saveSettings(_ s: AppSettings) {
-        do {
-            try SettingsStore.save(s)
-            let old = settings
-            settings = s
-            if old.monospaceFontFamily != s.monospaceFontFamily || old.terminalFontSize != s.terminalFontSize {
-                applyTerminalFont(s)
-            }
-        } catch {
-            Task { await presentError(error.localizedDescription) }
+        let old = settings
+        settings = s
+        if old.monospaceFontFamily != s.monospaceFontFamily || old.terminalFontSize != s.terminalFontSize {
+            applyTerminalFont(s)
         }
+        perform(API.SaveSettings(settings: s))
     }
 
     /// Push terminal font settings to every live session so changes land
-    /// immediately instead of waiting for the next session start. (Inner
-    /// horizontal padding is applied separately at the view layer — see
-    /// `TerminalHostView` — because libghostty's `window-padding-x` is inert
-    /// for embedded surfaces; the host owns surface insets.)
+    /// immediately. (Inner horizontal padding is applied at the view layer —
+    /// see `TerminalHostView`.)
     private func applyTerminalFont(_ s: AppSettings) {
         for ws in workspaceStates.values {
             for session in ws.sessions {
@@ -1940,6 +1180,28 @@ final class AppState: ObservableObject {
                 )
             }
         }
+    }
+
+    /// Fire a request whose only interesting outcome is failure.
+    private func perform<R: RPC>(_ request: R) {
+        Task { [weak self] in
+            do {
+                _ = try await self?.connection.call(request)
+            } catch {
+                if (error as? WireError)?.code != "disconnected" {
+                    await self?.presentError(error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    /// A repository to add: a folder picker for a local engine; for a
+    /// remote one, a path on that machine.
+    private func pickRepositoryPath() async -> String? {
+        if connection.isLocal {
+            return await pickDirectory()
+        }
+        return await RemoteFolderPicker.pick(connection: connection)
     }
 
     private func pickDirectory() async -> String? {
@@ -1962,7 +1224,7 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func presentError(_ message: String) async {
+    func presentError(_ message: String) async {
         await MainActor.run {
             let alert = NSAlert()
             alert.messageText = "Error"
@@ -1971,5 +1233,29 @@ final class AppState: ObservableObject {
             alert.runModal()
         }
     }
+
+    #if DEBUG
+    /// Development hooks for driving the app from a script:
+    /// `-JetlineOpenWorkspace <id>` selects a workspace at launch (a repo's
+    /// base checkout is `repo-base:<repo id>`), and `-JetlineSendPrompt
+    /// <text>` sends a message to the chat that opens there
+    /// (`-JetlinePlanMode YES` sends it in plan mode).
+    private var appliedDebugArguments = false
+    private func applyDebugLaunchArguments() {
+        guard !appliedDebugArguments else { return }
+        appliedDebugArguments = true
+        let defaults = UserDefaults.standard
+        guard let id = defaults.string(forKey: "JetlineOpenWorkspace"), workspaceById(id) != nil else { return }
+        selectWorkspace(id)
+        guard let prompt = defaults.string(forKey: "JetlineSendPrompt") else { return }
+        let plan = defaults.bool(forKey: "JetlinePlanMode")
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let chat = self?.workspaceState(for: id).activeChat else { return }
+            if plan { chat.setInteractionMode(.plan) }
+            chat.send(text: prompt)
+        }
+    }
+    #endif
 }
 #endif

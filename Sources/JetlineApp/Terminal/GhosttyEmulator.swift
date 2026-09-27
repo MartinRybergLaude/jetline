@@ -3,24 +3,19 @@ import AppKit
 import GhosttyTerminal
 
 /// libghostty-backed terminal. Owns one `AppTerminalView` running against
-/// an `InMemoryTerminalSession` whose I/O is bridged to a real PTY managed
-/// by `PTYProcess`. Replaces the SwiftTerm renderer that mishandled
-/// DECSET 2026 (synchronized output) and produced overdraw under
-/// Claude Code's flicker-free TUI.
+/// an `InMemoryTerminalSession` whose I/O is bridged to an engine terminal
+/// through a `TerminalChannel` — the PTY itself lives in the engine, which
+/// may be this process or a remote `jetlined`. Replaces the SwiftTerm
+/// renderer that mishandled DECSET 2026 (synchronized output) and produced
+/// overdraw under Claude Code's flicker-free TUI.
 @MainActor
 final class GhosttyEmulator: TerminalEmulatorView {
     let view: AppTerminalView
     private let session: InMemoryTerminalSession
     private let controller: TerminalController
-    private var pty: PTYProcess?
+    private var channel: TerminalChannel?
     private var isActive: Bool = true
-    private var exitHandler: ((Int32) -> Void)?
     private let receiveLogSessionId = TerminalReceiveLog.makeSessionId()
-    /// When false, the emulator does *not* call `session.finish` on child
-    /// exit. Jetline keeps terminal transcripts visible after exit and
-    /// surfaces lifecycle state in host UI where needed; libghostty's own
-    /// exit surface can obscure the final error output.
-    private let notifySurfaceOnExit: Bool
 
     var nsView: NSView { view }
 
@@ -28,8 +23,7 @@ final class GhosttyEmulator: TerminalEmulatorView {
     /// default 13pt agent terminal so the inspector strip doesn't crowd.
     static let outputPanelFontSize: Float = 11
 
-    init(fontSize: Float = 13, notifySurfaceOnExit: Bool = false) {
-        self.notifySurfaceOnExit = notifySurfaceOnExit
+    init(fontSize: Float = 13) {
         let controller = TerminalController(
             configuration: Self.makeConfiguration(family: nil, size: fontSize),
             theme: Self.theme
@@ -40,29 +34,23 @@ final class GhosttyEmulator: TerminalEmulatorView {
         view.translatesAutoresizingMaskIntoConstraints = false
         self.view = view
 
-        let pendingPTY = PTYHolder()
+        let link = ChannelHolder()
         let session = InMemoryTerminalSession(
             write: { data in
-                pendingPTY.process?.write(data)
+                link.write(data)
             },
             resize: { viewport in
-                // Always record the viewport, even with no process yet: the
-                // surface is built (and its grid reported) while the view sits
-                // in the incubator, before spawn. `spawn` reads this back so
-                // the child's initial winsize matches the surface — and
-                // libghostty dedupes resize dispatch, so a report dropped
-                // here would never be re-sent once the process exists.
-                pendingPTY.viewport = viewport
-                pendingPTY.process?.resize(
-                    cols: viewport.columns,
-                    rows: viewport.rows,
-                    widthPx: viewport.widthPixels,
-                    heightPx: viewport.heightPixels
-                )
+                // Always record the viewport, even before a channel exists:
+                // the surface is built (and its grid reported) while the view
+                // sits in the incubator. `attach` sends it on, so the engine
+                // spawns (or resizes) the process to the surface's real grid
+                // — and libghostty dedupes resize dispatch, so a report
+                // dropped here would never be re-sent.
+                link.resize(viewport)
             }
         )
         self.session = session
-        self.ptyHolder = pendingPTY
+        self.link = link
 
         view.controller = controller
         view.configuration = TerminalSurfaceOptions(
@@ -71,131 +59,69 @@ final class GhosttyEmulator: TerminalEmulatorView {
         )
     }
 
-    /// Captures the PTY reference so the InMemoryTerminalSession's
-    /// `@Sendable` closures (constructed before `pty` exists) can route
-    /// writes/resizes to the eventual PTY. Also remembers the most recent
-    /// viewport so `spawn` can size the forkpty winsize to the surface's
-    /// real grid instead of the 80×24 default.
-    private final class PTYHolder: @unchecked Sendable {
+    /// Bridges the session's `@Sendable` callbacks (built before any channel
+    /// exists) to the channel on the main actor, and remembers the latest
+    /// viewport for the channel to pick up.
+    private final class ChannelHolder: @unchecked Sendable {
         private let lock = NSLock()
-        private var _process: PTYProcess?
         private var _viewport: InMemoryTerminalViewport?
-
-        var process: PTYProcess? {
-            get { lock.lock(); defer { lock.unlock() }; return _process }
-            set { lock.lock(); defer { lock.unlock() }; _process = newValue }
-        }
+        nonisolated(unsafe) weak var channel: TerminalChannel?
 
         var viewport: InMemoryTerminalViewport? {
-            get { lock.lock(); defer { lock.unlock() }; return _viewport }
-            set { lock.lock(); defer { lock.unlock() }; _viewport = newValue }
+            lock.lock(); defer { lock.unlock() }
+            return _viewport
+        }
+
+        func write(_ data: Data) {
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated { self?.channel?.write(data) }
+            }
+        }
+
+        func resize(_ viewport: InMemoryTerminalViewport) {
+            lock.lock(); _viewport = viewport; lock.unlock()
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated { self?.channel?.resize(viewport.terminalSize) }
+            }
         }
     }
-    private let ptyHolder: PTYHolder
+    private let link: ChannelHolder
 
-    func spawn(
-        executable: String,
-        args: [String],
-        cwd: String,
-        env: [String: String],
-        outputTap: (@Sendable (Data) -> Void)? = nil
-    ) {
-        var environment = Subprocess.inheritedEnvironment(overrides: env)
-        environment["TERM"] = environment["TERM"] ?? "xterm-256color"
-        environment["COLORTERM"] = "truecolor"
-
+    func attach(_ channel: TerminalChannel) {
+        self.channel?.onOutput = nil
+        self.channel = channel
+        link.channel = channel
         let session = self.session
         let receiveLogSessionId = self.receiveLogSessionId
-        TerminalReceiveLog.processStarted(sessionId: receiveLogSessionId, executable: executable, cwd: cwd)
-        // Spawn with the surface's current grid as the initial winsize. The
-        // surface reports its size before the process exists (the view is
-        // parked in the incubator from birth), so without this the child
-        // starts at 80×24 while the surface renders a different grid —
-        // full-screen TUIs like Claude Code and Codex then draw for a
-        // width the terminal doesn't have, leaving wrapped artifacts.
-        let viewport = ptyHolder.viewport
-        let pty = PTYProcess(
-            executable: executable,
-            args: args,
-            cwd: cwd,
-            env: environment,
-            initialCols: viewport?.columns ?? 80,
-            initialRows: viewport?.rows ?? 24,
-            output: { data in
-                // Hop to main before handing bytes to libghostty.
-                // `InMemoryTerminalSession.receive` holds an NSLock across
-                // `ghostty_surface_write_buffer`, which can take long enough on
-                // a burst that a concurrent main-thread `dispatchResize` (fired
-                // from an AppKit layout pass) wedges the watchdog. Running
-                // receive on main serializes parse vs. resize on the same
-                // thread, eliminating the contention. Tradeoff: heavy bursts
-                // now share the main runloop. See PTYProcess.swift for the
-                // drain source.
-                DispatchQueue.main.async {
-                    guard let receiveData = TerminalOutputFilter.removingTitleUpdates(data) else {
-                        TerminalReceiveLog.droppedTitleUpdate(sessionId: receiveLogSessionId, data: data)
-                        return
-                    }
-                    if receiveData.count != data.count {
-                        TerminalReceiveLog.droppedTitleUpdate(sessionId: receiveLogSessionId, data: data)
-                    }
-                    let token = TerminalReceiveLog.begin(sessionId: receiveLogSessionId, data: receiveData)
-                    session.receive(receiveData)
-                    TerminalReceiveLog.end(token)
-                }
-                outputTap?(data)
-            },
-            exit: { [weak self] exitCode in
-                Task { @MainActor in
-                    if self?.notifySurfaceOnExit ?? true {
-                        session.finish(exitCode: UInt32(clamping: exitCode), runtimeMilliseconds: 0)
-                    }
-                    self?.exitHandler?(exitCode)
-                    // Drop PTYProcess only after exit is reported. If we
-                    // freed it inside `terminate()`, the dispatch source's
-                    // cancel handler (weak-self) would never fire and
-                    // exit would silently never be delivered.
-                    self?.pty = nil
-                    self?.ptyHolder.process = nil
-                }
+        channel.onOutput = { data in
+            guard let receiveData = TerminalOutputFilter.removingTitleUpdates(data) else {
+                TerminalReceiveLog.droppedTitleUpdate(sessionId: receiveLogSessionId, data: data)
+                return
             }
-        )
-
-        do {
-            try pty.start()
-            self.pty = pty
-            ptyHolder.process = pty
-            // Re-apply the latest viewport in case the grid changed between
-            // reading it above and the process coming up — libghostty's
-            // dispatch dedupes, so it won't re-send an unchanged grid now
-            // that someone is listening. Same-size TIOCSWINSZ is a no-op.
-            if let current = ptyHolder.viewport {
-                pty.resize(
-                    cols: current.columns,
-                    rows: current.rows,
-                    widthPx: current.widthPixels,
-                    heightPx: current.heightPixels
-                )
+            if receiveData.count != data.count {
+                TerminalReceiveLog.droppedTitleUpdate(sessionId: receiveLogSessionId, data: data)
             }
-        } catch {
-            // Surface the failure as terminal output so the user sees something.
-            let message = "jetline: failed to spawn \(executable): \(error)\r\n"
-            TerminalReceiveLog.receiveFailed(sessionId: receiveLogSessionId, message: message)
-            session.receive(message)
+            let token = TerminalReceiveLog.begin(sessionId: receiveLogSessionId, data: receiveData)
+            session.receive(receiveData)
+            TerminalReceiveLog.end(token)
         }
-    }
-
-    func setExitHandler(_ handler: @escaping (Int32) -> Void) {
-        exitHandler = handler
+        channel.onReset = {
+            // RIS: full reset, so a replay from further on starts clean.
+            session.receive(Data("\u{1B}c".utf8))
+        }
+        if let viewport = link.viewport {
+            channel.resize(viewport.terminalSize)
+        }
+        channel.attach()
     }
 
     func sendInterrupt() {
-        pty?.interrupt()
+        channel?.interrupt()
     }
 
     func write(_ string: String) {
         guard let data = string.data(using: .utf8) else { return }
-        pty?.write(data)
+        channel?.write(data)
     }
 
     /// Route through libghostty's `paste_from_clipboard` action so the
@@ -304,14 +230,19 @@ final class GhosttyEmulator: TerminalEmulatorView {
         }
     )
 
-    func terminate(completion: (@Sendable () -> Void)? = nil) {
-        // The `pty = nil` cleanup is deferred to the exit closure — see spawn.
-        guard let pty else {
-            // Never spawned, or the child is already gone and reported.
-            completion?()
-            return
-        }
-        pty.terminate(completion: completion)
+    /// End the engine terminal behind this surface.
+    func terminate() {
+        channel?.close()
+    }
+
+    /// Stop receiving output (the engine terminal keeps running).
+    func detach() {
+        channel?.detach()
+    }
+
+    /// Resume output on a new link after a reconnect.
+    func reattach() {
+        channel?.attach()
     }
 
     /// Drive Metal rendering only when the tab is active; an inactive tab's
@@ -322,6 +253,12 @@ final class GhosttyEmulator: TerminalEmulatorView {
         guard isActive != active else { return }
         isActive = active
         view.setSurfaceVisible(active)
+    }
+}
+
+private extension InMemoryTerminalViewport {
+    var terminalSize: TerminalSize {
+        TerminalSize(cols: columns, rows: rows, widthPx: widthPixels, heightPx: heightPixels)
     }
 }
 

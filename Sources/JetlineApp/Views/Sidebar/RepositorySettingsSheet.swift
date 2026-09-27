@@ -332,10 +332,8 @@ struct RepositorySettingsSheet: View {
     // MARK: - Loaders
 
     private func loadRefs() async {
-        async let r = WorktreeOps.listRemotes(at: repository.path)
-        async let b = WorktreeOps.listBaseRefs(at: repository.path)
-        async let u = WorktreeOps.usernameSlug(at: repository.path)
-        let (remotes, refs, slug) = await (r, b, u)
+        let result = await state.repoRefs(repository)
+        let (remotes, refs, slug) = (result?.remotes ?? [], result?.baseRefs ?? [], result?.usernameSlug ?? "")
         self.remotes = remotes.isEmpty ? [draft.remoteOrigin] : remotes
         self.baseRefs = refs.contains(draft.defaultBranch) ? refs : ([draft.defaultBranch] + refs)
         self.usernameSlug = slug

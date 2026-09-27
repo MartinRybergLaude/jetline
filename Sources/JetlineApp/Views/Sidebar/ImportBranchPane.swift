@@ -230,10 +230,7 @@ struct ImportBranchPane: View {
     private func refresh() async {
         refreshing = true
         defer { refreshing = false }
-        let raw = await WorktreeOps.listRemoteBranches(
-            repoPath: repository.path,
-            remote: repository.remoteOrigin
-        )
+        let raw = await state.remoteBranches(repository)
         branches = raw.map { BranchRow(ref: $0.ref, lastCommitAt: $0.lastCommitAt) }
     }
 

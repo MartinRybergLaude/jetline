@@ -11,7 +11,11 @@ final class EngineProtocolTests: XCTestCase {
     override class func setUp() {
         super.setUp()
         // Before anything touches `Database.shared`: never the real ~/.jetline.
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("jetline-tests-\(UUID().uuidString)")
+        // realpath, not resolvingSymlinksInPath: the latter maps macOS's
+        // /private/var back to /var, and git reports the real path.
+        let tmp = realpath(FileManager.default.temporaryDirectory.path, nil).map { p in defer { free(p) }; return String(cString: p) }
+            ?? FileManager.default.temporaryDirectory.path
+        let dir = URL(fileURLWithPath: tmp).appendingPathComponent("jetline-tests-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         setenv("JETLINE_DATA_DIR", dir.path, 1)
         dataDir = dir

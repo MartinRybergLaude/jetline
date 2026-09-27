@@ -248,6 +248,7 @@ enum API {
         var workspaceId: String
         var threadId: String
         var body: String
+        var refreshAfter: Bool = true
     }
 
     struct SetThreadResolved: RPC {
