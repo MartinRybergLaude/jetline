@@ -78,7 +78,8 @@ final class LiveChatSessionTests: XCTestCase {
         XCTAssertNil(session.banner)
         XCTAssertFalse(FileManager.default.fileExists(atPath: repo.appendingPathComponent("hello.txt").path))
         XCTAssertTrue(draft?.text.hasPrefix("Create a file named hello.txt") == true)
-        XCTAssertTrue(ChatStore.transcript(threadId: session.id).turns.isEmpty)
+        // The truncation is an async database write.
+        try await waitUntil(timeout: 10) { ChatStore.transcript(threadId: session.id).turns.isEmpty }
 
         // The chat still works after reverting.
         session.send(text: "Reply with just the word AGAIN. Do not use any tools.")

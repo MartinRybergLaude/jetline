@@ -116,6 +116,15 @@ final class AppState: ObservableObject {
         guard !hasLoaded else { return }
         hasLoaded = true
         connection.connect()
+        // Hold the caller (window setup, onboarding) until the first sync —
+        // settings come with it — but not for a remote host that's down.
+        let deadline = Date().addingTimeInterval(15)
+        while !isSynced, Date() < deadline {
+            switch connection.status {
+            case .failed, .reconnecting: return
+            default: try? await Task.sleep(for: .milliseconds(20))
+            }
+        }
     }
 
     /// Point the app at another engine.

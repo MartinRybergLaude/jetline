@@ -187,7 +187,11 @@ final class TabToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
 
     private func refreshOpenIn() {
         guard let openIn else { return }
-        openIn.setHiddenIfNeeded(false)
+        // A remote engine reached by a custom command gives editors nothing
+        // to open: the worktree isn't on this Mac and there's no ssh host.
+        let canOpen = state.connection.isLocal || (state.remoteSSHHost != nil && !availableOpenInApps.isEmpty)
+        openIn.setHiddenIfNeeded(!canOpen)
+        guard canOpen else { return }
         let app = currentOpenInApp
         openIn.setTitleIfNeeded(app.displayName)
         if openIn.image !== app.icon(size: 14) {

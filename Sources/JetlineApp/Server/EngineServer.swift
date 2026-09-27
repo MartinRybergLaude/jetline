@@ -17,6 +17,10 @@ final class EngineServer {
     private final class Client {
         let id: Int
         let connection: FramedConnection
+        /// Said hello: requests are accepted (they may be pipelined behind
+        /// it).
+        var greeted = false
+        /// Has its snapshot: events flow.
         var ready = false
         var chats: Set<String> = []
         var terminals: Set<String> = []
@@ -114,12 +118,21 @@ final class EngineServer {
     }
 
     private func handleRequest(_ payload: Data, from clientId: Int) {
-        guard let head = try? decoder.decode(Wire.RequestHead.self, from: payload) else { return }
+        guard let head = try? decoder.decode(Wire.RequestHead.self, from: payload) else {
+            // Unparseable: answer if there's an id to answer to.
+            if let object = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
+               let id = (object["id"] as? NSNumber)?.uint64Value {
+                respondError(id, WireError("Malformed request.", code: "badRequest"), to: clientId)
+            }
+            return
+        }
         guard let handler = handlers[head.method] else {
             respondError(head.id, WireError("Unknown method \(head.method). The engine may be older than this app.", code: "unknownMethod"), to: clientId)
             return
         }
-        if head.method != API.Hello.method, clients[clientId]?.ready != true {
+        if head.method == API.Hello.method {
+            clients[clientId]?.greeted = true
+        } else if clients[clientId]?.greeted != true {
             respondError(head.id, WireError("hello first", code: "notReady"), to: clientId)
             return
         }
@@ -237,6 +250,13 @@ final class EngineServer {
             connection: client.connection
         )
         client.terminals.insert(terminalId)
+        if terminal.buffer.range.end > 0 {
+            // The client's resize (sent with the attach) lands first.
+            Task { @MainActor [weak terminal] in
+                try? await Task.sleep(for: .milliseconds(150))
+                terminal?.redraw()
+            }
+        }
         return API.AttachResult(bufferStart: start, replayFrom: replayFrom, info: terminal.info)
     }
 

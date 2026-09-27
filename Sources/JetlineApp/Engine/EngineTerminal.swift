@@ -179,6 +179,21 @@ final class EngineTerminal: Identifiable {
         pty?.write(data)
     }
 
+    /// Make the program repaint: a size change it can see (one row less,
+    /// then back) delivers SIGWINCH, and TUIs redraw their whole screen.
+    /// Used after a client re-attaches — replayed history was drawn for
+    /// whatever width the terminal had at the time, so without a repaint
+    /// the screen can be left showing wrap artifacts.
+    func redraw() {
+        guard let pty, let size, size.rows > 2 else { return }
+        pty.resize(cols: size.cols, rows: size.rows - 1, widthPx: size.widthPx, heightPx: size.heightPx)
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(60))
+            guard let self, let pty = self.pty, let size = self.size else { return }
+            pty.resize(cols: size.cols, rows: size.rows, widthPx: size.widthPx, heightPx: size.heightPx)
+        }
+    }
+
     func interrupt() {
         pty?.interrupt()
     }

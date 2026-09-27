@@ -199,7 +199,7 @@ final class MainWindowCoordinator: NSObject, NSWindowDelegate {
             // after the user clears the flag via the Debug menu). The
             // OnboardingView itself flips the flag the first time it
             // appears so a subsequent relaunch stays quiet.
-            if !state.settings.hasCompletedOnboarding {
+            if state.isSynced, !state.settings.hasCompletedOnboarding {
                 onboardingPending = true
                 openOnboardingIfPending()
             }

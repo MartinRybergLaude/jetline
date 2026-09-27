@@ -36,6 +36,8 @@ public enum JetlineDaemon {
             status(options)
         case "stop":
             stop(options)
+        case "rpc":
+            rpc(options)
         case "version", "--version", "-v":
             print(JetlineVersion.current)
             exit(0)
@@ -56,6 +58,9 @@ public enum JetlineDaemon {
                 first if it isn't running. The Jetline app runs this over ssh.
       status    Report whether the engine is running.
       stop      Stop the engine and everything it runs.
+      rpc METHOD [JSON]
+                Send one request to the running engine and print the reply
+                (for scripting and debugging; methods are in Protocol/API.swift).
       version   Print the version.
 
     Data lives in ~/.jetline (override with JETLINE_DATA_DIR).
@@ -63,6 +68,7 @@ public enum JetlineDaemon {
 
     struct Options {
         var socketPath: String?
+        var positional: [String] = []
 
         mutating func parse(_ args: [String]) throws {
             var rest = args[...]
@@ -71,14 +77,24 @@ public enum JetlineDaemon {
                 case "--socket":
                     guard let path = rest.popFirst() else { throw DaemonError("--socket needs a path") }
                     socketPath = path
+                case let flag where flag.hasPrefix("--"):
+                    throw DaemonError("unknown option '\(flag)'")
                 default:
-                    throw DaemonError("unknown option '\(arg)'")
+                    positional.append(arg)
                 }
             }
         }
 
         var socket: String {
-            socketPath ?? Database.dataDirectory().appendingPathComponent("jetlined.sock").path
+            if let socketPath { return socketPath }
+            let dataDir = Database.dataDirectory().path
+            let preferred = (dataDir as NSString).appendingPathComponent("jetlined.sock")
+            // sockaddr_un caps the path at 104 bytes (macOS) / 108 (Linux).
+            // A long data dir gets a short, stable path in /tmp instead.
+            guard preferred.utf8.count >= 100 else { return preferred }
+            var hash: UInt64 = 1469598103934665603
+            for byte in dataDir.utf8 { hash = (hash ^ UInt64(byte)) &* 1099511628211 }
+            return "/tmp/jetlined-\(getuid())-\(String(hash, radix: 16)).sock"
         }
     }
 
@@ -271,6 +287,54 @@ public enum JetlineDaemon {
         #endif
         if let path = Bundle.main.executablePath { return path }
         return CommandLine.arguments.first
+    }
+
+    // MARK: - rpc
+
+    private static func rpc(_ options: Options) -> Never {
+        guard let method = options.positional.first else { fail("usage: jetlined rpc METHOD [JSON]") }
+        let paramsJSON = options.positional.dropFirst().first ?? "{}"
+        guard let fd = Sockets.connect(path: options.socket) else { fail("not running") }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 60) { fail("no reply after 60s") }
+        func frame(_ json: String) -> Data {
+            let payload = Data(json.utf8)
+            var data = Data()
+            var length = UInt32(payload.count + 1).bigEndian
+            withUnsafeBytes(of: &length) { data.append(contentsOf: $0) }
+            data.append(FrameKind.message.rawValue)
+            data.append(payload)
+            return data
+        }
+        _ = writeAll(fd: fd, frame(#"{"id":1,"method":"hello","params":{"protocolVersion":\#(Wire.protocolVersion),"clientName":"jetlined rpc"}}"#))
+        _ = writeAll(fd: fd, frame(#"{"id":2,"method":"\#(method)","params":\#(paramsJSON)}"#))
+        var inbox = Data()
+        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        while true {
+            let n = read(fd, &buffer, buffer.count)
+            guard n > 0 else { fail("connection closed") }
+            inbox.append(contentsOf: buffer[0..<n])
+            while inbox.count >= 4 {
+                let length = inbox.prefix(4).reduce(0) { ($0 << 8) | Int($1) }
+                guard inbox.count >= 4 + length else { break }
+                let kind = inbox[inbox.startIndex + 4]
+                let payload = inbox.subdata(in: (inbox.startIndex + 5)..<(inbox.startIndex + 4 + length))
+                inbox.removeFirst(4 + length)
+                guard kind == FrameKind.message.rawValue,
+                      let object = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
+                      object["type"] as? String == "response" else { continue }
+                if let error = object["error"] as? [String: Any] {
+                    if (object["id"] as? Int) == 1 || (object["id"] as? Int) == 2 {
+                        fail("\(error["message"] ?? error)")
+                    }
+                }
+                guard (object["id"] as? Int) == 2 else { continue }
+                let result = object["result"] ?? NSNull()
+                if let data = try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys, .fragmentsAllowed]) {
+                    print(String(decoding: data, as: UTF8.self))
+                }
+                exit(0)
+            }
+        }
     }
 
     // MARK: - status / stop
