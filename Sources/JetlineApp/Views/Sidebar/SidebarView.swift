@@ -114,6 +114,8 @@ private struct HostGroupHeader: View {
     let isFirst: Bool
     let onAddRepository: () -> Void
     @State private var confirmingRemoval = false
+    @State private var forwardingPort = false
+    @State private var portText = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -148,12 +150,24 @@ private struct HostGroupHeader: View {
                         Button("Set Up / Update jetlined…") {
                             state.pendingRemoteSetup = RemoteSetupRequest(hostId: host.id)
                         }
+                        if let ports = host.ports {
+                            Divider()
+                            PortForwardingMenuItems(ports: ports) {
+                                portText = ""
+                                forwardingPort = true
+                            }
+                        }
                         Divider()
                         Button("Remove \(host.name)…", role: .destructive) { confirmingRemoval = true }
                     } label: {
-                        Image(systemName: "ellipsis").font(.system(size: 11, weight: .semibold))
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .frame(width: 16, height: 16)
+                            .contentShape(Rectangle())
                     }
-                    .menuStyle(.borderlessButton)
+                    .menuStyle(.button)
+                    .buttonStyle(.plain)
                     .menuIndicator(.hidden)
                     .fixedSize()
                 }
@@ -170,6 +184,11 @@ private struct HostGroupHeader: View {
                 Button("Set Up…") { state.pendingRemoteSetup = RemoteSetupRequest(hostId: host.id) }
                     .controlSize(.small)
             }
+            if let ports = host.ports {
+                ForwardedPortsView(ports: ports) {
+                    state.pendingRemoteSetup = RemoteSetupRequest(hostId: host.id)
+                }
+            }
         }
         .padding(.top, isFirst ? 2 : 8)
         .padding(.bottom, 2)
@@ -182,6 +201,15 @@ private struct HostGroupHeader: View {
             Button("Remove", role: .destructive) { state.removeRemoteHost(host.id) }
         } message: {
             Text("Its workspaces disappear from the sidebar. Everything keeps running on \(host.name); add it again to get back to it.")
+        }
+        .alert("Forward a Port from \(host.name)", isPresented: $forwardingPort) {
+            TextField("Port", text: $portText)
+            Button("Forward") {
+                if let port = Int(portText.trimmingCharacters(in: .whitespaces)) { host.ports?.forward(port) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("It will answer at localhost on this Mac, on the same port.")
         }
     }
 

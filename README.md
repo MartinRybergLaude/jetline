@@ -122,9 +122,35 @@ Things that follow from the engine living elsewhere:
   keep running. `jetlined stop` on the host ends those.
 - Preferences (prompts, default agent, appearance) are the app's and are
   pushed to every machine; agent binary paths stay per machine.
-- Dev servers run on the host. Reach them the way you would any service
-  there — an ssh `LocalForward`/`DynamicForward` in your ssh config applies
-  to Jetline's connection as well.
+- Dev servers run on the host, and their ports are forwarded to this Mac
+  on the same number: a server on the host's `127.0.0.1:3000` answers at
+  `http://localhost:3000` here, so origins, cookies and CORS allow-lists
+  that expect `localhost:3000` just work. See *Port forwarding* below.
+
+### Port forwarding
+
+Jetline watches each remote's listening TCP ports (`/proc/net/tcp` on
+Linux, every couple of seconds) and forwards the ones your own processes
+open — ports ≥ 1024 outside the ephemeral range, so language servers and
+debug adapters on random high ports are left alone. Each shows under the
+machine's header while it's forwarded; click one to open it in the
+browser, right-click to copy the address or stop forwarding it.
+
+- The traffic rides the existing link to `jetlined` (no second ssh login;
+  it works through anything that carries the link). Each connection has
+  its own flow control, so a large download doesn't hold up terminals.
+- A port already taken on this Mac is shown as such rather than moved to
+  another number (that would be a different origin); Jetline keeps retrying
+  and forwards it once it frees up. Two remotes can't both have the same
+  port; the first one gets it.
+- The header's `…` menu has *Forward a Port…* (any port, detected or not),
+  the other ports the machine is listening on, and a switch for automatic
+  forwarding.
+- Forwarded ports stay bound while the link reconnects; connections made
+  in the meantime are refused.
+- A `jetlined` on this same Mac isn't forwarded (its ports are already
+  here). An older `jetlined` without forwarding says so under its header;
+  *Update…* reinstalls it.
 
 ### On the host
 
@@ -173,8 +199,8 @@ Sources/JetlineApp/
 ├── AppState.swift            ─ client root state: engine mirror + UI state
 ├── Engine/                   ─ Engine, EngineWorkspace, EngineTerminal, ChatEngine, ScriptRun
 ├── Server/                   ─ EngineServer, ObservationPump, ChatPublisher, TerminalHub
-├── Protocol/                 ─ Wire envelopes + snapshots, API catalogue, framing
-├── Client/                   ─ EngineClient, EngineConnection, ChatSession mirror, TerminalChannel
+├── Protocol/                 ─ Wire envelopes + snapshots, API catalogue, framing, Tunnel (port forwarding)
+├── Client/                   ─ EngineClient, EngineConnection, ChatSession mirror, TerminalChannel, PortForwarder
 ├── Daemon/                   ─ `jetlined` commands (serve / attach / status / stop / rpc)
 ├── Models/
 │   ├── Repository.swift          ─ repo + per-repo prompt/script overrides

@@ -15,6 +15,8 @@ final class EngineHost: Identifiable {
     private(set) var name: String
     let connection: EngineConnection
     let files: EngineFiles
+    /// The remote's ports, forwarded to this Mac. Nil for this Mac itself.
+    let ports: PortForwarder?
 
     // Mirror of the engine's GlobalSnapshot.
     var repositories: [Repository] = []
@@ -33,6 +35,8 @@ final class EngineHost: Identifiable {
         self.name = name
         self.connection = EngineConnection(target: target)
         self.files = EngineFiles(connection: connection)
+        // Test remotes from the environment don't touch saved choices.
+        self.ports = id == Self.localId ? nil : PortForwarder(hostId: id, hostName: name, persists: !id.hasPrefix("env"))
     }
 
     var isLocal: Bool { id == Self.localId }

@@ -21,6 +21,18 @@ enum API {
         var homeDirectory: String
         var dataDirectory: String
         var snapshot: EngineSnapshot
+        /// Optional capabilities: "tunnels" (port forwarding). Absent from
+        /// engines that predate the field.
+        var features: [String]? = nil
+    }
+
+    static let tunnelsFeature = "tunnels"
+
+    /// Start reporting this machine's listening TCP ports (`.ports` events
+    /// on every change) and return the current list.
+    struct WatchPorts: RPC {
+        typealias Response = [ListeningPort]
+        static let method = "ports.watch"
     }
 
     /// Which workspace this client is looking at. Focused workspaces stay

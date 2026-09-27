@@ -1,4 +1,5 @@
 import Foundation
+import CJetlineSys
 
 /// Serves an `Engine` to any number of clients over `FramedConnection`s:
 /// dispatches requests, publishes state changes as events, and streams
@@ -24,9 +25,14 @@ final class EngineServer {
         var ready = false
         var chats: Set<String> = []
         var terminals: Set<String> = []
-        init(id: Int, connection: FramedConnection) {
+        /// Called `ports.watch`: gets `.ports` events.
+        var watchesPorts = false
+        /// Its forwarded connections.
+        let tunnels: TunnelMux
+        init(id: Int, connection: FramedConnection, tunnels: TunnelMux) {
             self.id = id
             self.connection = connection
+            self.tunnels = tunnels
         }
     }
 
@@ -42,13 +48,21 @@ final class EngineServer {
     private var workspacePumps: [String: [any Pump]] = [:]
     private var chatPublishers: [String: ChatPublisher] = [:]
     private let terminals = TerminalHub()
+    /// Runs while some client watches ports.
+    private let portScanner = PortScanner()
 
     /// Fires when the last client goes away (the daemon logs it).
     var onClientCountChanged: ((Int) -> Void)?
 
-    init(engine: Engine, engineVersion: String) {
+    /// Opens a forwarded connection's far end: a port on this machine →
+    /// a connected socket. Tests swap in their own.
+    typealias TunnelConnect = @Sendable (_ port: Int) -> Int32?
+    private let tunnelConnect: TunnelConnect?
+
+    init(engine: Engine, engineVersion: String, tunnelConnect: TunnelConnect? = nil) {
         self.engine = engine
         self.engineVersion = engineVersion
+        self.tunnelConnect = tunnelConnect
         registerHandlers()
         engine.onWorkspaceStateCreated = { [weak self] ws in self?.publish(workspace: ws) }
         engine.onWorkspaceStateRemoved = { [weak self] id in self?.unpublish(workspaceId: id) }
@@ -66,6 +80,14 @@ final class EngineServer {
         }, emit: { [weak self] snapshot in self?.broadcast(.global(snapshot)) })
         pump.start()
         globalPump = pump
+        portScanner.onChange = { [weak self] ports in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.send(.ports(ports), to: self.clients.values.filter(\.watchesPorts).map(\.id))
+                }
+            }
+        }
         for ws in engine.allWorkspaceStates { publish(workspace: ws) }
     }
 
@@ -78,16 +100,36 @@ final class EngineServer {
     func accept(_ connection: FramedConnection) -> Int {
         let id = nextClientId
         nextClientId += 1
-        let client = Client(id: id, connection: connection)
+        let scanner = portScanner
+        let tunnels = TunnelMux(label: "server-\(id)", connect: tunnelConnect ?? { port in
+            // Only ever this machine's own listeners.
+            for address in scanner.connectTargets(for: port) {
+                let fd = jl_tcp_connect(address, Int32(port), 3000)
+                if fd >= 0 { return fd }
+            }
+            return nil
+        }, send: { [weak connection] kind, payload in connection?.send(kind, payload) })
+        let client = Client(id: id, connection: connection, tunnels: tunnels)
         clients[id] = client
         let hub = terminals
         connection.onDrained = { [weak hub] in hub?.catchUp(client: id) }
         connection.onFrames = { [weak self] frames in
+            // Forwarded bytes skip the main actor.
+            var rest: [FramedConnection.Frame] = []
+            for frame in frames {
+                if frame.kind.isTunnel {
+                    tunnels.receive(frame.kind, frame.payload)
+                } else {
+                    rest.append(frame)
+                }
+            }
+            guard !rest.isEmpty else { return }
             DispatchQueue.main.async {
-                MainActor.assumeIsolated { self?.receive(frames, from: id) }
+                MainActor.assumeIsolated { self?.receive(rest, from: id) }
             }
         }
         connection.onClose = { [weak self] in
+            tunnels.close()
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { self?.disconnect(id) }
             }
@@ -100,6 +142,8 @@ final class EngineServer {
     private func disconnect(_ id: Int) {
         guard let client = clients.removeValue(forKey: id) else { return }
         terminals.removeClient(id)
+        client.tunnels.close()
+        if client.watchesPorts, !clients.values.contains(where: \.watchesPorts) { portScanner.stop() }
         for chatId in client.chats { releaseChat(chatId) }
         engine.setFocus(client: id, workspaceId: nil)
         onClientCountChanged?(clients.count)
@@ -113,7 +157,7 @@ final class EngineServer {
             case .terminalInput:
                 guard let (terminalId, bytes) = TerminalFrame.parseInput(frame.payload) else { continue }
                 engine.terminal(id: terminalId)?.write(bytes)
-            case .terminalOutput:
+            case .terminalOutput, .tunnelOpen, .tunnelData, .tunnelClose, .tunnelAck:
                 continue
             }
         }
@@ -389,8 +433,20 @@ final class EngineServer {
                 platform: Platform.name,
                 homeDirectory: Platform.homeDirectory.path,
                 dataDirectory: Database.dataDirectory().path,
-                snapshot: snapshot
+                snapshot: snapshot,
+                features: [API.tunnelsFeature]
             )
+        }
+        on(API.WatchPorts.self) { [unowned self] _, clientId in
+            self.clients[clientId]?.watchesPorts = true
+            let scanner = self.portScanner
+            // Off the main actor: lsof can take a moment.
+            _ = await Task.detached { scanner.scanNow() }.value
+            // Unless every watcher left meanwhile (`disconnect` stops it).
+            if self.clients.values.contains(where: \.watchesPorts) { scanner.start() }
+            // The latest list rather than scanNow's: a newer one may have
+            // gone out as an event meanwhile, and this reply mustn't undo it.
+            return scanner.current
         }
         on(API.SetFocus.self) { req, clientId in
             engine.setFocus(client: clientId, workspaceId: req.workspaceId)

@@ -44,7 +44,7 @@ public enum JetlineDaemon {
             exit(0)
         case "info":
             // Machine-readable, for the app's installer check.
-            print(#"{"version":"\#(JetlineVersion.current)","protocol":\#(Wire.protocolVersion)}"#)
+            print(#"{"version":"\#(JetlineVersion.current)","protocol":\#(Wire.protocolVersion),"features":["\#(API.tunnelsFeature)"]}"#)
             exit(0)
         case "help", "--help", "-h":
             print(usage)

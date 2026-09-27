@@ -15,6 +15,20 @@ enum FrameKind: UInt8, Sendable {
     case terminalOutput = 2
     /// Client → engine: `[u8 idLength][id][bytes]`.
     case terminalInput = 3
+    /// Forwarded TCP connections (see `TunnelMux`). Client → engine:
+    /// `[u32 stream][u16 port]` — connect to that port on the engine's
+    /// loopback.
+    case tunnelOpen = 4
+    /// Either way: `[u32 stream][bytes]`.
+    case tunnelData = 5
+    /// Either way: `[u32 stream][u8 how]` — 0 for end of stream (a half
+    /// close), 1 for a reset.
+    case tunnelClose = 6
+    /// Either way: `[u32 stream][u32 bytes]` — that many bytes were
+    /// delivered, so the sender may send that many more.
+    case tunnelAck = 7
+
+    var isTunnel: Bool { rawValue >= FrameKind.tunnelOpen.rawValue && rawValue <= FrameKind.tunnelAck.rawValue }
 }
 
 /// One length-prefixed frame stream over a pair of file descriptors — a

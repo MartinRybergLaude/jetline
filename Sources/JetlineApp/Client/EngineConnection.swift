@@ -252,6 +252,10 @@ final class EngineConnection {
         remoteProcess = process
         let readFD = dup(stdout.fileHandleForReading.fileDescriptor)
         let writeFD = dup(stdin.fileHandleForWriting.fileDescriptor)
+        #if canImport(Darwin)
+        // A write after ssh died must fail, not SIGPIPE the whole app.
+        _ = fcntl(writeFD, F_SETNOSIGPIPE, 1)
+        #endif
         try? stdout.fileHandleForReading.close()
         try? stdin.fileHandleForWriting.close()
         let connection = FramedConnection(

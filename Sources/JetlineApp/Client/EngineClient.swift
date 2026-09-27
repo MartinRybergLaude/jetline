@@ -14,6 +14,8 @@ final class EngineClient {
     private let pending = PendingRequests()
     private var nextId: UInt64 = 1
     private var terminalHandlers: [String: (UInt64, Data) -> Void] = [:]
+    /// Forwarded connections, once `startTunnels` set them up.
+    private let tunnelRoute = TunnelRoute()
     private(set) var isClosed = false
 
     /// Engine events, in order.
@@ -28,10 +30,13 @@ final class EngineClient {
     func start() {
         let pending = self.pending
         let decoder = Wire.makeDecoder()
+        let tunnelRoute = self.tunnelRoute
         connection.onFrames = { [weak self] frames in
             var deliveries: [@MainActor (EngineClient) -> Void] = []
             for frame in frames {
                 switch frame.kind {
+                case .tunnelOpen, .tunnelData, .tunnelClose, .tunnelAck:
+                    tunnelRoute.mux?.receive(frame.kind, frame.payload)
                 case .message:
                     guard let head = try? decoder.decode(Wire.ServerHead.self, from: frame.payload) else { continue }
                     if head.type == "response", let id = head.id {
@@ -64,6 +69,7 @@ final class EngineClient {
             }
         }
         connection.onClose = { [weak self] in
+            tunnelRoute.mux?.close()
             pending.failAll(WireError.disconnected)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
@@ -79,6 +85,7 @@ final class EngineClient {
     func close() {
         guard !isClosed else { return }
         isClosed = true
+        tunnelRoute.mux?.close()
         pending.failAll(WireError.disconnected)
         connection.close()
     }
@@ -119,6 +126,20 @@ final class EngineClient {
     /// Fire and forget; failures are dropped.
     func send<R: RPC>(_ request: R) {
         Task { _ = try? await call(request) }
+    }
+
+    // MARK: Tunnels
+
+    /// The multiplexer for connections forwarded to the engine's machine
+    /// (created on first use). Only for engines whose hello lists
+    /// `API.tunnelsFeature`.
+    func tunnels() -> TunnelMux {
+        if let mux = tunnelRoute.mux { return mux }
+        let connection = self.connection
+        let mux = TunnelMux(label: "client") { kind, payload in connection.send(kind, payload) }
+        if isClosed { mux.close() }
+        tunnelRoute.mux = mux
+        return mux
     }
 
     // MARK: Terminals

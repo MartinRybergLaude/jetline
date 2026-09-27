@@ -19,6 +19,8 @@ enum RemoteInstaller {
         var daemonVersion: String?
         /// Its protocol version (`jetlined info`; nil for older daemons).
         var daemonProtocol: Int?
+        /// Its optional capabilities (`jetlined info`; nil for older daemons).
+        var daemonFeatures: [String]? = nil
         var daemonRunning: Bool
         /// A Jetline.app on a Mac host, whose `jetline daemon` can serve.
         var macAppDaemon: String?
@@ -34,7 +36,11 @@ enum RemoteInstaller {
             return daemonVersion == JetlineVersion.current
         }
 
-        var isCurrent: Bool { daemonVersion == JetlineVersion.current }
+        /// This app's version, with everything this app uses — a build of
+        /// the same version from before port forwarding counts as outdated.
+        var isCurrent: Bool {
+            daemonVersion == JetlineVersion.current && (daemonFeatures?.contains(API.tunnelsFeature) ?? (os != .linux))
+        }
     }
 
     struct Failure: Error, LocalizedError {
@@ -76,9 +82,11 @@ enum RemoteInstaller {
         let osName = fields["os"]?.first ?? ""
         let os: Probe.OS = osName == "Linux" ? .linux : osName == "Darwin" ? .macOS : .other(osName)
         var protocolVersion: Int?
+        var features: [String]?
         if let info = fields["info"]?.first, let data = info.data(using: .utf8),
            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             protocolVersion = object["protocol"] as? Int
+            features = object["features"] as? [String]
         }
         var version = fields["version"]?.first?.trimmingCharacters(in: .whitespaces).nonBlank
         if os == .macOS, version == nil, daemonPath.contains("Jetline.app") {
@@ -89,6 +97,7 @@ enum RemoteInstaller {
             arch: normalize(arch: fields["arch"]?.first ?? ""),
             daemonVersion: version,
             daemonProtocol: protocolVersion,
+            daemonFeatures: features,
             daemonRunning: fields["running"] != nil,
             macAppDaemon: fields["macapp"] != nil ? macDaemonCommand : nil,
             missingTools: fields["missing"] ?? []

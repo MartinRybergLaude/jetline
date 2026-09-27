@@ -37,6 +37,31 @@ void jl_reset_signals(void);
 /// The uid of a connected unix-socket peer, or -1.
 int jl_peer_uid(int fd);
 
+/// Loopback TCP for port forwarding. `family` is 4 or 6; results are an fd
+/// (close-on-exec, and SIGPIPE-free where the platform allows) or -errno.
+
+/// Listen on 127.0.0.1:`port` or [::1]:`port` (v6-only, so the two don't
+/// collide). `reuse` sets SO_REUSEADDR — only for a port nothing else is
+/// listening on, since on BSD it lets a specific address shadow another
+/// process's wildcard bind.
+int jl_tcp_listen_loopback(int family, int port, int reuse);
+
+/// Connect to `address` (an IPv4 or IPv6 literal) on `port`, giving up
+/// after `timeout_ms`. The socket comes back blocking.
+int jl_tcp_connect(const char *address, int port, int timeout_ms);
+
+/// `accept`, close-on-exec from the start. Returns the fd or -errno.
+int jl_accept(int listener);
+
+/// Non-blocking, no Nagle, no SIGPIPE: ready for a dispatch source.
+void jl_tcp_prepare(int fd);
+
+/// `send` without SIGPIPE (MSG_NOSIGNAL on Linux).
+long jl_send(int fd, const void *buffer, unsigned long length);
+
+/// Make the next close send a RST instead of a FIN.
+void jl_tcp_abort_on_close(int fd);
+
 #if defined(__linux__)
 /// glibc's `posix_spawn_file_actions_add{chdir,closefrom}_np` and
 /// `POSIX_SPAWN_SETSID` are only declared under _GNU_SOURCE, which Swift's

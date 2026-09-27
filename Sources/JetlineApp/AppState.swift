@@ -195,6 +195,7 @@ final class AppState: ObservableObject {
     func updateRemoteHost(_ id: String, remote: RemoteEngine) {
         guard let host = host(id: id), !host.isLocal else { return }
         host.rename(remote.name)
+        host.ports?.rename(remote.name)
         if host.connection.target != .remote(remote) {
             forgetMirror(of: host)
             host.connection.retarget(.remote(remote))
@@ -208,6 +209,8 @@ final class AppState: ObservableObject {
         guard let host = host(id: id), !host.isLocal else { return }
         forgetMirror(of: host)
         host.connection.disconnect()
+        host.ports?.stop()
+        PortForwarder.forget(hostId: host.id)
         hosts.removeAll { $0 === host }
         rebuildAggregates()
         RemoteHostStore.save(remoteHostConfigs)
@@ -291,6 +294,7 @@ final class AppState: ObservableObject {
         }
         host.isSynced = true
         rebuildAggregates()
+        host.ports?.connected(client, hello)
         // The app's preferences are this Mac's; a remote gets them too
         // (keeping its own agent binary paths).
         if !host.isLocal, let local = localHost.settings {
@@ -307,6 +311,7 @@ final class AppState: ObservableObject {
 
     private func didDisconnect(_ host: EngineHost) {
         host.isSynced = false
+        host.ports?.disconnected()
         rebuildAggregates()
         for ws in workspaceStates.values where host.owns(workspaceId: ws.id) {
             for chat in ws.chats { chat.markStale() }
@@ -359,6 +364,8 @@ final class AppState: ObservableObject {
             }
         case let .error(message):
             Task { await presentError(message) }
+        case let .ports(ports):
+            host.ports?.received(ports)
         }
     }
 

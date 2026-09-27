@@ -186,6 +186,9 @@ enum EngineEvent: Codable, Sendable {
     /// A long-running request failed after it was accepted (a fast-path git
     /// action that couldn't even fall back). User-facing.
     case error(String)
+    /// The engine machine's listening ports changed (for clients that
+    /// called `ports.watch`).
+    case ports([ListeningPort])
 }
 
 // MARK: - Chat wire state
