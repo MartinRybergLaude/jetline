@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 /// Block-level structure of a GitHub-flavored markdown document.
@@ -50,3 +51,4 @@ struct MarkdownTable: Hashable, Sendable {
 
     var columnCount: Int { header.count }
 }
+#endif

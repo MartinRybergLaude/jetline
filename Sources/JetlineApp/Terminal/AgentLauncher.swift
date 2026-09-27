@@ -27,7 +27,7 @@ enum AgentLauncher {
         // Plain terminal: skip resolution, just open the user's login shell.
         if agent == .shell {
             return Spec(
-                executable: ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh",
+                executable: Platform.defaultShell,
                 args: ["-l"],
                 env: agentEnv(),
                 fellBackToShell: false
@@ -69,7 +69,7 @@ enum AgentLauncher {
 
         // Fall back to the user's login shell so the terminal is at least usable
         // and they can debug from inside it. Higher-level UI shows a banner.
-        let shellPath = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        let shellPath = Platform.defaultShell
         return Spec(
             executable: shellPath,
             args: ["-l"],
@@ -125,7 +125,7 @@ enum AgentLauncher {
     /// fd 1/2 (fsmonitor, gpg-agent, etc.) — otherwise the read end never
     /// sees EOF and the continuation never resumes.
     private static func shellCommand(_ name: String) async -> String? {
-        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        let shell = Platform.defaultShell
         let result = await Subprocess.run(
             executable: shell,
             args: ["-l", "-c", "command -v \(name)"],

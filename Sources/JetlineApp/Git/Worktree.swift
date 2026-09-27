@@ -165,12 +165,26 @@ enum WorktreeOps {
     /// would capture the first *call* instead, which can postdate a live
     /// lock taken by one of our own earlier git procs.
     private static let processStartDate: Date = {
+        #if os(Linux)
+        // /proc/self/stat field 22 is the start time in clock ticks after
+        // boot; /proc/stat's `btime` is the boot time.
+        guard let stat = try? String(contentsOfFile: "/proc/self/stat", encoding: .utf8),
+              let close = stat.lastIndex(of: ")") else { return Date() }
+        let fields = stat[stat.index(after: close)...].split(separator: " ")
+        guard fields.count > 19, let ticks = Double(fields[19]),
+              let boot = (try? String(contentsOfFile: "/proc/stat", encoding: .utf8))?
+                .split(separator: "\n").first(where: { $0.hasPrefix("btime ") })
+                .flatMap({ Double($0.dropFirst(6)) }) else { return Date() }
+        let hz = Double(sysconf(Int32(_SC_CLK_TCK)))
+        return Date(timeIntervalSince1970: boot + ticks / (hz > 0 ? hz : 100))
+        #else
         var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()]
         var info = kinfo_proc()
         var size = MemoryLayout<kinfo_proc>.stride
         guard sysctl(&mib, 4, &info, &size, nil, 0) == 0 else { return Date() }
         let tv = info.kp_proc.p_starttime
         return Date(timeIntervalSince1970: TimeInterval(tv.tv_sec) + TimeInterval(tv.tv_usec) / 1e6)
+        #endif
     }()
 
     /// True if the path is the top of a git working tree.

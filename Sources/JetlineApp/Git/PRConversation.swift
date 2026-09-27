@@ -42,9 +42,12 @@ struct PRComment: Sendable, Hashable, Identifiable {
     /// GitHub-hidden comment (spam, off-topic, resolved). Rendered collapsed.
     var isMinimized: Bool
     var minimizedReason: String?
+    #if os(macOS)
     /// Parsed at fetch time, off the main actor. Re-parsing in `body` would
-    /// put a full markdown parse on every scroll frame.
+    /// put a full markdown parse on every scroll frame. Client-side only:
+    /// the headless engine never renders, and the wire carries `body`.
     var blocks: [MarkdownBlock]
+    #endif
 
     init(
         id: String,
@@ -64,7 +67,9 @@ struct PRComment: Sendable, Hashable, Identifiable {
         self.url = url
         self.isMinimized = isMinimized
         self.minimizedReason = minimizedReason
+        #if os(macOS)
         self.blocks = MarkdownParser.parse(body)
+        #endif
     }
 }
 
@@ -102,7 +107,10 @@ struct PRReview: Sendable, Hashable, Identifiable {
     var verdict: Verdict
     var submittedAt: Date
     var url: String
+    var body: String
+    #if os(macOS)
     var blocks: [MarkdownBlock]
+    #endif
 
     init(
         id: String,
@@ -119,7 +127,10 @@ struct PRReview: Sendable, Hashable, Identifiable {
         self.verdict = verdict
         self.submittedAt = submittedAt
         self.url = url
+        self.body = body
+        #if os(macOS)
         self.blocks = MarkdownParser.parse(body)
+        #endif
     }
 }
 

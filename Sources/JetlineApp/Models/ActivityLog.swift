@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 /// In-memory, capped ring buffer of background activity. Lives only for
 /// the app's session — no persistence. Intended as a debug aid surfaced
@@ -8,10 +9,15 @@ import Foundation
 /// synchronously from their own isolation domain and SwiftUI observation
 /// stays cheap.
 @MainActor
-final class ActivityLog: ObservableObject {
+@Observable
+final class ActivityLog {
     static let cap = 1000
 
-    @Published private(set) var events: [ActivityEvent] = []
+    private(set) var events: [ActivityEvent] = []
+
+    /// Fires for every recorded event. The engine uses it to forward its
+    /// log to connected clients.
+    @ObservationIgnored var onRecord: ((ActivityEvent) -> Void)?
 
     func record(
         _ kind: ActivityEvent.Kind,
@@ -26,6 +32,13 @@ final class ActivityLog: ObservableObject {
             repoId: repoId,
             workspaceId: workspaceId
         )
+        append(event)
+        onRecord?(event)
+    }
+
+    /// Adopt an event recorded elsewhere (a client mirroring its engine's
+    /// log).
+    func append(_ event: ActivityEvent) {
         events.append(event)
         if events.count > Self.cap {
             events.removeFirst(events.count - Self.cap)
@@ -37,15 +50,15 @@ final class ActivityLog: ObservableObject {
     }
 }
 
-struct ActivityEvent: Identifiable, Hashable {
-    let id = UUID()
+struct ActivityEvent: Identifiable, Hashable, Codable, Sendable {
+    var id = UUID()
     let timestamp: Date
     let kind: Kind
     let message: String
     let repoId: String?
     let workspaceId: String?
 
-    enum Kind: String, Hashable, CaseIterable {
+    enum Kind: String, Hashable, CaseIterable, Codable, Sendable {
         case fetch
         case fastForward
         case prPoll

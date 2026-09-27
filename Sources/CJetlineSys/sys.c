@@ -20,3 +20,12 @@ int jl_pidfd_open(pid_t pid) {
     return -1;
 #endif
 }
+
+int jl_set_winsize(int fd, unsigned short rows, unsigned short cols, unsigned short xpixel, unsigned short ypixel) {
+    struct winsize ws;
+    ws.ws_row = rows;
+    ws.ws_col = cols;
+    ws.ws_xpixel = xpixel;
+    ws.ws_ypixel = ypixel;
+    return ioctl(fd, TIOCSWINSZ, &ws);
+}

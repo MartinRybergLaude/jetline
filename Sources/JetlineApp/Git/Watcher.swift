@@ -1,6 +1,6 @@
 import Foundation
 
-/// Coalesced filesystem watcher backed by FSEvents. Fires `onChange`
+/// Coalesced filesystem watcher backed by FSEvents (inotify on Linux). Fires `onChange`
 /// after any change inside the worktree, throttled.
 ///
 /// Pinned to the main actor so the throttle Task and the `onChange`
@@ -18,7 +18,12 @@ import Foundation
 /// commits update HEAD/index there and we always want to see those.
 @MainActor
 final class WorktreeWatcher {
+    #if os(macOS)
     private var stream: FSEventStreamRef?
+    #else
+    private var inotify: InotifyTreeWatcher?
+    #endif
+    private var stopped = false
     /// The worktree root. Events under this prefix are subject to the
     /// gitignore filter.
     private let worktreePath: String
@@ -46,7 +51,32 @@ final class WorktreeWatcher {
     }
 
     func start() {
+        #if os(macOS)
         guard stream == nil else { return }
+        startFSEvents()
+        loadIgnoredPrefixes()
+        #else
+        guard inotify == nil else { return }
+        // inotify watches are per directory, so the ignored set has to be
+        // known before walking the tree — otherwise every `node_modules`
+        // directory would eat into the per-user watch limit.
+        loadIgnoredPrefixes { [weak self] in
+            guard let self, self.inotify == nil, !self.stopped else { return }
+            let source = InotifyTreeWatcher(
+                root: self.worktreePath,
+                extraDirectories: self.additionalPaths,
+                skip: { [weak self] path in self?.isIgnoredDirectory(path) ?? false }
+            ) { [weak self] paths in
+                self?.handleEvents(paths: paths, count: paths.count)
+            }
+            source.start()
+            self.inotify = source
+        }
+        #endif
+    }
+
+    #if os(macOS)
+    private func startFSEvents() {
         var context = FSEventStreamContext(
             version: 0,
             info: Unmanaged.passUnretained(self).toOpaque(),
@@ -94,20 +124,37 @@ final class WorktreeWatcher {
             return
         }
         stream = s
-        loadIgnoredPrefixes()
     }
+    #endif
 
     func stop() {
+        stopped = true
+        #if os(macOS)
         if let s = stream {
             FSEventStreamStop(s)
             FSEventStreamInvalidate(s)
             FSEventStreamRelease(s)
             stream = nil
         }
+        #else
+        inotify?.stop()
+        inotify = nil
+        #endif
         pendingTask?.cancel()
         pendingTask = nil
         ignoredReload?.cancel()
         ignoredReload = nil
+    }
+
+    /// Whether `path` (a directory) falls under an ignored prefix, or is the
+    /// worktree's own `.git`. Used to prune the inotify walk.
+    private func isIgnoredDirectory(_ path: String) -> Bool {
+        let dir = path.hasSuffix("/") ? path : path + "/"
+        if dir == worktreePath + "/.git/" || dir.hasSuffix("/.git/") { return true }
+        for prefix in ignoredPrefixes where dir.hasPrefix(prefix) {
+            return true
+        }
+        return false
     }
 
     private func handleEvents(paths: [String], count: Int) {
@@ -162,7 +209,7 @@ final class WorktreeWatcher {
         return false
     }
 
-    private func loadIgnoredPrefixes() {
+    private func loadIgnoredPrefixes(then: (@MainActor () -> Void)? = nil) {
         ignoredReload?.cancel()
         let path = worktreePath
         ignoredReload = Task { [weak self] in
@@ -172,6 +219,7 @@ final class WorktreeWatcher {
                 self.ignoredPrefixes = prefixes
                 self.ignoredLoaded = true
                 self.ignoredReload = nil
+                then?()
             }
         }
     }

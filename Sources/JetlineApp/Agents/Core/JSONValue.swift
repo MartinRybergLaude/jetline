@@ -76,7 +76,18 @@ enum JSONValue: Sendable, Hashable {
         switch any {
         case is NSNull:
             self = .null
+        #if !canImport(Darwin)
+        // corelibs Foundation hands back native Swift values as well as
+        // NSNumbers, and has no CFBoolean to tell a bool from a 0/1.
+        case let bool as Bool where type(of: any) == Bool.self:
+            self = .bool(bool)
+        case let int as Int where type(of: any) == Int.self:
+            self = .int(Int64(int))
+        case let double as Double where type(of: any) == Double.self:
+            self = .double(double)
+        #endif
         case let number as NSNumber:
+            #if canImport(Darwin)
             if CFGetTypeID(number) == CFBooleanGetTypeID() {
                 self = .bool(number.boolValue)
             } else if CFNumberIsFloatType(number) {
@@ -84,6 +95,13 @@ enum JSONValue: Sendable, Hashable {
             } else {
                 self = .int(number.int64Value)
             }
+            #else
+            switch String(cString: number.objCType) {
+            case "c", "B": self = .bool(number.boolValue)
+            case "f", "d": self = .double(number.doubleValue)
+            default: self = .int(number.int64Value)
+            }
+            #endif
         case let string as String:
             self = .string(string)
         case let array as [Any]:

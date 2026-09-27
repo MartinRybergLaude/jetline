@@ -1,5 +1,10 @@
 import Foundation
+import CJetlineSys
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 /// Owns a pseudo-terminal master file descriptor and the child process
 /// running on the slave side. Drains output via `DispatchSourceRead`,
@@ -27,7 +32,7 @@ final class PTYProcess: @unchecked Sendable {
     private var masterFd: Int32 = -1
     private var childPid: pid_t = 0
     private var readSource: DispatchSourceRead?
-    private var procSource: DispatchSourceProcess?
+    private var procSource: ProcessExitSource?
     private let queue = DispatchQueue(label: "PTYProcess.io", qos: .userInitiated)
     private var hasStarted = false
     private var hasReportedExit = false
@@ -113,9 +118,7 @@ final class PTYProcess: @unchecked Sendable {
         }
 
         var master: Int32 = -1
-        let pid = withUnsafePointer(to: &ws) { wsPtr -> pid_t in
-            forkpty(&master, nil, nil, UnsafeMutablePointer(mutating: wsPtr))
-        }
+        let pid = jl_forkpty(&master, &ws)
 
         if pid < 0 {
             throw SpawnError.forkptyFailed(errno: errno)
@@ -127,13 +130,17 @@ final class PTYProcess: @unchecked Sendable {
             // descendant the agent spawns. argv[0] is the executable's
             // basename because Claude Code re-execs itself by argv[0].
             _ = setpgid(0, 0)
-            _ = chdir(cwdC)
-            _ = execve(executableC, argv, envp)
+            _ = chdir(cwdC!)
+            _ = execve(executableC!, argv, envp)
             _exit(127)
         }
 
         masterFd = master
         childPid = pid
+        // Keep the master out of every later child: an agent or dev server
+        // holding another terminal's master would keep that terminal open
+        // after its own process exits.
+        _ = fcntl(masterFd, F_SETFD, FD_CLOEXEC)
 
         // Non-blocking master so partial reads don't stall the queue.
         let flags = fcntl(masterFd, F_GETFL, 0)
@@ -149,41 +156,20 @@ final class PTYProcess: @unchecked Sendable {
         guard masterFd >= 0, !data.isEmpty else { return }
         let fd = masterFd
         queue.async {
-            data.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) in
-                guard var ptr = buffer.baseAddress else { return }
-                var remaining = buffer.count
-                while remaining > 0 {
-                    let n = Darwin.write(fd, ptr, remaining)
-                    if n > 0 {
-                        ptr = ptr.advanced(by: n)
-                        remaining -= n
-                    } else if n < 0 {
-                        let e = errno
-                        if e == EINTR { continue }
-                        if e == EAGAIN || e == EWOULDBLOCK {
-                            // Spin briefly; backpressure on terminals is short-lived.
-                            usleep(1000)
-                            continue
-                        }
-                        return
-                    } else {
-                        return
-                    }
-                }
-            }
+            _ = writeAll(fd: fd, data)
         }
     }
 
     /// Update the slave's window size. Triggers SIGWINCH in the child.
     func resize(cols: UInt16, rows: UInt16, widthPx: UInt32, heightPx: UInt32) {
         guard masterFd >= 0 else { return }
-        var ws = winsize(
-            ws_row: rows,
-            ws_col: cols,
-            ws_xpixel: UInt16(min(Int(UInt16.max), Int(widthPx))),
-            ws_ypixel: UInt16(min(Int(UInt16.max), Int(heightPx)))
+        _ = jl_set_winsize(
+            masterFd,
+            rows,
+            cols,
+            UInt16(min(Int(UInt16.max), Int(widthPx))),
+            UInt16(min(Int(UInt16.max), Int(heightPx)))
         )
-        _ = ioctl(masterFd, TIOCSWINSZ, &ws)
     }
 
     /// SIGINT to the entire process group. Group-targeted so any child
@@ -331,20 +317,13 @@ final class PTYProcess: @unchecked Sendable {
 
     private func startProcessWatch() {
         guard childPid > 0 else { return }
-        let source = DispatchSource.makeProcessSource(
-            identifier: childPid,
-            eventMask: .exit,
-            queue: queue
-        )
-        source.setEventHandler { [weak self] in
+        procSource = ProcessExitSource(pid: childPid, queue: queue) { [weak self] in
             guard let self else { return }
             self.procSource?.cancel()
             self.procSource = nil
             self.drainOutput()
             self.readSource?.cancel()
         }
-        procSource = source
-        source.resume()
     }
 
     /// Read until EAGAIN. EOF (read returns 0) means the child has

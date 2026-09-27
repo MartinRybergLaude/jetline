@@ -14,7 +14,7 @@ struct ActivityLogView: View {
 }
 
 private struct ActivityLogContent: View {
-    @ObservedObject var log: ActivityLog
+    var log: ActivityLog
     @ObservedObject var state: AppState
 
     var body: some View {

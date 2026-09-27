@@ -57,7 +57,7 @@ enum LoginShellPath {
 
     private static func resolve() async -> String {
         let fallback = snapshotBox.read()
-        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        let shell = Platform.defaultShell
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: shell)

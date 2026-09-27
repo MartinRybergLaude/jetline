@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 /// Line-oriented GitHub-flavored markdown block parser.
@@ -484,3 +485,4 @@ enum MarkdownParser {
         String(line.dropFirst(min(amount, indentWidth(line))))
     }
 }
+#endif

@@ -1,5 +1,9 @@
 import Foundation
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 /// A child process spoken to in newline-delimited JSON over stdin/stdout —
 /// the framing both `claude --input-format stream-json` and
@@ -39,7 +43,7 @@ final class JSONLineProcess: @unchecked Sendable {
     private var stderrFd: Int32 = -1
     private var stdoutSource: DispatchSourceRead?
     private var stderrSource: DispatchSourceRead?
-    private var processSource: DispatchSourceProcess?
+    private var processSource: ProcessExitSource?
 
     private var lineBuffer = Data()
     private var stderrBuffer = Data()
@@ -99,11 +103,15 @@ final class JSONLineProcess: @unchecked Sendable {
         var stdinPipe: [Int32] = [-1, -1]
         var stdoutPipe: [Int32] = [-1, -1]
         var stderrPipe: [Int32] = [-1, -1]
-        guard pipe(&stdinPipe) == 0, pipe(&stdoutPipe) == 0, pipe(&stderrPipe) == 0 else {
+        guard Self.makePipe(&stdinPipe), Self.makePipe(&stdoutPipe), Self.makePipe(&stderrPipe) else {
             throw AgentError.launchFailed(String(cString: strerror(errno)))
         }
 
+        #if canImport(Darwin)
         var fileActions: posix_spawn_file_actions_t?
+        #else
+        var fileActions = posix_spawn_file_actions_t()
+        #endif
         posix_spawn_file_actions_init(&fileActions)
         defer { posix_spawn_file_actions_destroy(&fileActions) }
         posix_spawn_file_actions_adddup2(&fileActions, stdinPipe[0], STDIN_FILENO)
@@ -111,13 +119,28 @@ final class JSONLineProcess: @unchecked Sendable {
         posix_spawn_file_actions_adddup2(&fileActions, stderrPipe[1], STDERR_FILENO)
         posix_spawn_file_actions_addchdir_np(&fileActions, launch.cwd)
 
+        #if canImport(Darwin)
         var attributes: posix_spawnattr_t?
+        #else
+        var attributes = posix_spawnattr_t()
+        #endif
         posix_spawnattr_init(&attributes)
         defer { posix_spawnattr_destroy(&attributes) }
+        #if canImport(Darwin)
         posix_spawnattr_setflags(
             &attributes,
             Int16(POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK)
         )
+        #else
+        // glibc has no CLOEXEC_DEFAULT: close everything above stderr in the
+        // child instead (the dup2s above run first). POSIX_SPAWN_SETSID is
+        // 0x80 in glibc but only visible under _GNU_SOURCE.
+        posix_spawn_file_actions_addclosefrom_np(&fileActions, 3)
+        posix_spawnattr_setflags(
+            &attributes,
+            Int16(0x80 | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK)
+        )
+        #endif
         // The child inherits the spawning thread's signal mask, and GCD
         // worker threads block SIGCHLD. Codex's async runtime reaps its
         // hook and tool processes on SIGCHLD, so with it blocked every
@@ -154,7 +177,10 @@ final class JSONLineProcess: @unchecked Sendable {
 
         // A write after the child exits must fail with EPIPE, not deliver
         // SIGPIPE to the whole app.
+        #if canImport(Darwin)
         _ = fcntl(stdinPipe[1], F_SETNOSIGPIPE, 1)
+        #endif
+        // (Linux has no per-fd equivalent; the daemon ignores SIGPIPE.)
         _ = fcntl(stdinPipe[1], F_SETFD, FD_CLOEXEC)
         for fd in [stdoutPipe[0], stderrPipe[0]] {
             _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
@@ -193,21 +219,7 @@ final class JSONLineProcess: @unchecked Sendable {
                     cont.resume(throwing: AgentError.notRunning)
                     return
                 }
-                var offset = 0
-                let failure: Int32? = data.withUnsafeBytes { raw -> Int32? in
-                    guard let base = raw.baseAddress else { return nil }
-                    while offset < raw.count {
-                        let n = Darwin.write(fd, base + offset, raw.count - offset)
-                        if n > 0 {
-                            offset += n
-                        } else if n < 0, errno == EINTR {
-                            continue
-                        } else {
-                            return errno
-                        }
-                    }
-                    return nil
-                }
+                let failure = writeAll(fd: fd, data)
                 if failure != nil {
                     cont.resume(throwing: AgentError.notRunning)
                 } else {
@@ -295,10 +307,7 @@ final class JSONLineProcess: @unchecked Sendable {
     }
 
     private func startProcessSource() {
-        let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: queue)
-        source.setEventHandler { [weak self] in self?.reap() }
-        processSource = source
-        source.resume()
+        processSource = ProcessExitSource(pid: pid, queue: queue) { [weak self] in self?.reap() }
     }
 
     private func drainStdout() {
@@ -420,6 +429,17 @@ final class JSONLineProcess: @unchecked Sendable {
 }
 
 /// Build a NULL-terminated `char *[]` for the duration of `body`.
+extension JSONLineProcess {
+    /// A pipe whose ends don't leak into unrelated children. The spawn's
+    /// dup2 onto 0/1/2 clears the flag on the child's copies.
+    fileprivate static func makePipe(_ fds: inout [Int32]) -> Bool {
+        guard pipe(&fds) == 0 else { return false }
+        _ = fcntl(fds[0], F_SETFD, FD_CLOEXEC)
+        _ = fcntl(fds[1], F_SETFD, FD_CLOEXEC)
+        return true
+    }
+}
+
 private func withCStrings<R>(
     _ strings: [String],
     _ body: (UnsafePointer<UnsafeMutablePointer<CChar>?>) -> R

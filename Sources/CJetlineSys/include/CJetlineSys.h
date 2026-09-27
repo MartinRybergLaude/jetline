@@ -17,4 +17,7 @@ pid_t jl_forkpty(int *master, struct winsize *ws);
 /// Returns -1 where unsupported (always on Darwin, which uses kqueue).
 int jl_pidfd_open(pid_t pid);
 
+/// `ioctl(TIOCSWINSZ)` — `ioctl` is variadic, so Swift can't call it on Linux.
+int jl_set_winsize(int fd, unsigned short rows, unsigned short cols, unsigned short xpixel, unsigned short ypixel);
+
 #endif

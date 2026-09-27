@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 /// Inline-span rendering for a single markdown block's source text.
@@ -117,14 +118,17 @@ enum MarkdownInline {
 
     /// Hoisted: constructing a detector per comment body is wasteful, and
     /// `NSDataDetector` is `Sendable`.
+    #if canImport(Darwin)
     private static let linkDetector = try? NSDataDetector(
         types: NSTextCheckingResult.CheckingType.link.rawValue
     )
+    #endif
 
     /// GFM turns bare URLs into links; CommonMark (and therefore Foundation's
     /// parser) leaves them as text. Runs that are already links or code are
     /// left alone.
     private static func addAutolinks(to attributed: inout AttributedString) {
+        #if canImport(Darwin)
         guard let detector = linkDetector else { return }
         let plain = String(attributed.characters)
         guard plain.contains("://") else { return }
@@ -143,5 +147,7 @@ enum MarkdownInline {
             guard !alreadyStyled else { continue }
             attributed[range].link = url
         }
+        #endif
     }
 }
+#endif

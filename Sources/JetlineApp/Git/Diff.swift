@@ -1,5 +1,4 @@
 import Foundation
-import Darwin
 
 /// Computed diff snapshot used by the inspector's Changes panel.
 struct DiffSnapshot: Equatable {
@@ -413,8 +412,13 @@ enum DiffComputer {
         let full = (worktreePath as NSString).appendingPathComponent(path)
         var st = stat()
         guard lstat(full, &st) == 0 else { return nil }
-        let mtimeNs = Int64(st.st_mtimespec.tv_sec) &* 1_000_000_000
-            &+ Int64(st.st_mtimespec.tv_nsec)
+        #if canImport(Darwin)
+        let mtime = st.st_mtimespec
+        #else
+        let mtime = st.st_mtim
+        #endif
+        let mtimeNs = Int64(mtime.tv_sec) &* 1_000_000_000
+            &+ Int64(mtime.tv_nsec)
         return "stat:\(st.st_ino).\(st.st_size).\(mtimeNs)"
     }
 }

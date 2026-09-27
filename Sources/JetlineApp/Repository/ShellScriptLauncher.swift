@@ -10,7 +10,7 @@ import Foundation
 /// the configured script via `-c`.
 enum ShellScriptLauncher {
     static var shell: String {
-        ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        Platform.defaultShell
     }
 
     static func args(for script: String) -> [String] {
