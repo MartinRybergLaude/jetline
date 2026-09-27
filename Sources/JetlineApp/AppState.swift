@@ -69,6 +69,8 @@ final class AppState: ObservableObject {
     @Published var repoPendingSettings: Repository?
     /// Repo whose workspace-creation sheet should be presented at shell level.
     @Published var repoPendingWorkspaceCreation: Repository?
+    /// The connect-a-machine sheet, for a new remote or to set one up.
+    @Published var pendingRemoteSetup: RemoteSetupRequest?
     /// Surfaces that currently want the ⌘⇧ navigation key equivalents
     /// released back to the text system.
     @Published private(set) var navShortcutSuppressors: Set<String> = []
@@ -1451,6 +1453,11 @@ final class AppState: ObservableObject {
     private func applyDebugLaunchArguments() {
         guard !appliedDebugArguments else { return }
         let defaults = UserDefaults.standard
+        if let host = defaults.string(forKey: "JetlineConnectHost") {
+            appliedDebugArguments = true
+            pendingRemoteSetup = RemoteSetupRequest(hostId: nil, prefillHost: host)
+            return
+        }
         // `-JetlineOpenWorkspaces a,b,c`: select each in turn, 3 s apart,
         // once all of them are known (they may live on different hosts).
         if let list = defaults.string(forKey: "JetlineOpenWorkspaces") {

@@ -42,6 +42,10 @@ public enum JetlineDaemon {
         case "version", "--version", "-v":
             print(JetlineVersion.current)
             exit(0)
+        case "info":
+            // Machine-readable, for the app's installer check.
+            print(#"{"version":"\#(JetlineVersion.current)","protocol":\#(Wire.protocolVersion)}"#)
+            exit(0)
         case "help", "--help", "-h":
             print(usage)
             exit(0)
@@ -63,6 +67,7 @@ public enum JetlineDaemon {
                 Send one request to the running engine and print the reply
                 (for scripting and debugging; methods are in Protocol/API.swift).
       version   Print the version.
+      info      Print version and protocol as JSON.
 
     Data lives in ~/.jetline (override with JETLINE_DATA_DIR).
     """

@@ -9,7 +9,53 @@ permissions:
   contents: write
 
 jobs:
+  # The Linux engine (`jetlined`), one per architecture, built natively. The
+  # app's "Connect a Machine" installs these from the release (see
+  # Client/RemoteInstaller.swift), so they're attached to it as
+  # jetlined-linux-<arch>.gz.
+  linux-daemon:
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    container: swift:6.4-jammy
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Build dependencies
+        # libsqlite3.so is removed so the link takes libsqlite3.a: the binary
+        # then needs nothing beyond glibc ≥ 2.35 and libstdc++.
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends libsqlite3-dev
+          rm -f /usr/lib/*-linux-gnu/libsqlite3.so
+
+      - name: Set version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i "s/static let embedded = \".*\"/static let embedded = \"$VERSION\"/" Sources/JetlineApp/Daemon/JetlineDaemon.swift
+
+      - name: Build jetlined
+        run: |
+          swift build -c release --product jetlined --static-swift-stdlib --build-system native
+          BIN=$(swift build -c release --product jetlined --build-system native --show-bin-path)/jetlined
+          strip "$BIN"
+          "$BIN" version
+          gzip -9 -c "$BIN" > jetlined-linux-${{ matrix.arch }}.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jetlined-linux-${{ matrix.arch }}
+          path: jetlined-linux-${{ matrix.arch }}.gz
+
   release:
+    needs: linux-daemon
     # Xcode 27 (preview image): Jetline builds against the macOS 27 SDK
     # (NSSegmentedControl.role etc.), which Xcode 26.x doesn't have.
     runs-on: xcode-27
@@ -24,6 +70,12 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0  # generate-appcast / CFBundleVersion need full history
+
+      - name: Fetch the Linux engine builds
+        uses: actions/download-artifact@v4
+        with:
+          pattern: jetlined-linux-*
+          path: daemon
 
       - name: Show Xcode version
         run: xcodebuild -version
@@ -99,6 +151,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./scripts/publish-appcast.sh
+
+      - name: Attach the Linux engine
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "v${{ steps.ver.outputs.version }}" daemon/*/jetlined-linux-*.gz
 
       - name: Cleanup keychain
         if: always()

@@ -32,10 +32,18 @@ struct RemoteEngine: Codable, Equatable, Sendable {
     static let defaultDaemonPath = "~/.jetline/bin/jetlined"
 
     /// The command for an ssh host alias or `user@host`.
+    /// `JETLINE_SSH_CONFIG` (testing): an ssh config file to use instead
+    /// of ~/.ssh/config.
+    static var extraSSHArguments: [String] {
+        guard let config = ProcessInfo.processInfo.environment["JETLINE_SSH_CONFIG"], !config.isEmpty else { return [] }
+        return ["-F", config]
+    }
+
     static func ssh(host: String, daemonPath: String = defaultDaemonPath) -> RemoteEngine {
-        RemoteEngine(
+        let extra = extraSSHArguments.map { shellQuote($0) + " " }.joined()
+        return RemoteEngine(
             name: host,
-            command: "ssh -T -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \(shellQuote(host)) \(shellQuote("\(daemonPath) attach"))",
+            command: "ssh \(extra)-T -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \(shellQuote(host)) \(shellQuote("\(daemonPath) attach"))",
             sshHost: host
         )
     }

@@ -43,6 +43,9 @@ struct SidebarView: View {
         .sheet(item: $showingRepoSettings) { repo in
             RepositorySettingsSheet(repository: repo)
         }
+        .sheet(item: $state.pendingRemoteSetup) { request in
+            ConnectRemoteSheet(request: request) { state.pendingRemoteSetup = nil }
+        }
     }
 
     private func addRepository(on host: EngineHost) {
@@ -84,13 +87,15 @@ struct SidebarView: View {
                     Button(host.isLocal ? "On This Mac…" : "On \(host.name)…") { addRepository(on: host) }
                         .disabled(!host.isLocal && !host.isSynced)
                 }
+                Divider()
+                Button("Connect a Machine…") { state.pendingRemoteSetup = RemoteSetupRequest(hostId: nil) }
             } label: {
                 Label("Add repository", systemImage: "plus")
                     .frame(maxWidth: .infinity)
             } primaryAction: {
                 addRepository(on: state.localHost)
             }
-            .menuIndicator(state.hosts.count > 1 ? .visible : .hidden)
+            .menuIndicator(.visible)
             .buttonStyle(.glass)
             .buttonBorderShape(.capsule)
             .controlSize(.large)
@@ -140,6 +145,9 @@ private struct HostGroupHeader: View {
                 if !host.isLocal {
                     Menu {
                         Button("Reconnect") { host.connection.reconnectNow() }
+                        Button("Set Up / Update jetlined…") {
+                            state.pendingRemoteSetup = RemoteSetupRequest(hostId: host.id)
+                        }
                         Divider()
                         Button("Remove \(host.name)…", role: .destructive) { confirmingRemoval = true }
                     } label: {
@@ -156,6 +164,11 @@ private struct HostGroupHeader: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .textSelection(.enabled)
+            }
+            if needsSetup {
+                // Most first-time failures are a missing or outdated engine.
+                Button("Set Up…") { state.pendingRemoteSetup = RemoteSetupRequest(hostId: host.id) }
+                    .controlSize(.small)
             }
         }
         .padding(.top, isFirst ? 2 : 8)
@@ -192,6 +205,14 @@ private struct HostGroupHeader: View {
         case let .reconnecting(attempt, _): return "Reconnecting (attempt \(attempt))…"
         case let .failed(message): return message
         case .idle: return "Not connected"
+        }
+    }
+
+    private var needsSetup: Bool {
+        guard !host.isLocal else { return false }
+        switch host.connection.status {
+        case .failed, .reconnecting: return true
+        default: return false
         }
     }
 

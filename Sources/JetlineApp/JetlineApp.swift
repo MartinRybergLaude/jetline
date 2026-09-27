@@ -74,6 +74,10 @@ struct JetlineApp: App {
                     }
                 }
                 .keyboardShortcut("o", modifiers: [.command])
+
+                Button("Connect a Machine…") {
+                    state.pendingRemoteSetup = RemoteSetupRequest(hostId: nil)
+                }
             }
             CommandGroup(after: .windowArrangement) {
                 Divider()

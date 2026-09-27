@@ -64,7 +64,23 @@ scripts live on that machine: close the laptop and they keep working;
 reconnect and every terminal, chat and run picks up where it was (terminal
 output is replayed from where the app last saw it).
 
-### Set up a Linux host
+### Connect a machine
+
+File → **Connect a Machine…** (or the sidebar's *Add repository* menu, or
+Settings → Remote). Enter the ssh host — anything you'd type after `ssh`;
+key-based login is required. Jetline checks the machine over ssh (reachable?
+OS and architecture, `jetlined` installed and current, which of git / gh /
+claude / codex are on its PATH) and offers to **install or update
+`jetlined`** there: it streams the right Linux binary over the same ssh
+connection into `~/.jetline/bin/jetlined`. A Mac host uses the engine built
+into its Jetline.app. **Connect** adds the machine as a sidebar group. A
+machine that can't connect gets a *Set Up…* button in its group header.
+
+Release builds fetch the Linux binaries from the GitHub release for their
+version (the release workflow builds and attaches them); a development build
+uses `dist/jetlined-linux-<arch>` next to the app (`make linux-daemon`).
+
+### Set up a Linux host by hand
 
 The host needs `git`, and whatever you use there: `gh` (logged in), the
 `claude` / `codex` CLIs (logged in), your toolchains. Then, from a Jetline
