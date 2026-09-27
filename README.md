@@ -37,11 +37,7 @@ make release ; # release config
 make test
 ```
 
-The Makefile builds with an installed Xcode (27+) even when `xcode-select`
-points at the Command Line Tools, whose Swift lacks SwiftUI's macro plugins;
-set `DEVELOPER_DIR` to pick a specific one.
-
-`swift build` directly works too (with `DEVELOPER_DIR` set the same way), but produces a plain executable rather than
+`swift build` directly works too, but produces a plain executable rather than
 an `.app` bundle (so no menu bar, dock icon, or Liquid Glass app icon).
 
 ### Note on dependency resolution

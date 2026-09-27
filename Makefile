@@ -22,19 +22,6 @@ APP_BUNDLE = $(DIST_DIR)/$(APP_NAME)
 # Bypass the user's global config for SPM by pointing it at a sentinel.
 SWIFT = GIT_CONFIG_GLOBAL=/dev/null swift
 
-# The Command Line Tools' Swift has no SwiftUI macro plugins, so with
-# `xcode-select` pointing there every `@State` fails ("plugin for module
-# 'SwiftUIMacros' not found"). Build with an installed Xcode instead, unless
-# DEVELOPER_DIR already says which one.
-ifeq ($(origin DEVELOPER_DIR),undefined)
-  ifneq ($(findstring CommandLineTools,$(shell xcode-select -p 2>/dev/null)),)
-    XCODE_APP := $(firstword $(wildcard /Applications/Xcode.app /Applications/Xcode-beta.app /Applications/Xcode*.app))
-    ifneq ($(XCODE_APP),)
-      export DEVELOPER_DIR := $(XCODE_APP)/Contents/Developer
-    endif
-  endif
-endif
-
 # Release configuration. Override via env in CI.
 DEVELOPER_ID   ?= Developer ID Application: MARTIN JOHANNES RYBERG LAUDE (X67GNG6U35)
 NOTARY_PROFILE ?= jetline-notary
