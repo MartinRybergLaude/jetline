@@ -35,7 +35,11 @@ final class EngineClient {
                 case .message:
                     guard let head = try? decoder.decode(Wire.ServerHead.self, from: frame.payload) else { continue }
                     if head.type == "response", let id = head.id {
-                        pending.complete(id, with: frame.payload)
+                        // In order with the events around it: code after an
+                        // `await call(...)` must see the events the engine
+                        // sent before its response.
+                        let payload = frame.payload
+                        deliveries.append { _ in pending.complete(id, with: payload) }
                     } else if head.type == "event" {
                         do {
                             let event = try decoder.decode(Wire.Event.self, from: frame.payload).event

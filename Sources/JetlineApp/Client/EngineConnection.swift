@@ -106,17 +106,22 @@ final class EngineConnection {
 
     var isConnected: Bool { status == .connected }
 
-    /// The in-process engine, when the target is local. Used for app-quit
-    /// shutdown.
-    var localEngine: Engine? { target.isLocal ? localServer?.engine : nil }
+    /// The in-process engine, if one was ever started — it keeps running
+    /// after a switch to a remote target, so app quit still has to stop it.
+    var inProcessEngine: Engine? { localServer?.engine }
 
     // MARK: - Connecting
 
     func connect() {
         reconnectTask?.cancel()
         reconnectTask = nil
+        // Supersede any attempt in flight before starting another, so its
+        // failure can't be mistaken for this one's and its link can't leak.
+        generation += 1
+        tearDownLink()
         status = .connecting
-        Task { await attempt(attemptNumber: 0) }
+        let generation = self.generation
+        Task { await attempt(attemptNumber: 0, generation: generation) }
     }
 
     /// Point at a different engine. The current link is dropped first.
@@ -129,9 +134,14 @@ final class EngineConnection {
         connect()
     }
 
-    private func attempt(attemptNumber: Int) async {
-        generation += 1
-        let generation = self.generation
+    private func attempt(attemptNumber: Int, generation: Int) async {
+        guard self.generation == generation else { return }
+        if !target.isLocal {
+            // The command runs with the login shell's PATH (a Finder launch
+            // only has launchd's), so wait for it to resolve.
+            _ = await LoginShellPath.get()
+            guard self.generation == generation else { return }
+        }
         do {
             let client = try makeClient()
             client.onClose = { [weak self] in
@@ -173,11 +183,13 @@ final class EngineConnection {
     private func scheduleReconnect(attempt: Int, error: String?) {
         status = .reconnecting(attempt: attempt, error: error)
         reconnectTask?.cancel()
+        generation += 1
+        let generation = self.generation
         let delay = min(15.0, pow(2.0, Double(min(attempt, 4))) / 2)
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled, let self else { return }
-            await self.attempt(attemptNumber: attempt)
+            await self.attempt(attemptNumber: attempt, generation: generation)
         }
     }
 

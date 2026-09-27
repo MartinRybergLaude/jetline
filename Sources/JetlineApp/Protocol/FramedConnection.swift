@@ -86,12 +86,12 @@ final class FramedConnection: @unchecked Sendable {
         frame.append(payload)
         let size = frame.count
         let bytes = frame
-        let accepted: Bool = lock.withLock {
-            guard !closed else { return false }
-            _pendingWriteBytes += size
-            return true
-        }
-        guard accepted else { return }
+        // Enqueue under the lock, so nothing can be queued after shutdown
+        // queues the close.
+        lock.lock()
+        defer { lock.unlock() }
+        guard !closed else { return }
+        _pendingWriteBytes += size
         writeQueue.async { [self] in
             let failure = writeAll(fd: writeFD, bytes)
             let drained: Bool = lock.withLock {
@@ -178,16 +178,28 @@ final class FramedConnection: @unchecked Sendable {
             return !closed
         }
         guard wasOpen else { return }
-        readSource?.cancel()
-        readSource = nil
         let readFD = readFD, writeFD = writeFD, owns = ownsFDs
-        // Close after queued writes: a final response shouldn't be cut off.
-        writeQueue.async {
-            if owns {
+        let writeQueue = self.writeQueue
+        // Close only once the read source is fully cancelled (libdispatch may
+        // still be watching the fd) and every queued write is out (a final
+        // response shouldn't be cut off).
+        if let source = readSource {
+            source.setCancelHandler {
+                writeQueue.async {
+                    if owns {
+                        Glibc_or_Darwin_close(readFD)
+                        if writeFD != readFD { Glibc_or_Darwin_close(writeFD) }
+                    }
+                }
+            }
+            source.cancel()
+        } else if owns {
+            writeQueue.async {
                 Glibc_or_Darwin_close(readFD)
                 if writeFD != readFD { Glibc_or_Darwin_close(writeFD) }
             }
         }
+        readSource = nil
         onClose?()
         onClose = nil
         onFrames = nil

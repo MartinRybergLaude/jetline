@@ -4,6 +4,8 @@
 #include "CJetlineSys.h"
 
 #include <unistd.h>
+#include <signal.h>
+#include <sys/socket.h>
 
 #if defined(__APPLE__)
 #include <util.h>
@@ -59,3 +61,26 @@ short jl_spawn_setsid_flag(void) {
     return POSIX_SPAWN_SETSID;
 }
 #endif
+
+void jl_reset_signals(void) {
+    for (int sig = 1; sig < NSIG; sig++) {
+        if (sig == SIGKILL || sig == SIGSTOP) continue;
+        signal(sig, SIG_DFL);
+    }
+    sigset_t none;
+    sigemptyset(&none);
+    sigprocmask(SIG_SETMASK, &none, NULL);
+}
+
+int jl_peer_uid(int fd) {
+#if defined(__APPLE__)
+    uid_t uid; gid_t gid;
+    if (getpeereid(fd, &uid, &gid) != 0) return -1;
+    return (int)uid;
+#else
+    struct ucred cred;
+    socklen_t len = sizeof(cred);
+    if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &len) != 0) return -1;
+    return (int)cred.uid;
+#endif
+}

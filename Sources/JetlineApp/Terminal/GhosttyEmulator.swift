@@ -78,11 +78,41 @@ final class GhosttyEmulator: TerminalEmulatorView {
             }
         }
 
+        /// Run once the surface exists and its size has settled. The first
+        /// reports can come mid-layout (a sliver of the final height); a
+        /// replay drawn into that grid would scroll most of it away.
+        nonisolated(unsafe) var onSurfaceReady: (@MainActor () -> Void)?
+        nonisolated(unsafe) private var settle: DispatchWorkItem?
+        nonisolated(unsafe) private var firstReport: Date?
+
         func resize(_ viewport: InMemoryTerminalViewport) {
             lock.lock(); _viewport = viewport; lock.unlock()
             DispatchQueue.main.async { [weak self] in
-                MainActor.assumeIsolated { self?.channel?.resize(viewport.terminalSize) }
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.channel?.resize(viewport.terminalSize)
+                    self.scheduleReady()
+                }
             }
+        }
+
+        @MainActor
+        func scheduleReady() {
+            guard onSurfaceReady != nil else { return }
+            settle?.cancel()
+            let first = firstReport ?? Date()
+            firstReport = first
+            // Quiet for 120 ms, or 600 ms after the first report at most.
+            let delay = max(0, min(0.12, 0.6 - Date().timeIntervalSince(first)))
+            let item = DispatchWorkItem { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, let ready = self.onSurfaceReady else { return }
+                    self.onSurfaceReady = nil
+                    ready()
+                }
+            }
+            settle = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
         }
     }
     private let link: ChannelHolder
@@ -109,10 +139,13 @@ final class GhosttyEmulator: TerminalEmulatorView {
             // RIS: full reset, so a replay from further on starts clean.
             session.receive(Data("\u{1B}c".utf8))
         }
+        // libghostty drops bytes written before the surface is built, so the
+        // replay waits for it: the surface reports its grid once it exists.
+        link.onSurfaceReady = { [weak channel] in channel?.attach() }
         if let viewport = link.viewport {
             channel.resize(viewport.terminalSize)
+            link.scheduleReady()
         }
-        channel.attach()
     }
 
     func sendInterrupt() {
@@ -242,6 +275,7 @@ final class GhosttyEmulator: TerminalEmulatorView {
 
     /// Resume output on a new link after a reconnect.
     func reattach() {
+        guard link.viewport != nil else { return }
         channel?.attach()
     }
 

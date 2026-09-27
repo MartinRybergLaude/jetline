@@ -136,6 +136,10 @@ final class AppState: ObservableObject {
 
     private func didConnect(_ client: EngineClient, _ hello: API.HelloResult) {
         client.onEvent = { [weak self] event in self?.handle(event) }
+        // What this client already had open; new tabs from the snapshot
+        // attach and subscribe as they're created.
+        let existingSessions = workspaceStates.values.flatMap(\.sessions).map(ObjectIdentifier.init)
+        let existingChats = workspaceStates.values.flatMap(\.chats).map(ObjectIdentifier.init)
         let snapshot = hello.snapshot
         applyGlobal(snapshot.global)
         for (id, diff) in snapshot.diffs { applyDiff(diff, to: id) }
@@ -150,9 +154,11 @@ final class AppState: ObservableObject {
         activityLog.clear()
         for event in snapshot.activity { activityLog.append(event) }
         // Resume what this client had open.
+        let resumeSessions = Set(existingSessions)
+        let resumeChats = Set(existingChats)
         for ws in workspaceStates.values {
-            for session in ws.sessions { session.attach() }
-            for chat in ws.chats { chat.subscribe() }
+            for session in ws.sessions where resumeSessions.contains(ObjectIdentifier(session)) { session.attach() }
+            for chat in ws.chats where resumeChats.contains(ObjectIdentifier(chat)) { chat.subscribe() }
             ws.runController?.reattach()
             ws.setupController?.reattach()
         }
@@ -241,7 +247,9 @@ final class AppState: ObservableObject {
     private func applyGlobal(_ snapshot: GlobalSnapshot) {
         if repositories != snapshot.repositories { repositories = snapshot.repositories }
         if workspacesByRepo != snapshot.workspacesByRepo { workspacesByRepo = snapshot.workspacesByRepo }
-        if settings != snapshot.settings {
+        // While a save is in flight the engine's echo of an older value
+        // mustn't overwrite newer local edits (a prompt being typed).
+        if pendingSettingsSaves == 0, settings != snapshot.settings {
             let old = settings
             settings = snapshot.settings
             if old.monospaceFontFamily != settings.monospaceFontFamily || old.terminalFontSize != settings.terminalFontSize {
@@ -334,9 +342,14 @@ final class AppState: ObservableObject {
             if selectedWorkspaceId == id { reassignSelection(afterClosing: id) }
         }
         // Nothing showing yet (first activation, restored chats): show the
-        // newest tab.
+        // newest tab. Only the selected workspace's chat gets its agent
+        // started; a background workspace's waits until it's shown.
         if ws.activeTab == nil, let last = ws.tabOrder.last {
-            selectTab(last, in: id)
+            if selectedWorkspaceId == id {
+                selectTab(last, in: id)
+            } else {
+                ws.activeTab = last
+            }
         }
     }
 
@@ -773,6 +786,7 @@ final class AppState: ObservableObject {
     /// Close a chat tab. Like closing a session, closing the last agent tab
     /// closes the workspace.
     func closeChat(_ chatId: String, in workspaceId: String) {
+        guard requireConnection() else { return }
         let ws = workspaceState(for: workspaceId)
         guard let idx = ws.chats.firstIndex(where: { $0.id == chatId }) else { return }
         let chat = ws.chats.remove(at: idx)
@@ -828,7 +842,7 @@ final class AppState: ObservableObject {
     /// App quitting. A local engine takes its agents and terminals with it;
     /// a remote one keeps them running for the next connection.
     func shutdownAgents() async {
-        if let engine = connection.localEngine {
+        if let engine = connection.inProcessEngine {
             await engine.shutdown()
         }
     }
@@ -998,12 +1012,13 @@ final class AppState: ObservableObject {
     /// Drives the quit-confirmation dialog. Only a local engine loses its
     /// runs when the app quits.
     var hasOpenTabs: Bool {
-        connection.isLocal && workspaceStates.values.contains { $0.hasAgentTabs }
+        connection.inProcessEngine?.allWorkspaceStates.contains { $0.hasAgentTabs } ?? false
     }
 
     /// Close one session tab, handing the strip over to its neighbour when it
     /// was showing. Closing the last session closes the workspace.
     func closeSession(_ sessionId: String, in workspaceId: String) {
+        guard requireConnection() else { return }
         let ws = workspaceState(for: workspaceId)
         guard let idx = ws.sessions.firstIndex(where: { $0.id == sessionId }) else { return }
         let session = ws.sessions.remove(at: idx)
@@ -1116,6 +1131,7 @@ final class AppState: ObservableObject {
     /// Close a workspace's live runtime — sessions, chats, run/setup —
     /// while keeping its sidebar entry and cached diff/PR state.
     func closeWorkspace(_ id: String) {
+        guard requireConnection() else { return }
         if let ws = workspaceStates[id] {
             tearDownLocalRuntime(ws)
         }
@@ -1174,8 +1190,20 @@ final class AppState: ObservableObject {
         if old.monospaceFontFamily != s.monospaceFontFamily || old.terminalFontSize != s.terminalFontSize {
             applyTerminalFont(s)
         }
-        perform(API.SaveSettings(settings: s))
+        pendingSettingsSaves += 1
+        Task { [weak self] in
+            do {
+                _ = try await self?.connection.call(API.SaveSettings(settings: s))
+            } catch {
+                if (error as? WireError)?.code != "disconnected" {
+                    await self?.presentError(error.localizedDescription)
+                }
+            }
+            self?.pendingSettingsSaves -= 1
+        }
     }
+
+    private var pendingSettingsSaves = 0
 
     /// Push terminal font settings to every live session so changes land
     /// immediately. (Inner horizontal padding is applied at the view layer —
@@ -1189,6 +1217,14 @@ final class AppState: ObservableObject {
                 )
             }
         }
+    }
+
+    /// Actions that change engine state wait for the link: done locally
+    /// and dropped on the way, they'd leave the mirror lying.
+    private func requireConnection() -> Bool {
+        guard !connection.isConnected else { return true }
+        NSSound.beep()
+        return false
     }
 
     /// Fire a request whose only interesting outcome is failure.

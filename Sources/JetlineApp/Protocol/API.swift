@@ -395,6 +395,7 @@ enum API {
             case setModel(model: String?, effort: String?)
             case setRemoteControl(Bool)
             case revert(turnId: String)
+            case dismissBanner
         }
     }
 

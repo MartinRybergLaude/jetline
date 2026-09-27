@@ -296,6 +296,30 @@ final class EngineProtocolTests: XCTestCase {
         XCTAssertTrue(text.contains("199999\r\n200000\r\n"))
     }
 
+    /// The daemon ignores SIGINT/SIGTERM/SIGHUP/SIGPIPE for itself; the
+    /// shells it starts must not inherit that, or ⌃C stops working.
+    func testCtrlCReachesJobsEvenWhenTheEngineIgnoresSignals() async throws {
+        signal(SIGINT, SIG_IGN)
+        signal(SIGHUP, SIG_IGN)
+        defer {
+            signal(SIGINT, SIG_DFL)
+            signal(SIGHUP, SIG_DFL)
+        }
+        _ = try await client.call(API.Hello(protocolVersion: Wire.protocolVersion, clientName: "test"))
+        let repoPath = try await makeRepo()
+        let repo = try await client.call(API.AddRepository(path: repoPath))
+        let terminal = try await client.call(API.CreateTerminal(
+            workspaceId: Engine.repositoryBaseWorkspacePrefix + repo.id, agent: .shell, size: TerminalSize(cols: 100, rows: 30)
+        ))
+        try await attachCollecting(terminal.id)
+        client.sendTerminalInput(terminal.id, Data("sleep 30; echo slept-$((1+1))\n".utf8))
+        try await Task.sleep(for: .milliseconds(800))
+        client.sendTerminalInput(terminal.id, Data([0x03]))
+        client.sendTerminalInput(terminal.id, Data("echo back-$((2+2))\n".utf8))
+        await eventually("prompt after ^C", timeout: 5) { text(terminal.id).contains("back-4") }
+        XCTAssertFalse(text(terminal.id).contains("slept-2"))
+    }
+
     func testChatPatchesStreamAppends() {
         var old = AgentItem(id: "a", turnId: "t", status: .inProgress, content: .assistantMessage(text: "Hello"))
         var new = old

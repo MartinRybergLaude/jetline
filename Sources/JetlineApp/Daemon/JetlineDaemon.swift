@@ -95,7 +95,10 @@ public enum JetlineDaemon {
             guard preferred.utf8.count >= 100 else { return preferred }
             var hash: UInt64 = 1469598103934665603
             for byte in dataDir.utf8 { hash = (hash ^ UInt64(byte)) &* 1099511628211 }
-            return "/tmp/jetlined-\(getuid())-\(String(hash, radix: 16)).sock"
+            // In a private directory: a predictable name straight in /tmp
+            // could be squatted by another user.
+            let dir = JetlineDaemon.privateTempDirectory()
+            return "\(dir)/\(String(hash, radix: 16)).sock"
         }
     }
 
@@ -103,6 +106,30 @@ public enum JetlineDaemon {
         var description: String
         init(_ description: String) { self.description = description }
     }
+
+    /// `/tmp/jetlined-<uid>`, created 0700 and verified to be ours (not a
+    /// symlink, not someone else's).
+    static func privateTempDirectory() -> String {
+        let dir = "/tmp/jetlined-\(getuid())"
+        mkdir(dir, 0o700)
+        var st = stat()
+        guard lstat(dir, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR, st.st_uid == getuid() else {
+            fail("\(dir) isn't a directory owned by you; remove it or set JETLINE_DATA_DIR to a shorter path")
+        }
+        if st.st_mode & 0o077 != 0 { chmod(dir, 0o700) }
+        return dir
+    }
+
+    /// `~/.jetline` holds the database, logs, uploads and the socket: keep it
+    /// private on a shared host.
+    private static func prepareDataDirectory() {
+        let dir = Database.dataDirectory().path
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        chmod(dir, 0o700)
+    }
+
+    static var lockFile: String { Database.dataDirectory().appendingPathComponent("jetlined.lock").path }
+    static var agentSocketLink: String { Database.dataDirectory().appendingPathComponent("ssh-agent.sock").path }
 
     static var pidFile: String { Database.dataDirectory().appendingPathComponent("jetlined.pid").path }
     static var logFile: String { Database.dataDirectory().appendingPathComponent("jetlined.log").path }
@@ -122,14 +149,21 @@ public enum JetlineDaemon {
     private static func serve(_ options: Options) -> Never {
         signal(SIGPIPE, SIG_IGN)
         signal(SIGHUP, SIG_IGN)
-        try? FileManager.default.createDirectory(at: Database.dataDirectory(), withIntermediateDirectories: true)
-        let socketPath = options.socket
-        if let fd = Sockets.connect(path: socketPath) {
-            close(fd)
-            fail("already running (socket \(socketPath))")
+        prepareDataDirectory()
+        // One engine per data directory, held for the process's life: two
+        // racing `attach`es would otherwise both start one, and the second
+        // would take the socket from the first.
+        let lock = open(lockFile, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
+        guard lock >= 0, flock(lock, LOCK_EX | LOCK_NB) == 0 else {
+            fail("already running (\(lockFile) is locked)")
         }
+        // Held (never closed) for the process's life.
+        _ = lock
+        let socketPath = options.socket
         let listener: Int32
         do {
+            let previous = umask(0o077)
+            defer { umask(previous) }
             listener = try Sockets.listen(path: socketPath)
         } catch {
             fail("can't listen on \(socketPath): \(error)")
@@ -146,6 +180,12 @@ public enum JetlineDaemon {
             let acceptSource = DispatchSource.makeReadSource(fileDescriptor: listener, queue: .main)
             acceptSource.setEventHandler {
                 guard let fd = Sockets.accept(listener) else { return }
+                // Only this user's processes (the socket is 0600 in a 0700
+                // directory already; this is belt and braces).
+                guard jl_peer_uid(fd) == Int32(getuid()) else {
+                    close(fd)
+                    return
+                }
                 MainActor.assumeIsolated {
                     let connection = FramedConnection(readFD: fd, writeFD: fd, label: "client")
                     server.accept(connection)
@@ -179,6 +219,14 @@ public enum JetlineDaemon {
 
     private static func attach(_ options: Options) -> Never {
         signal(SIGPIPE, SIG_IGN)
+        prepareDataDirectory()
+        // Point the engine's stable agent socket at this session's forwarded
+        // agent (if any): the engine outlives the ssh session that started
+        // it, and git over ssh would otherwise hold a dead socket path.
+        if let agent = ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"], !agent.isEmpty, agent != agentSocketLink {
+            unlink(agentSocketLink)
+            symlink(agent, agentSocketLink)
+        }
         let socketPath = options.socket
         var fd = Sockets.connect(path: socketPath)
         if fd == nil {
@@ -258,7 +306,12 @@ public enum JetlineDaemon {
         sigfillset(&allSignals)
         posix_spawnattr_setsigdefault(&attributes, &allSignals)
 
-        let env = ProcessInfo.processInfo.environment.map { "\($0.key)=\($0.value)" }
+        var environment = ProcessInfo.processInfo.environment
+        // Session-specific ssh variables would go stale when this session
+        // ends; the agent goes through the link `attach` keeps current.
+        for key in ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"] { environment.removeValue(forKey: key) }
+        if environment["SSH_AUTH_SOCK"] != nil { environment["SSH_AUTH_SOCK"] = agentSocketLink }
+        let env = environment.map { "\($0.key)=\($0.value)" }
         var pid: pid_t = 0
         let cArgs = argv.map { strdup($0) } + [nil]
         let cEnv = env.map { strdup($0) } + [nil]

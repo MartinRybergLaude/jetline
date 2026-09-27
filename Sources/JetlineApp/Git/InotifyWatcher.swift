@@ -78,8 +78,15 @@ final class InotifyTreeWatcher {
         }
     }
 
+    /// Directories never worth watching, even before the ignored set knows
+    /// about them (a `node_modules` a setup script creates mid-session).
+    private static let heavyNames: Set<String> = [
+        ".git", "node_modules", ".next", ".nuxt", ".turbo", ".cache", ".parcel-cache",
+        "target", ".venv", "venv", "__pycache__", ".gradle", "Pods", "DerivedData", ".build",
+    ]
+
     private func addTree(_ path: String) {
-        guard !skip(path) else { return }
+        guard !skip(path), !Self.heavyNames.contains((path as NSString).lastPathComponent) || path == root else { return }
         addWatch(path)
         let url = URL(fileURLWithPath: path, isDirectory: true)
         guard let children = try? FileManager.default.contentsOfDirectory(

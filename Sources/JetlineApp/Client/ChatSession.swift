@@ -39,7 +39,20 @@ final class ChatSession: Identifiable {
     private(set) var models: [AgentModelOption] = []
     private(set) var commands: [AgentSlashCommand] = []
     private(set) var queued: [QueuedMessage] = []
-    var banner: String?
+    /// The engine's banner (a failed revert, say) or one from this client
+    /// (an upload that failed). Setting nil dismisses both.
+    var banner: String? {
+        get { localBanner ?? engineBanner }
+        set {
+            localBanner = newValue
+            if newValue == nil, engineBanner != nil {
+                engineBanner = nil
+                command(.dismissBanner)
+            }
+        }
+    }
+    private var engineBanner: String?
+    private var localBanner: String?
     /// Composer contents, kept here so switching tabs doesn't lose a draft.
     var draft = ""
     var draftImages: [URL] = []
@@ -103,7 +116,7 @@ final class ChatSession: Identifiable {
 
     /// Start receiving the transcript. Idempotent; re-sent after a reconnect.
     func subscribe() {
-        guard let backend, backend.isConnected else { return }
+        guard !subscribed, let backend, backend.isConnected else { return }
         subscribed = true
         let id = self.id
         Task { [weak self] in
@@ -111,6 +124,7 @@ final class ChatSession: Identifiable {
                 let full = try await backend.call(API.SubscribeChat(chatId: id))
                 self?.apply(full)
             } catch {
+                self?.subscribed = false
                 self?.banner = (error as? WireError)?.message ?? error.localizedDescription
             }
         }
@@ -214,7 +228,7 @@ final class ChatSession: Identifiable {
         if models != meta.models { models = meta.models }
         if commands != meta.commands { commands = meta.commands }
         if queued != meta.queued { queued = meta.queued }
-        if banner != meta.banner { banner = meta.banner }
+        if engineBanner != meta.banner { engineBanner = meta.banner }
         if isReverting != meta.isReverting { isReverting = meta.isReverting }
         if canRevert != meta.canRevert { canRevert = meta.canRevert }
         if terminalResumeArgs != meta.terminalResumeArgs { terminalResumeArgs = meta.terminalResumeArgs }
@@ -234,14 +248,19 @@ final class ChatSession: Identifiable {
             do {
                 _ = try await backend.call(API.ChatCommand(chatId: id, command: command))
             } catch {
-                self?.banner = (error as? WireError)?.message ?? error.localizedDescription
+                guard let self else { return }
+                self.banner = (error as? WireError)?.message ?? error.localizedDescription
+                // An optimistic change here (a dismissed request, a new
+                // mode) didn't happen: take the engine's state again.
+                self.subscribed = false
+                self.subscribe()
             }
         }
     }
 
-    /// Start the agent process if it isn't running.
+    /// Start the agent process if it isn't running (the engine makes it a
+    /// no-op when it is — and a retry after a failed start when it isn't).
     func connectIfNeeded() {
-        guard connection == .disconnected || !isLoaded else { return }
         command(.connect)
     }
 
@@ -253,10 +272,17 @@ final class ChatSession: Identifiable {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !images.isEmpty else { return }
         banner = nil
-        guard let backend else { return }
+        guard let backend, backend.isConnected else {
+            restoreDraft(text, images)
+            banner = WireError.disconnected.message
+            return
+        }
         let id = self.id
         let files = self.files
-        Task { [weak self] in
+        // Sends go out in order even when one waits on image uploads.
+        let previous = sendChain
+        sendChain = Task { [weak self] in
+            await previous?.value
             do {
                 // Images go to the engine's disk first; the agent reads them
                 // there.
@@ -266,9 +292,18 @@ final class ChatSession: Identifiable {
                 }
                 _ = try await backend.call(API.ChatCommand(chatId: id, command: .send(text: text, images: paths)))
             } catch {
+                self?.restoreDraft(text, images)
                 self?.banner = (error as? WireError)?.message ?? error.localizedDescription
             }
         }
+    }
+
+    @ObservationIgnored private var sendChain: Task<Void, Never>?
+
+    /// A message that didn't go out goes back in the composer.
+    private func restoreDraft(_ text: String, _ images: [URL]) {
+        if draft.isEmpty { draft = text }
+        if draftImages.isEmpty { draftImages = images }
     }
 
     func removeQueued(_ message: QueuedMessage) {

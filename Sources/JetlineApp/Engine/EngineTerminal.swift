@@ -98,6 +98,9 @@ final class EngineTerminal: Identifiable {
     @ObservationIgnored private var size: TerminalSize?
     @ObservationIgnored private var spawnTask: Task<Void, Never>?
     @ObservationIgnored private var spawnRequested = false
+    /// Set by `terminate()`: a spawn still resolving its command must not go
+    /// ahead afterwards.
+    @ObservationIgnored private var terminated = false
     @ObservationIgnored private var exitHandlers: [(Int32) -> Void] = []
     @ObservationIgnored private let settings: () -> AppSettings
 
@@ -201,14 +204,13 @@ final class EngineTerminal: Identifiable {
     /// Stop the process. `completion` fires once every process it started is
     /// gone (see `PTYProcess.terminate`).
     func terminate(completion: (@Sendable () -> Void)? = nil) {
+        terminated = true
         spawnTask?.cancel()
         spawnTask = nil
         guard let pty else {
-            if spawnRequested, !hasStarted, exitCode == nil {
-                // Never spawned: settle it so waiters don't hang.
-                spawnRequested = true
-                markExited(0)
-            }
+            // Never spawned, or still resolving its command: settle it so
+            // waiters don't hang (the spawn sees `terminated` and stands down).
+            if exitCode == nil { markExited(0) }
             completion?()
             return
         }
@@ -223,7 +225,7 @@ final class EngineTerminal: Identifiable {
 
     private func spawnNow() {
         spawnTask = nil
-        guard !hasStarted, exitCode == nil else { return }
+        guard !hasStarted, exitCode == nil, !terminated else { return }
         hasStarted = true
         let size = self.size ?? TerminalSize(cols: 80, rows: 24)
         Task { [weak self] in
@@ -255,6 +257,7 @@ final class EngineTerminal: Identifiable {
                 env = scriptEnv
             }
             _ = await LoginShellPath.get()
+            guard !self.terminated else { return }
             var environment = Subprocess.inheritedEnvironment(overrides: env)
             environment["TERM"] = environment["TERM"] ?? "xterm-256color"
             environment["COLORTERM"] = "truecolor"

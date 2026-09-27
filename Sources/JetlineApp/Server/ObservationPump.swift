@@ -116,7 +116,9 @@ final class ChatPublisher {
     /// Everything, as the new baseline. Pending changes go out first so
     /// existing subscribers don't miss them.
     func fullPatch() -> ChatPatch {
-        pump?.flush()
+        // Diff against the old baseline first, so subscribers already here
+        // get whatever changed since — even if the pump hasn't noticed yet.
+        if pump != nil { touchAll() }
         let meta = chat.meta
         var turns: [ChatTurnMeta] = []
         var items: [ChatItemChange] = []

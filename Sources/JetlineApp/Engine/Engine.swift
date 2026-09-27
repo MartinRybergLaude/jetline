@@ -69,10 +69,14 @@ final class Engine {
 
     init() {}
 
-    /// Get-or-create the state for `id`.
+    /// Get-or-create the state for `id`. For a workspace that no longer
+    /// exists (work finishing after a delete: a diff refresh, a PR poll in
+    /// flight) this hands back a throwaway state instead of registering and
+    /// publishing a ghost.
     func workspaceState(for id: String) -> EngineWorkspace {
         if let existing = workspaceStates[id] { return existing }
         let new = EngineWorkspace(id: id)
+        guard workspaceById(id) != nil else { return new }
         workspaceStates[id] = new
         onWorkspaceStateCreated?(new)
         return new
@@ -433,8 +437,10 @@ final class Engine {
     /// Remove the worktree and its branch, the workspace's chats and its row.
     func deleteWorkspace(_ workspace: Workspace) async {
         // Stop tabs/run/setup first; otherwise they can keep writing to a
-        // worktree that is about to disappear.
+        // worktree that is about to disappear. The row goes before the first
+        // await so no client can re-activate it meanwhile.
         detachWorkspace(workspace.id)
+        workspacesByRepo[workspace.repositoryId]?.removeAll { $0.id == workspace.id }
         let repo = repositories.first(where: { $0.id == workspace.repositoryId })
         if let repo {
             try? await WorktreeOps.remove(
@@ -446,7 +452,6 @@ final class Engine {
         }
         await deleteChats(workspaceId: workspace.id, repoPath: repo?.path)
         try? Workspaces.delete(id: workspace.id)
-        workspacesByRepo[workspace.repositoryId]?.removeAll { $0.id == workspace.id }
         activityLog.record(.lifecycle, "Deleted workspace \(workspace.name)", repoId: workspace.repositoryId, workspaceId: workspace.id)
         prTracker.sync()
     }
@@ -691,10 +696,22 @@ final class Engine {
                 }
             }
         }
+        // Terminals: wait (briefly) until their process groups are really
+        // gone — the SIGHUP / SIGKILL escalation runs on their io queues and
+        // wouldn't happen at all if the process exited first.
+        var all: [EngineTerminal] = []
         for ws in workspaceStates.values {
-            for terminal in ws.terminals { terminal.terminate() }
-            ws.run?.discard()
-            ws.setup?.discard()
+            all += ws.terminals
+            if let t = ws.run?.terminal { all.append(t) }
+            if let t = ws.setup?.terminal { all.append(t) }
+        }
+        let remaining = Countdown(all.count)
+        for terminal in all {
+            terminal.terminate { remaining.decrement() }
+        }
+        let deadline = ContinuousClock.now + .seconds(4)
+        while remaining.value > 0, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(50))
         }
     }
 
@@ -734,7 +751,8 @@ final class Engine {
     /// the method as the repo's default on success.
     func performMerge(for workspace: Workspace, method: MergeMethod) async throws {
         let ws = workspaceState(for: workspace.id)
-        guard case let .loaded(pr, _) = ws.pr else { return }
+        // One git action at a time: a second click (or client) would race it.
+        guard case let .loaded(pr, _) = ws.pr, ws.runningGitAction == nil else { return }
         ws.runningGitAction = .mergePR
         defer { ws.runningGitAction = nil }
         activityLog.record(.gitAction, "Merging PR #\(pr.number) (\(method.rawValue))", repoId: workspace.repositoryId, workspaceId: workspace.id)
@@ -798,6 +816,7 @@ final class Engine {
             return startGitActionSession(for: workspace, action: .rebaseOnMain, terminalSize: terminalSize)
         }
         let ws = workspaceState(for: workspace.id)
+        guard ws.runningGitAction == nil else { return nil }
         ws.runningGitAction = .rebaseOnMain
         defer { ws.runningGitAction = nil }
         activityLog.record(.gitAction, "Rebasing on \(workspace.baseBranch)", repoId: repo.id, workspaceId: workspace.id)
@@ -846,6 +865,7 @@ final class Engine {
             return startGitActionSession(for: workspace, action: .pullUpdates, terminalSize: terminalSize)
         }
         let ws = workspaceState(for: workspace.id)
+        guard ws.runningGitAction == nil else { return nil }
         ws.runningGitAction = .pullUpdates
         defer { ws.runningGitAction = nil }
         activityLog.record(.gitAction, "Pulling \(workspace.branchName)", repoId: repo.id, workspaceId: workspace.id)
@@ -1204,6 +1224,15 @@ final class Engine {
     /// Where uploaded files (pasted images, dropped files) land.
     static var uploadsDirectory: URL {
         Database.dataDirectory().appendingPathComponent("uploads", isDirectory: true)
+    }
+
+    /// Thread-safe counter for waiting on a batch of callbacks.
+    final class Countdown: @unchecked Sendable {
+        private let lock = NSLock()
+        private var n: Int
+        init(_ n: Int) { self.n = n }
+        var value: Int { lock.withLock { n } }
+        func decrement() { lock.withLock { n -= 1 } }
     }
 
     static func expandTilde(_ path: String) -> String {

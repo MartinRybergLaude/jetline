@@ -169,7 +169,7 @@ final class EngineServer {
     private func broadcast(_ event: EngineEvent) {
         guard !clients.isEmpty, let data = try? encoder.encode(Wire.Event(event: event)) else { return }
         for client in clients.values where client.ready {
-            client.connection.send(.message, data)
+            deliver(data, to: client)
         }
     }
 
@@ -177,8 +177,21 @@ final class EngineServer {
         guard let data = try? encoder.encode(Wire.Event(event: event)) else { return }
         for id in clientIds {
             guard let client = clients[id], client.ready else { continue }
-            client.connection.send(.message, data)
+            deliver(data, to: client)
         }
+    }
+
+    /// A client this far behind (a laptop asleep on a half-dead ssh link)
+    /// is dropped rather than buffered for without limit; it resyncs with
+    /// a fresh hello when it comes back.
+    private static let maxClientBacklog = 64 * 1024 * 1024
+
+    private func deliver(_ data: Data, to client: Client) {
+        guard client.connection.pendingWriteBytes < Self.maxClientBacklog else {
+            client.connection.close()
+            return
+        }
+        client.connection.send(.message, data)
     }
 
     private func publish(workspace ws: EngineWorkspace) {
@@ -236,6 +249,14 @@ final class EngineServer {
         if let t = ws.run?.terminal { all.append(t) }
         if let t = ws.setup?.terminal { all.append(t) }
         for terminal in all { terminals.install(on: terminal) }
+        // Drop what closed terminals retained (up to 4 MB each).
+        var live = Set<String>()
+        for ws in engine.allWorkspaceStates {
+            for t in ws.terminals { live.insert(t.id) }
+            if let t = ws.run?.terminal { live.insert(t.id) }
+            if let t = ws.setup?.terminal { live.insert(t.id) }
+        }
+        terminals.prune(keeping: live)
     }
 
     private func attach(terminalId: String, fromOffset: UInt64?, client clientId: Int) throws -> API.AttachResult {
@@ -353,6 +374,7 @@ final class EngineServer {
 
         on(API.Hello.self) { [unowned self] req, clientId in
             guard req.protocolVersion == Wire.protocolVersion else {
+                self.clients[clientId]?.greeted = false
                 throw WireError(
                     "This Jetline app speaks protocol \(req.protocolVersion) but the engine speaks \(Wire.protocolVersion). Update the older side.",
                     code: "protocolMismatch"
@@ -581,9 +603,16 @@ final class EngineServer {
         on(API.ListDirectory.self) { req, _ in try Self.listDirectory(Engine.expandTilde(req.path)) }
         on(API.ReadFile.self) { req, _ in
             let path = Engine.expandTilde(req.path)
-            guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
-            defer { try? handle.close() }
-            return try handle.read(upToCount: max(0, req.maxBytes))
+            let maxBytes = max(0, req.maxBytes)
+            // Off the main actor: a FIFO or a hung mount mustn't freeze the
+            // engine.
+            return try await Task.detached {
+                var isDirectory: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), !isDirectory.boolValue,
+                      let handle = FileHandle(forReadingAtPath: path) else { return nil as Data? }
+                defer { try? handle.close() }
+                return try handle.read(upToCount: maxBytes)
+            }.value
         }
         on(API.UploadFile.self) { req, _ in
             let dir = Engine.uploadsDirectory
@@ -621,6 +650,8 @@ final class EngineServer {
             chat.setModel(model, effort: effort)
         case let .setRemoteControl(enabled):
             chat.setRemoteControl(enabled)
+        case .dismissBanner:
+            chat.banner = nil
         case let .revert(turnId):
             guard let turn = chat.turns.first(where: { $0.id == turnId }),
                   let draft = await chat.revert(to: turn) else { return .none }
@@ -692,6 +723,17 @@ final class TerminalHub: @unchecked Sendable {
             Self.send(bytes, from: from, id: terminalId, on: connection)
             subscribers[terminalId, default: [:]][client] = Subscriber(connection: connection, next: from + UInt64(bytes.count))
             return (range.start, from)
+        }
+    }
+
+    /// Forget terminals that are gone.
+    func prune(keeping live: Set<String>) {
+        lock.withLock {
+            for id in buffers.keys where !live.contains(id) {
+                buffers[id]?.setSink(nil)
+                buffers.removeValue(forKey: id)
+                subscribers.removeValue(forKey: id)
+            }
         }
     }
 

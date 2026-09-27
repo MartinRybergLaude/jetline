@@ -133,6 +133,7 @@ final class PTYProcess: @unchecked Sendable {
             // descendant the agent spawns. argv[0] is the executable's
             // basename because Claude Code re-execs itself by argv[0].
             _ = setpgid(0, 0)
+            jl_reset_signals()
             jl_close_from(3, maxFD)
             _ = chdir(cwdC!)
             _ = execve(executableC!, argv, envp)

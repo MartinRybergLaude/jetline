@@ -61,7 +61,7 @@ final class TerminalChannel {
                 bytes = bytes.subdata(in: (bytes.startIndex + Int(expected - offset))..<bytes.endIndex)
                 offset = expected
             } else if offset > expected {
-                onReset?()
+                        onReset?()
             }
         }
         expected = offset + UInt64(bytes.count)

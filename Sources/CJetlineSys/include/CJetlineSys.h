@@ -28,6 +28,15 @@ int jl_set_winsize(int fd, unsigned short rows, unsigned short cols, unsigned sh
 /// Async-signal-safe.
 void jl_close_from(int lowfd, int maxfd);
 
+/// Reset every signal to its default disposition and clear the signal mask.
+/// For a forked child before `execve`: ignored signals survive exec, and a
+/// daemon that ignores SIGINT/SIGTERM/SIGHUP/SIGPIPE would otherwise pass
+/// that on to every shell and agent it starts. Async-signal-safe.
+void jl_reset_signals(void);
+
+/// The uid of a connected unix-socket peer, or -1.
+int jl_peer_uid(int fd);
+
 #if defined(__linux__)
 /// glibc's `posix_spawn_file_actions_add{chdir,closefrom}_np` and
 /// `POSIX_SPAWN_SETSID` are only declared under _GNU_SOURCE, which Swift's

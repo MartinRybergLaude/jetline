@@ -610,7 +610,7 @@ final class ChatEngine: Identifiable {
         ChatStore.truncate(threadId: id, fromSeq: turn.seq)
         persistThread()
         onTurnFinished?(self)
-        return draft ?? ("", [])
+        return draft
     }
 
     private func waitUntilIdle(timeout: Duration) async -> Bool {
