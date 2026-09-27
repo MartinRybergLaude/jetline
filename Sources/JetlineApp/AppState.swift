@@ -26,6 +26,13 @@ final class AppState: ObservableObject {
     /// launch, before any SwiftUI scene would have created it.
     static let shared = AppState()
 
+    /// Every engine the app mirrors: this Mac's first, then the remotes the
+    /// user added. The sidebar shows one group per host.
+    @Published private(set) var hosts: [EngineHost] = []
+    let localHost: EngineHost
+
+    /// All hosts' repositories, in sidebar order. Repository and workspace
+    /// ids are UUIDs, unique across machines.
     @Published private(set) var repositories: [Repository] = []
     @Published private(set) var workspacesByRepo: [String: [Workspace]] = [:]
     /// Immediate selection used by the sidebar, terminal, toolbar, and commands.
@@ -38,7 +45,22 @@ final class AppState: ObservableObject {
     }
     /// Per-repo GitHub metadata (owner/name + allowed merge methods).
     @Published private(set) var repoMetadataByRepo: [String: RepoIdentifier] = [:]
-    @Published private(set) var prTrackerStatus: PRTrackerStatus = .ok
+
+    /// Recompute the cross-host views after any host's mirror changed.
+    private func rebuildAggregates() {
+        let repos = hosts.flatMap(\.repositories)
+        if repos != repositories { repositories = repos }
+        let workspaces = hosts.reduce(into: [String: [Workspace]]()) { merged, host in
+            merged.merge(host.workspacesByRepo) { a, _ in a }
+        }
+        if workspaces != workspacesByRepo { workspacesByRepo = workspaces }
+        let metadata = hosts.reduce(into: [String: RepoIdentifier]()) { merged, host in
+            merged.merge(host.repoMetadataByRepo) { a, _ in a }
+        }
+        if metadata != repoMetadataByRepo { repoMetadataByRepo = metadata }
+    }
+    /// This Mac's PR tracker status; each group shows its own host's.
+    var prTrackerStatus: PRTrackerStatus { localHost.prTrackerStatus }
     @Published var inspectorVisible: Bool = true
     /// Active inspector tab. Lifted out of `InspectorView` so workspace
     /// creation can flip it to `.run` and surface live setup-script output.
@@ -50,9 +72,8 @@ final class AppState: ObservableObject {
     /// Surfaces that currently want the ⌘⇧ navigation key equivalents
     /// released back to the text system.
     @Published private(set) var navShortcutSuppressors: Set<String> = []
-    /// Whether the mirror is current: false before the first sync and while
-    /// a remote link is down.
-    @Published private(set) var isSynced = false
+    /// Whether this Mac's engine has synced (settings come with it).
+    var isSynced: Bool { localHost.isSynced }
 
     var navShortcutsSuppressed: Bool { !navShortcutSuppressors.isEmpty }
 
@@ -64,17 +85,55 @@ final class AppState: ObservableObject {
         }
     }
 
-    let connection: EngineConnection
-
-    /// The ssh host of a remote engine reached over plain ssh.
-    var remoteSSHHost: String? {
-        if case let .remote(remote) = connection.target { return remote.sshHost }
+    private(set) lazy var prTracker = PRTrackerProxy { [weak self] workspaceId, repoId in
+        if let workspaceId { return self?.connection(forWorkspace: workspaceId) }
+        if let repoId { return self?.connection(forRepo: repoId) }
         return nil
     }
-    private(set) lazy var prTracker = PRTrackerProxy(connection: connection)
-    private(set) lazy var conversationStore = PRConversationStore(connection: connection)
-    /// The engine's activity log, mirrored.
+    private(set) lazy var conversationStore = PRConversationStore { [weak self] workspaceId in
+        self?.connection(forWorkspace: workspaceId)
+    }
+    /// All engines' activity logs, mirrored.
     let activityLog = ActivityLog()
+    private var seenActivity = Set<UUID>()
+
+    // MARK: Routing
+
+    func host(forWorkspace id: String) -> EngineHost? {
+        hosts.first { $0.owns(workspaceId: id) }
+    }
+
+    func host(forRepo id: String) -> EngineHost? {
+        hosts.first { $0.owns(repoId: id) }
+    }
+
+    func host(id: String) -> EngineHost? {
+        hosts.first { $0.id == id }
+    }
+
+    /// The link to the engine that owns `id`. Falls back to this Mac's so a
+    /// request for something already gone fails there, harmlessly.
+    func connection(forWorkspace id: String) -> EngineConnection {
+        (host(forWorkspace: id) ?? localHost).connection
+    }
+
+    func connection(forRepo id: String) -> EngineConnection {
+        (host(forRepo: id) ?? localHost).connection
+    }
+
+    /// The ssh host of the remote a workspace lives on, when it's reached
+    /// over plain ssh (for editors that open folders over ssh).
+    func sshHost(forWorkspace id: String) -> String? {
+        host(forWorkspace: id)?.sshHost
+    }
+
+    func isLocal(workspaceId id: String) -> Bool {
+        host(forWorkspace: id)?.isLocal ?? true
+    }
+
+    func isLocal(repoId id: String) -> Bool {
+        host(forRepo: id)?.isLocal ?? true
+    }
 
     private var workspaceStates: [String: WorkspaceState] = [:]
     private var workspaceActivationTask: Task<Void, Never>?
@@ -90,14 +149,87 @@ final class AppState: ObservableObject {
     private var hasLoaded = false
 
     init() {
-        connection = EngineConnection(target: EngineConnection.savedTarget())
-        EngineFiles.shared.bind(connection)
-        connection.onConnected = { [weak self] client, hello in
-            self?.didConnect(client, hello)
+        localHost = EngineHost(id: EngineHost.localId, name: "This Mac", target: .local)
+        var all = [localHost]
+        for config in RemoteHostStore.load() {
+            all.append(EngineHost(id: config.id, name: config.remote.name, target: .remote(config.remote)))
         }
-        connection.onDisconnected = { [weak self] in
-            self?.didDisconnect()
+        hosts = all
+        for host in all { wire(host) }
+    }
+
+    private func wire(_ host: EngineHost) {
+        host.connection.onConnected = { [weak self, weak host] client, hello in
+            guard let self, let host else { return }
+            self.didConnect(host, client, hello)
         }
+        host.connection.onDisconnected = { [weak self, weak host] in
+            guard let self, let host else { return }
+            self.didDisconnect(host)
+        }
+    }
+
+    // MARK: - Remote hosts
+
+    var remoteHostConfigs: [RemoteHostConfig] {
+        hosts.compactMap { host in
+            guard case let .remote(remote) = host.connection.target else { return nil }
+            return RemoteHostConfig(id: host.id, remote: remote)
+        }
+    }
+
+    /// Add a remote engine and connect to it; its repositories appear as a
+    /// new sidebar group.
+    @discardableResult
+    func addRemoteHost(_ remote: RemoteEngine) -> EngineHost {
+        let host = EngineHost(id: UUID().uuidString, name: remote.name, target: .remote(remote))
+        hosts.append(host)
+        wire(host)
+        RemoteHostStore.save(remoteHostConfigs)
+        host.connection.connect()
+        return host
+    }
+
+    func updateRemoteHost(_ id: String, remote: RemoteEngine) {
+        guard let host = host(id: id), !host.isLocal else { return }
+        host.rename(remote.name)
+        if host.connection.target != .remote(remote) {
+            forgetMirror(of: host)
+            host.connection.retarget(.remote(remote))
+        }
+        RemoteHostStore.save(remoteHostConfigs)
+        rebuildAggregates()
+    }
+
+    /// Stop showing a remote. Its engine keeps running on that machine.
+    func removeRemoteHost(_ id: String) {
+        guard let host = host(id: id), !host.isLocal else { return }
+        forgetMirror(of: host)
+        host.connection.disconnect()
+        hosts.removeAll { $0 === host }
+        rebuildAggregates()
+        RemoteHostStore.save(remoteHostConfigs)
+    }
+
+    func moveRemoteHosts(from offsets: IndexSet, to destination: Int) {
+        var remotes = Array(hosts.dropFirst())
+        remotes.move(fromOffsets: offsets, toOffset: destination)
+        hosts = [localHost] + remotes
+        rebuildAggregates()
+        RemoteHostStore.save(remoteHostConfigs)
+    }
+
+    /// Drop everything mirrored from `host`.
+    private func forgetMirror(of host: EngineHost) {
+        let ids = workspaceStates.keys.filter { host.owns(workspaceId: $0) }
+        let selectedGoes = selectedWorkspaceId.map { host.owns(workspaceId: $0) } ?? false
+        for id in ids { dropLocal(id) }
+        host.repositories = []
+        host.workspacesByRepo = [:]
+        host.repoMetadataByRepo = [:]
+        host.isSynced = false
+        rebuildAggregates()
+        if selectedGoes { clearSelectedWorkspace() }
     }
 
     /// Get-or-create the `WorkspaceState` for `id`.
@@ -115,89 +247,73 @@ final class AppState: ObservableObject {
     func load() async {
         guard !hasLoaded else { return }
         hasLoaded = true
-        connection.connect()
-        // Hold the caller (window setup, onboarding) until the first sync —
-        // settings come with it — but not for a remote host that's down.
+        for host in hosts { host.connection.connect() }
+        // Hold the caller (window setup, onboarding) until this Mac's engine
+        // has synced — settings come with it. Remotes arrive when they do.
         let deadline = Date().addingTimeInterval(15)
-        while !isSynced, Date() < deadline {
-            switch connection.status {
-            case .failed, .reconnecting: return
-            default: try? await Task.sleep(for: .milliseconds(20))
-            }
+        while !localHost.isSynced, Date() < deadline {
+            if case .failed = localHost.connection.status { return }
+            try? await Task.sleep(for: .milliseconds(20))
         }
     }
 
-    /// Point the app at another engine.
-    func switchEngine(to target: EngineTarget) {
-        guard target != connection.target else { return }
-        resetMirror()
-        connection.switchTarget(target)
-    }
-
-    private func didConnect(_ client: EngineClient, _ hello: API.HelloResult) {
-        client.onEvent = { [weak self] event in self?.handle(event) }
+    private func didConnect(_ host: EngineHost, _ client: EngineClient, _ hello: API.HelloResult) {
+        client.onEvent = { [weak self, weak host] event in
+            guard let self, let host else { return }
+            self.handle(event, from: host)
+        }
         // What this client already had open; new tabs from the snapshot
         // attach and subscribe as they're created.
         let existingSessions = workspaceStates.values.flatMap(\.sessions).map(ObjectIdentifier.init)
         let existingChats = workspaceStates.values.flatMap(\.chats).map(ObjectIdentifier.init)
         let snapshot = hello.snapshot
-        applyGlobal(snapshot.global)
+        applyGlobal(snapshot.global, from: host)
         for (id, diff) in snapshot.diffs { applyDiff(diff, to: id) }
         for (id, pr) in snapshot.prs { applyPRSnapshot(pr, to: id) }
         for (id, conversation) in snapshot.conversations { workspaceState(for: id).conversation = conversation }
-        for (id, status) in snapshot.statuses { applyStatus(status, to: id) }
-        // Workspaces the engine no longer runs anything in (a restarted
-        // daemon, say) lose their local runtime here.
-        for id in workspaceStates.keys where snapshot.statuses[id] == nil {
-            applyStatus(Self.emptyStatus, to: id)
+        for (id, status) in snapshot.statuses { applyStatus(status, to: id, on: host) }
+        // This host's workspaces the engine no longer runs anything in (a
+        // restarted daemon, say) lose their local runtime here.
+        for id in workspaceStates.keys where host.owns(workspaceId: id) && snapshot.statuses[id] == nil {
+            applyStatus(Self.emptyStatus, to: id, on: host)
         }
-        activityLog.clear()
-        for event in snapshot.activity { activityLog.append(event) }
+        for event in snapshot.activity { appendActivity(event) }
         // Resume what this client had open.
         let resumeSessions = Set(existingSessions)
         let resumeChats = Set(existingChats)
-        for ws in workspaceStates.values {
+        for ws in workspaceStates.values where host.owns(workspaceId: ws.id) {
             for session in ws.sessions where resumeSessions.contains(ObjectIdentifier(session)) { session.attach() }
             for chat in ws.chats where resumeChats.contains(ObjectIdentifier(chat)) { chat.subscribe() }
             ws.runController?.reattach()
             ws.setupController?.reattach()
         }
-        isSynced = true
-        if let id = selectedWorkspaceId {
-            if workspaceById(id) == nil {
-                clearSelectedWorkspace()
-            } else {
-                connection.send(API.SetFocus(workspaceId: id))
-                activateSelectedWorkspace(id)
-            }
+        host.isSynced = true
+        rebuildAggregates()
+        // The app's preferences are this Mac's; a remote gets them too
+        // (keeping its own agent binary paths).
+        if !host.isLocal, let local = localHost.settings {
+            pushSettings(local, to: host)
+        }
+        if let id = selectedWorkspaceId, host.owns(workspaceId: id) {
+            host.connection.send(API.SetFocus(workspaceId: id))
+            activateSelectedWorkspace(id)
         }
         #if DEBUG
         applyDebugLaunchArguments()
         #endif
     }
 
-    private func didDisconnect() {
-        isSynced = false
-        for ws in workspaceStates.values {
+    private func didDisconnect(_ host: EngineHost) {
+        host.isSynced = false
+        rebuildAggregates()
+        for ws in workspaceStates.values where host.owns(workspaceId: ws.id) {
             for chat in ws.chats { chat.markStale() }
         }
     }
 
-    /// Forget everything mirrored from the current engine.
-    private func resetMirror() {
-        for ws in workspaceStates.values {
-            tearDownLocalRuntime(ws)
-        }
-        workspaceStates.removeAll()
-        repositories = []
-        workspacesByRepo = [:]
-        repoMetadataByRepo = [:]
-        selectionHistory.removeAll()
-        pendingPlacements.removeAll()
-        closingTabs.removeAll()
-        clearSelectedWorkspace()
-        activityLog.clear()
-        isSynced = false
+    private func appendActivity(_ event: ActivityEvent) {
+        guard seenActivity.insert(event.id).inserted else { return }
+        activityLog.append(event)
     }
 
     private static let emptyStatus = WorkspaceStatus(
@@ -205,10 +321,10 @@ final class AppState: ObservableObject {
         isRefreshingPR: false, terminals: [], chats: [], setup: nil, run: nil, isOpen: false
     )
 
-    private func handle(_ event: EngineEvent) {
+    private func handle(_ event: EngineEvent, from host: EngineHost) {
         switch event {
         case let .global(snapshot):
-            applyGlobal(snapshot)
+            applyGlobal(snapshot, from: host)
         case let .workspaceDiff(id, diff):
             applyDiff(diff, to: id)
         case let .workspacePR(id, pr):
@@ -217,7 +333,7 @@ final class AppState: ObservableObject {
             let ws = workspaceState(for: id)
             if ws.conversation != conversation { ws.conversation = conversation }
         case let .workspaceStatus(id, status):
-            applyStatus(status, to: id)
+            applyStatus(status, to: id, on: host)
         case let .workspaceRemoved(id):
             if let ws = workspaceStates.removeValue(forKey: id) {
                 tearDownLocalRuntime(ws)
@@ -232,7 +348,7 @@ final class AppState: ObservableObject {
                 }
             }
         case let .activity(event):
-            activityLog.append(event)
+            appendActivity(event)
         case let .attention(_, _, critical):
             // Bounce the dock when Jetline isn't frontmost so a long run
             // doesn't go unnoticed.
@@ -244,20 +360,24 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func applyGlobal(_ snapshot: GlobalSnapshot) {
-        if repositories != snapshot.repositories { repositories = snapshot.repositories }
-        if workspacesByRepo != snapshot.workspacesByRepo { workspacesByRepo = snapshot.workspacesByRepo }
-        // While a save is in flight the engine's echo of an older value
-        // mustn't overwrite newer local edits (a prompt being typed).
-        if pendingSettingsSaves == 0, settings != snapshot.settings {
+    private func applyGlobal(_ snapshot: GlobalSnapshot, from host: EngineHost) {
+        var changed = false
+        if host.repositories != snapshot.repositories { host.repositories = snapshot.repositories; changed = true }
+        if host.workspacesByRepo != snapshot.workspacesByRepo { host.workspacesByRepo = snapshot.workspacesByRepo; changed = true }
+        if host.repoMetadataByRepo != snapshot.repoMetadataByRepo { host.repoMetadataByRepo = snapshot.repoMetadataByRepo; changed = true }
+        if host.prTrackerStatus != snapshot.prTrackerStatus { host.prTrackerStatus = snapshot.prTrackerStatus; changed = true }
+        host.settings = snapshot.settings
+        // The app's settings are this Mac's engine's. While a save is in
+        // flight its echo of an older value mustn't overwrite newer local
+        // edits (a prompt being typed).
+        if host.isLocal, pendingSettingsSaves == 0, settings != snapshot.settings {
             let old = settings
             settings = snapshot.settings
             if old.monospaceFontFamily != settings.monospaceFontFamily || old.terminalFontSize != settings.terminalFontSize {
                 applyTerminalFont(settings)
             }
         }
-        if repoMetadataByRepo != snapshot.repoMetadataByRepo { repoMetadataByRepo = snapshot.repoMetadataByRepo }
-        if prTrackerStatus != snapshot.prTrackerStatus { prTrackerStatus = snapshot.prTrackerStatus }
+        if changed { rebuildAggregates() }
         for (provider, windows) in snapshot.rateLimits {
             AgentRateLimits.shared.merge(windows, for: provider)
         }
@@ -281,7 +401,7 @@ final class AppState: ObservableObject {
     }
 
     /// Reconcile a workspace's tabs and runtime with the engine's view.
-    private func applyStatus(_ status: WorkspaceStatus, to id: String) {
+    private func applyStatus(_ status: WorkspaceStatus, to id: String, on host: EngineHost) {
         let ws = workspaceState(for: id)
         if ws.branchPosition != status.branchPosition { ws.branchPosition = status.branchPosition }
         if ws.runningGitAction != status.runningGitAction { ws.runningGitAction = status.runningGitAction }
@@ -300,7 +420,7 @@ final class AppState: ObservableObject {
         // Terminals
         let terminalIds = Set(status.terminals.map(\.id))
         for info in status.terminals where !closingHere.contains(info.id) {
-            ensureSession(info, in: ws)
+            ensureSession(info, in: ws, on: host)
         }
         for session in ws.sessions where !terminalIds.contains(session.id) {
             dropSession(session, from: ws)
@@ -309,7 +429,7 @@ final class AppState: ObservableObject {
         // Chats
         let chatIds = Set(status.chats.map(\.id))
         for summary in status.chats where !closingHere.contains(summary.id) {
-            ensureChat(summary, in: ws)
+            ensureChat(summary, in: ws, on: host)
         }
         for chat in ws.chats where !chatIds.contains(chat.id) {
             dropChat(chat, from: ws)
@@ -317,7 +437,7 @@ final class AppState: ObservableObject {
 
         // Setup / run
         if let setup = status.setup {
-            let controller = ws.setupController ?? SetupController(workspaceId: id, connection: connection)
+            let controller = ws.setupController ?? SetupController(workspaceId: id, connection: host.connection)
             ws.setupController = controller
             controller.apply(setup)
         } else if let controller = ws.setupController {
@@ -325,7 +445,7 @@ final class AppState: ObservableObject {
             ws.setupController = nil
         }
         if let run = status.run {
-            let controller = ws.runController ?? RunController(workspaceId: id, connection: connection)
+            let controller = ws.runController ?? RunController(workspaceId: id, connection: host.connection)
             ws.runController = controller
             controller.apply(run)
         } else if let controller = ws.runController {
@@ -354,12 +474,12 @@ final class AppState: ObservableObject {
     }
 
     @discardableResult
-    private func ensureSession(_ info: TerminalInfo, in ws: WorkspaceState) -> PTYSession {
+    private func ensureSession(_ info: TerminalInfo, in ws: WorkspaceState, on host: EngineHost) -> PTYSession {
         if let existing = ws.sessions.first(where: { $0.id == info.id }) {
             existing.apply(info)
             return existing
         }
-        let session = PTYSession(info: info, connection: connection)
+        let session = PTYSession(info: info, connection: host.connection, files: host.files)
         ws.sessions.append(session)
         let tab = TabRef.session(info.id)
         ws.insertTab(tab, replacing: pendingPlacements.removeValue(forKey: tab))
@@ -368,13 +488,13 @@ final class AppState: ObservableObject {
     }
 
     @discardableResult
-    private func ensureChat(_ summary: ChatSummary, in ws: WorkspaceState) -> ChatSession {
+    private func ensureChat(_ summary: ChatSummary, in ws: WorkspaceState, on host: EngineHost) -> ChatSession {
         if let existing = ws.chats.first(where: { $0.id == summary.id }) {
             existing.applySummary(summary)
             return existing
         }
         let cwd = workspaceById(ws.id)?.worktreePath ?? ""
-        let chat = ChatSession(summary: summary, workspaceId: ws.id, cwd: cwd, backend: connection, files: EngineFiles.shared)
+        let chat = ChatSession(summary: summary, workspaceId: ws.id, cwd: cwd, backend: host.connection, files: host.files)
         ws.chats.append(chat)
         let tab = TabRef.chat(summary.id)
         ws.insertTab(tab, replacing: pendingPlacements.removeValue(forKey: tab))
@@ -407,13 +527,15 @@ final class AppState: ObservableObject {
     /// the settings sheet). Returns `nil` if the picker was dismissed or the
     /// engine refused the path.
     @discardableResult
-    func addRepository() async -> Repository? {
-        guard let path = await pickRepositoryPath() else { return nil }
+    func addRepository(on host: EngineHost? = nil) async -> Repository? {
+        let host = host ?? localHost
+        guard let path = await pickRepositoryPath(on: host) else { return nil }
         do {
-            let repo = try await connection.call(API.AddRepository(path: path))
-            if !repositories.contains(where: { $0.id == repo.id }) {
-                repositories.insert(repo, at: 0)
-                workspacesByRepo[repo.id] = workspacesByRepo[repo.id] ?? []
+            let repo = try await host.connection.call(API.AddRepository(path: path))
+            if !host.repositories.contains(where: { $0.id == repo.id }) {
+                host.repositories.insert(repo, at: 0)
+                host.workspacesByRepo[repo.id] = host.workspacesByRepo[repo.id] ?? []
+                rebuildAggregates()
             }
             return repo
         } catch {
@@ -423,53 +545,61 @@ final class AppState: ObservableObject {
     }
 
     func removeRepository(_ id: String) {
-        if let repo = repositories.first(where: { $0.id == id }) {
+        guard let host = host(forRepo: id) else { return }
+        if let repo = host.repositories.first(where: { $0.id == id }) {
             dropLocal(repositoryBaseWorkspaceId(for: repo))
         }
-        for ws in workspacesByRepo[id] ?? [] { dropLocal(ws.id) }
-        repositories.removeAll { $0.id == id }
-        workspacesByRepo.removeValue(forKey: id)
+        for ws in host.workspacesByRepo[id] ?? [] { dropLocal(ws.id) }
+        let connection = host.connection
+        host.repositories.removeAll { $0.id == id }
+        host.workspacesByRepo.removeValue(forKey: id)
+        rebuildAggregates()
         if selectedWorkspaceId.flatMap({ workspaceById($0) }) == nil {
             clearSelectedWorkspace()
         }
-        perform(API.RemoveRepository(repoId: id))
+        perform(API.RemoveRepository(repoId: id), on: connection)
     }
 
     func updateRepository(_ repo: Repository) {
-        if let idx = repositories.firstIndex(where: { $0.id == repo.id }) {
-            repositories[idx] = repo
+        guard let host = host(forRepo: repo.id) else { return }
+        if let idx = host.repositories.firstIndex(where: { $0.id == repo.id }) {
+            host.repositories[idx] = repo
+            rebuildAggregates()
         }
-        perform(API.UpdateRepository(repository: repo))
+        perform(API.UpdateRepository(repository: repo), on: host.connection)
     }
 
-    /// Handler for `ForEach.onMove` (SwiftUI's "insert before this index"
-    /// convention, which `Array.move` shares).
-    func moveRepositorySections(from offsets: IndexSet, to destination: Int) {
-        repositories.move(fromOffsets: offsets, toOffset: destination)
-        perform(API.ReorderRepositories(orderedIds: repositories.map(\.id)))
+    /// Handler for `ForEach.onMove` within one host's group (SwiftUI's
+    /// "insert before this index" convention, which `Array.move` shares).
+    func moveRepositorySections(in host: EngineHost, from offsets: IndexSet, to destination: Int) {
+        host.repositories.move(fromOffsets: offsets, toOffset: destination)
+        rebuildAggregates()
+        perform(API.ReorderRepositories(orderedIds: host.repositories.map(\.id)), on: host.connection)
     }
 
     /// Same convention, scoped to one repo's workspace rows.
     func moveWorkspaces(in repoId: String, from offsets: IndexSet, to destination: Int) {
-        guard var list = workspacesByRepo[repoId],
+        guard let host = host(forRepo: repoId),
+              var list = host.workspacesByRepo[repoId],
               offsets.allSatisfy({ list.indices.contains($0) }),
               (0...list.count).contains(destination) else { return }
         list.move(fromOffsets: offsets, toOffset: destination)
-        workspacesByRepo[repoId] = list
-        perform(API.ReorderWorkspaces(repoId: repoId, orderedIds: list.map(\.id)))
+        host.workspacesByRepo[repoId] = list
+        rebuildAggregates()
+        perform(API.ReorderWorkspaces(repoId: repoId, orderedIds: list.map(\.id)), on: host.connection)
     }
 
     /// Git refs for the repo settings sheet.
     func repoRefs(_ repo: Repository) async -> API.RepoRefsResult? {
-        try? await connection.call(API.RepoRefs(repoId: repo.id))
+        try? await connection(forRepo: repo.id).call(API.RepoRefs(repoId: repo.id))
     }
 
     func remoteBranches(_ repo: Repository) async -> [API.RemoteBranch] {
-        (try? await connection.call(API.RemoteBranches(repoId: repo.id))) ?? []
+        (try? await connection(forRepo: repo.id).call(API.RemoteBranches(repoId: repo.id))) ?? []
     }
 
     func openPullRequests(_ repo: Repository) async throws -> API.OpenPullRequestsResult {
-        try await connection.call(API.OpenPullRequests(repoId: repo.id))
+        try await connection(forRepo: repo.id).call(API.OpenPullRequests(repoId: repo.id))
     }
 
     // MARK: - Workspaces
@@ -513,7 +643,7 @@ final class AppState: ObservableObject {
     }
 
     func createWorkspace(in repo: Repository, name: String) async {
-        let connection = self.connection
+        let connection = self.connection(forRepo: repo.id)
         await create(in: repo) { override in
             try await connection.call(API.CreateWorkspace(repoId: repo.id, name: name, overrideExisting: override))
         }
@@ -521,7 +651,7 @@ final class AppState: ObservableObject {
 
     /// Spin up a workspace against an existing PR's head branch.
     func createWorkspaceFromPR(in repo: Repository, pr: PRSummary, name: String) async {
-        let connection = self.connection
+        let connection = self.connection(forRepo: repo.id)
         await create(in: repo) { override in
             try await connection.call(API.ImportBranch(repoId: repo.id, remoteRef: nil, pullRequest: pr, name: name, overrideExisting: override))
         }
@@ -529,7 +659,7 @@ final class AppState: ObservableObject {
 
     /// Spin up a workspace against an existing remote branch (`origin/x`).
     func createWorkspaceFromBranch(in repo: Repository, remoteRef: String, name: String) async {
-        let connection = self.connection
+        let connection = self.connection(forRepo: repo.id)
         await create(in: repo) { override in
             try await connection.call(API.ImportBranch(repoId: repo.id, remoteRef: remoteRef, pullRequest: nil, name: name, overrideExisting: override))
         }
@@ -545,8 +675,9 @@ final class AppState: ObservableObject {
                 result = try await request(true)
             }
             guard case let .created(ws) = result else { return }
-            if workspacesByRepo[repo.id]?.contains(where: { $0.id == ws.id }) != true {
-                workspacesByRepo[repo.id, default: []].insert(ws, at: 0)
+            if let host = host(forRepo: repo.id), host.workspacesByRepo[repo.id]?.contains(where: { $0.id == ws.id }) != true {
+                host.workspacesByRepo[repo.id, default: []].insert(ws, at: 0)
+                rebuildAggregates()
             }
             selectWorkspace(ws.id)
             if repo.trimmedSetupScript != nil {
@@ -583,9 +714,11 @@ final class AppState: ObservableObject {
 
     /// Remove the worktree and its branch, the workspace's chats and its row.
     func deleteWorkspace(_ workspace: Workspace) async {
+        let connection = self.connection(forWorkspace: workspace.id)
         reassignSelection(afterClosing: workspace.id)
         dropLocal(workspace.id)
-        workspacesByRepo[workspace.repositoryId]?.removeAll { $0.id == workspace.id }
+        host(forRepo: workspace.repositoryId)?.workspacesByRepo[workspace.repositoryId]?.removeAll { $0.id == workspace.id }
+        rebuildAggregates()
         do {
             _ = try await connection.call(API.DeleteWorkspace(workspaceId: workspace.id))
         } catch {
@@ -596,8 +729,12 @@ final class AppState: ObservableObject {
     func selectWorkspace(_ id: String) {
         selectionHistory.removeAll { $0 == id }
         selectionHistory.append(id)
+        // Focus follows selection per engine: the others hear nothing is
+        // focused there any more.
+        let owner = host(forWorkspace: id)
+        for host in hosts where host !== owner { host.connection.send(API.SetFocus(workspaceId: nil)) }
+        owner?.connection.send(API.SetFocus(workspaceId: id))
         selectedWorkspaceId = id
-        connection.send(API.SetFocus(workspaceId: id))
         scheduleInspectorWorkspace(id)
         scheduleWorkspaceActivation(id)
     }
@@ -634,7 +771,7 @@ final class AppState: ObservableObject {
         workspaceActivationTask?.cancel()
         inspectorSelectionTask?.cancel()
         inspectorWorkspaceId = nil
-        connection.send(API.SetFocus(workspaceId: nil))
+        for host in hosts { host.connection.send(API.SetFocus(workspaceId: nil)) }
     }
 
     private func scheduleWorkspaceActivation(_ id: String) {
@@ -650,6 +787,7 @@ final class AppState: ObservableObject {
     /// Ask the engine to bring the workspace up (restoring its chats, or a
     /// first tab). Its tabs arrive with the next status.
     private func activateSelectedWorkspace(_ id: String) {
+        let connection = self.connection(forWorkspace: id)
         guard workspaceById(id) != nil, connection.isConnected else { return }
         // Tabs closed with the workspace come back on activation (restored
         // chats keep their ids); stop suppressing them.
@@ -657,7 +795,7 @@ final class AppState: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                if case .missing = try await self.connection.call(API.ActivateWorkspace(workspaceId: id, terminalSize: nil)) {
+                if case .missing = try await connection.call(API.ActivateWorkspace(workspaceId: id, terminalSize: nil)) {
                     self.reassignSelection(afterClosing: id)
                 }
             } catch {
@@ -696,7 +834,7 @@ final class AppState: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                let info = try await self.connection.call(request)
+                let info = try await self.connection(forWorkspace: workspace.id).call(request)
                 self.show(.terminal(info), in: workspace.id, replacing: replacing)
             } catch {
                 await self.presentError(error.localizedDescription)
@@ -724,9 +862,10 @@ final class AppState: ObservableObject {
                 pendingPlacements[tab] = replacing
             }
         }
+        let host = self.host(forWorkspace: workspaceId) ?? localHost
         switch opened {
-        case let .terminal(info): ensureSession(info, in: ws)
-        case let .chat(summary): ensureChat(summary, in: ws)
+        case let .terminal(info): ensureSession(info, in: ws, on: host)
+        case let .chat(summary): ensureChat(summary, in: ws, on: host)
         }
         selectTab(tab, in: workspaceId)
     }
@@ -745,7 +884,7 @@ final class AppState: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                let summary = try await self.connection.call(API.StartChat(workspaceId: workspace.id, provider: provider, prompt: prompt))
+                let summary = try await self.connection(forWorkspace: workspace.id).call(API.StartChat(workspaceId: workspace.id, provider: provider, prompt: prompt))
                 self.show(.chat(summary), in: workspace.id, replacing: replacing)
             } catch {
                 await self.presentError(error.localizedDescription)
@@ -764,7 +903,7 @@ final class AppState: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                let summary = try await self.connection.call(API.ReopenChat(workspaceId: workspace.id, threadId: record.id))
+                let summary = try await self.connection(forWorkspace: workspace.id).call(API.ReopenChat(workspaceId: workspace.id, threadId: record.id))
                 self.show(.chat(summary), in: workspace.id, replacing: replacing)
             } catch {
                 await self.presentError(error.localizedDescription)
@@ -774,7 +913,7 @@ final class AppState: ObservableObject {
 
     /// Closed chats for the new-tab page.
     func closedChats(in workspace: Workspace, limit: Int) async -> [ChatThreadRecord] {
-        (try? await connection.call(API.ClosedChats(workspaceId: workspace.id, limit: limit))) ?? []
+        (try? await connection(forWorkspace: workspace.id).call(API.ClosedChats(workspaceId: workspace.id, limit: limit))) ?? []
     }
 
     func selectChat(_ chatId: String, in workspaceId: String) {
@@ -786,14 +925,15 @@ final class AppState: ObservableObject {
     /// Close a chat tab. Like closing a session, closing the last agent tab
     /// closes the workspace.
     func closeChat(_ chatId: String, in workspaceId: String) {
-        guard requireConnection() else { return }
+        let connection = self.connection(forWorkspace: workspaceId)
+        guard requireConnection(connection) else { return }
         let ws = workspaceState(for: workspaceId)
         guard let idx = ws.chats.firstIndex(where: { $0.id == chatId }) else { return }
         let chat = ws.chats.remove(at: idx)
         closingTabs[chatId] = workspaceId
         let next = ws.removeTab(.chat(chatId))
         chat.unsubscribe()
-        perform(API.CloseChat(chatId: chatId))
+        perform(API.CloseChat(chatId: chatId), on: connection)
         if !ws.hasAgentTabs {
             closeWorkspace(workspaceId)
         } else if let next {
@@ -808,7 +948,7 @@ final class AppState: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                if let info = try await self.connection.call(API.OpenChatInTerminal(chatId: chatId, size: nil)) {
+                if let info = try await self.connection(forWorkspace: workspaceId).call(API.OpenChatInTerminal(chatId: chatId, size: nil)) {
                     self.show(.terminal(info), in: workspaceId)
                 }
             } catch {
@@ -842,7 +982,7 @@ final class AppState: ObservableObject {
     /// App quitting. A local engine takes its agents and terminals with it;
     /// a remote one keeps them running for the next connection.
     func shutdownAgents() async {
-        if let engine = connection.inProcessEngine {
+        if let engine = localHost.connection.inProcessEngine {
             await engine.shutdown()
         }
     }
@@ -879,7 +1019,7 @@ final class AppState: ObservableObject {
 
     /// The full-file diff for a diff tab.
     func fullFileDiff(workspaceId: String, path: String, status: FileDiff.Status, mode: DiffMode) async throws -> FileDiff? {
-        try await connection.call(API.FullFileDiff(workspaceId: workspaceId, path: path, status: status, mode: mode))
+        try await connection(forWorkspace: workspaceId).call(API.FullFileDiff(workspaceId: workspaceId, path: path, status: status, mode: mode))
     }
 
     // MARK: - New-tab pages
@@ -929,7 +1069,7 @@ final class AppState: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                let tab = try await self.connection.call(API.StartGitAction(workspaceId: workspace.id, action: action, terminalSize: nil))
+                let tab = try await self.connection(forWorkspace: workspace.id).call(API.StartGitAction(workspaceId: workspace.id, action: action, terminalSize: nil))
                 self.show(tab, in: workspace.id)
             } catch {
                 await self.presentError(error.localizedDescription)
@@ -940,7 +1080,7 @@ final class AppState: ObservableObject {
     /// `gh pr merge` with the picked strategy (no agent involved).
     func performMerge(for workspace: Workspace, method: MergeMethod) async {
         do {
-            _ = try await connection.call(API.Merge(workspaceId: workspace.id, method: method))
+            _ = try await connection(forWorkspace: workspace.id).call(API.Merge(workspaceId: workspace.id, method: method))
         } catch {
             await presentError(error.localizedDescription)
         }
@@ -950,7 +1090,7 @@ final class AppState: ObservableObject {
     /// is satisfied.
     func enableAutoMerge(for workspace: Workspace, method: MergeMethod) async {
         do {
-            _ = try await connection.call(API.SetAutoMerge(workspaceId: workspace.id, enabled: true, method: method))
+            _ = try await connection(forWorkspace: workspace.id).call(API.SetAutoMerge(workspaceId: workspace.id, enabled: true, method: method))
         } catch {
             await presentError(error.localizedDescription)
         }
@@ -958,7 +1098,7 @@ final class AppState: ObservableObject {
 
     func disableAutoMerge(for workspace: Workspace) async {
         do {
-            _ = try await connection.call(API.SetAutoMerge(workspaceId: workspace.id, enabled: false, method: nil))
+            _ = try await connection(forWorkspace: workspace.id).call(API.SetAutoMerge(workspaceId: workspace.id, enabled: false, method: nil))
         } catch {
             await presentError(error.localizedDescription)
         }
@@ -976,7 +1116,7 @@ final class AppState: ObservableObject {
 
     private func fastPath(_ action: GitAction, _ workspace: Workspace) async {
         do {
-            if let tab = try await connection.call(API.FastPathGitAction(workspaceId: workspace.id, action: action, terminalSize: nil)) {
+            if let tab = try await connection(forWorkspace: workspace.id).call(API.FastPathGitAction(workspaceId: workspace.id, action: action, terminalSize: nil)) {
                 show(tab, in: workspace.id)
             }
         } catch {
@@ -1012,13 +1152,13 @@ final class AppState: ObservableObject {
     /// Drives the quit-confirmation dialog. Only a local engine loses its
     /// runs when the app quits.
     var hasOpenTabs: Bool {
-        connection.inProcessEngine?.allWorkspaceStates.contains { $0.hasAgentTabs } ?? false
+        localHost.connection.inProcessEngine?.allWorkspaceStates.contains { $0.hasAgentTabs } ?? false
     }
 
     /// Close one session tab, handing the strip over to its neighbour when it
     /// was showing. Closing the last session closes the workspace.
     func closeSession(_ sessionId: String, in workspaceId: String) {
-        guard requireConnection() else { return }
+        guard requireConnection(connection(forWorkspace: workspaceId)) else { return }
         let ws = workspaceState(for: workspaceId)
         guard let idx = ws.sessions.firstIndex(where: { $0.id == sessionId }) else { return }
         let session = ws.sessions.remove(at: idx)
@@ -1055,7 +1195,7 @@ final class AppState: ObservableObject {
 
     /// Start or stop the run script (exclusive runs are handled engine-side).
     func toggleRun(for workspace: Workspace) {
-        perform(API.ToggleRun(workspaceId: workspace.id))
+        perform(API.ToggleRun(workspaceId: workspace.id), on: connection(forWorkspace: workspace.id))
     }
 
     func runController(for workspaceId: String) -> RunController? {
@@ -1111,31 +1251,32 @@ final class AppState: ObservableObject {
     // MARK: - Diff & PR
 
     func refreshDiff(for workspace: Workspace) async {
-        _ = try? await connection.call(API.RefreshDiff(workspaceId: workspace.id))
+        _ = try? await connection(forWorkspace: workspace.id).call(API.RefreshDiff(workspaceId: workspace.id))
     }
 
     /// Kept for views that resolve repo metadata themselves; the engine
     /// broadcasts the same thing.
     func applyRepoMetadata(_ metadata: RepoIdentifier, for repoId: String) {
-        if repoMetadataByRepo[repoId] != metadata {
-            repoMetadataByRepo[repoId] = metadata
-        }
+        guard let host = host(forRepo: repoId), host.repoMetadataByRepo[repoId] != metadata else { return }
+        host.repoMetadataByRepo[repoId] = metadata
+        rebuildAggregates()
     }
 
     /// User-initiated refresh (drives the inspector spinner).
     func requestPRRefresh(workspaceId: String) {
         workspaceState(for: workspaceId).isRefreshingPR = true
-        perform(API.RefreshPR(workspaceId: workspaceId))
+        perform(API.RefreshPR(workspaceId: workspaceId), on: connection(forWorkspace: workspaceId))
     }
 
     /// Close a workspace's live runtime — sessions, chats, run/setup —
     /// while keeping its sidebar entry and cached diff/PR state.
     func closeWorkspace(_ id: String) {
-        guard requireConnection() else { return }
+        let connection = self.connection(forWorkspace: id)
+        guard requireConnection(connection) else { return }
         if let ws = workspaceStates[id] {
             tearDownLocalRuntime(ws)
         }
-        perform(API.CloseWorkspace(workspaceId: id))
+        perform(API.CloseWorkspace(workspaceId: id), on: connection)
         reassignSelection(afterClosing: id)
         selectionHistory.removeAll { $0 == id }
     }
@@ -1191,9 +1332,10 @@ final class AppState: ObservableObject {
             applyTerminalFont(s)
         }
         pendingSettingsSaves += 1
+        let local = localHost.connection
         Task { [weak self] in
             do {
-                _ = try await self?.connection.call(API.SaveSettings(settings: s))
+                _ = try await local.call(API.SaveSettings(settings: s))
             } catch {
                 if (error as? WireError)?.code != "disconnected" {
                     await self?.presentError(error.localizedDescription)
@@ -1201,9 +1343,29 @@ final class AppState: ObservableObject {
             }
             self?.pendingSettingsSaves -= 1
         }
+        for host in hosts where !host.isLocal && host.isSynced {
+            pushSettings(s, to: host)
+        }
     }
 
     private var pendingSettingsSaves = 0
+
+    /// Give a remote this Mac's preferences, keeping what only makes sense
+    /// per machine: where its agent CLIs are.
+    private func pushSettings(_ s: AppSettings, to host: EngineHost) {
+        var merged = s
+        if let theirs = host.settings {
+            merged.claudeBinaryPath = theirs.claudeBinaryPath
+            merged.codexBinaryPath = theirs.codexBinaryPath
+            merged.mistralBinaryPath = theirs.mistralBinaryPath
+        } else {
+            merged.claudeBinaryPath = nil
+            merged.codexBinaryPath = nil
+            merged.mistralBinaryPath = nil
+        }
+        guard merged != host.settings else { return }
+        host.connection.send(API.SaveSettings(settings: merged))
+    }
 
     /// Push terminal font settings to every live session so changes land
     /// immediately. (Inner horizontal padding is applied at the view layer —
@@ -1221,17 +1383,17 @@ final class AppState: ObservableObject {
 
     /// Actions that change engine state wait for the link: done locally
     /// and dropped on the way, they'd leave the mirror lying.
-    private func requireConnection() -> Bool {
+    private func requireConnection(_ connection: EngineConnection) -> Bool {
         guard !connection.isConnected else { return true }
         NSSound.beep()
         return false
     }
 
     /// Fire a request whose only interesting outcome is failure.
-    private func perform<R: RPC>(_ request: R) {
+    private func perform<R: RPC>(_ request: R, on connection: EngineConnection) {
         Task { [weak self] in
             do {
-                _ = try await self?.connection.call(request)
+                _ = try await connection.call(request)
             } catch {
                 if (error as? WireError)?.code != "disconnected" {
                     await self?.presentError(error.localizedDescription)
@@ -1242,11 +1404,11 @@ final class AppState: ObservableObject {
 
     /// A repository to add: a folder picker for a local engine; for a
     /// remote one, a path on that machine.
-    private func pickRepositoryPath() async -> String? {
-        if connection.isLocal {
+    private func pickRepositoryPath(on host: EngineHost) async -> String? {
+        if host.isLocal {
             return await pickDirectory()
         }
-        return await RemoteFolderPicker.pick(connection: connection)
+        return await RemoteFolderPicker.pick(connection: host.connection, name: host.name)
     }
 
     private func pickDirectory() async -> String? {
@@ -1288,9 +1450,25 @@ final class AppState: ObservableObject {
     private var appliedDebugArguments = false
     private func applyDebugLaunchArguments() {
         guard !appliedDebugArguments else { return }
-        appliedDebugArguments = true
         let defaults = UserDefaults.standard
+        // `-JetlineOpenWorkspaces a,b,c`: select each in turn, 3 s apart,
+        // once all of them are known (they may live on different hosts).
+        if let list = defaults.string(forKey: "JetlineOpenWorkspaces") {
+            let ids = list.split(separator: ",").map(String.init)
+            guard ids.allSatisfy({ workspaceById($0) != nil }) else { return }
+            appliedDebugArguments = true
+            Task { [weak self] in
+                for id in ids {
+                    self?.selectWorkspace(id)
+                    try? await Task.sleep(for: .seconds(3))
+                }
+            }
+            return
+        }
+        // Retried as each host syncs: the workspace may live on one that
+        // connects later.
         guard let id = defaults.string(forKey: "JetlineOpenWorkspace"), workspaceById(id) != nil else { return }
+        appliedDebugArguments = true
         selectWorkspace(id)
         guard let prompt = defaults.string(forKey: "JetlineSendPrompt") else { return }
         let plan = defaults.bool(forKey: "JetlinePlanMode")

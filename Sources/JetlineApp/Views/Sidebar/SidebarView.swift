@@ -8,19 +8,29 @@ struct SidebarView: View {
 
     var body: some View {
         List {
-            ForEach(state.repositories) { repo in
-                RepositorySection(
-                    repo: repo,
-                    onNewWorkspace: { showingCreation = repo },
-                    onOpenSettings: { showingRepoSettings = repo }
-                )
-            }
-            .onMove { offsets, destination in
-                state.moveRepositorySections(from: offsets, to: destination)
-            }
+            ForEach(state.hosts) { host in
+                // With only this Mac there's nothing to group.
+                if state.hosts.count > 1 {
+                    HostGroupHeader(host: host, isFirst: host === state.hosts.first) {
+                        addRepository(on: host)
+                    }
+                }
+                ForEach(host.repositories) { repo in
+                    RepositorySection(
+                        repo: repo,
+                        onNewWorkspace: { showingCreation = repo },
+                        onOpenSettings: { showingRepoSettings = repo }
+                    )
+                    // A remote whose link is down stays listed, dimmed.
+                    .opacity(host.isLocal || host.isSynced ? 1 : 0.5)
+                }
+                .onMove { offsets, destination in
+                    state.moveRepositorySections(in: host, from: offsets, to: destination)
+                }
 
-            if state.repositories.isEmpty {
-                emptyHint
+                if host.repositories.isEmpty, host.isSynced || host.isLocal {
+                    emptyHint(for: host)
+                }
             }
         }
         .listStyle(.sidebar)
@@ -35,17 +45,29 @@ struct SidebarView: View {
         }
     }
 
-    private var emptyHint: some View {
+    private func addRepository(on host: EngineHost) {
+        Task {
+            if let repo = await state.addRepository(on: host) {
+                // Drop the user straight into settings for the freshly-added
+                // repo so they can configure setup / run scripts before
+                // spawning a workspace.
+                showingRepoSettings = repo
+            }
+        }
+    }
+
+    private func emptyHint(for host: EngineHost) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("No repositories yet")
+            Text(state.hosts.count > 1 ? "No repositories here yet" : "No repositories yet")
                 .font(.headline)
-            Text(state.connection.isLocal
+            Text(host.isLocal
                  ? "Add a local git repo and start a workspace."
-                 : "Add a git repo on \(state.connection.target.displayName) and start a workspace.")
+                 : "Add a git repo on \(host.name) and start a workspace.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .padding(.vertical, 16)
+        .padding(.vertical, state.hosts.count > 1 ? 6 : 16)
+        .listRowSeparator(.hidden)
     }
 
     /// Floats over the list rather than sitting in a bar: the button carries
@@ -54,31 +76,132 @@ struct SidebarView: View {
     /// row scrolls clear of it.
     private var sidebarFooter: some View {
         VStack(spacing: 8) {
-            EngineStatusPill(connection: state.connection)
-            if let message = state.prTrackerStatus.userMessage {
+            if state.hosts.count == 1, let message = state.prTrackerStatus.userMessage {
                 PRTrackerStatusPill(message: message)
             }
-            Button {
-                Task {
-                    if let repo = await state.addRepository() {
-                        // Drop the user straight into settings for the
-                        // freshly-added repo so they can configure setup
-                        // / run scripts before spawning a workspace —
-                        // the next workspace will then see those scripts
-                        // on first creation.
-                        showingRepoSettings = repo
-                    }
+            Menu {
+                ForEach(state.hosts) { host in
+                    Button(host.isLocal ? "On This Mac…" : "On \(host.name)…") { addRepository(on: host) }
+                        .disabled(!host.isLocal && !host.isSynced)
                 }
             } label: {
                 Label("Add repository", systemImage: "plus")
                     .frame(maxWidth: .infinity)
+            } primaryAction: {
+                addRepository(on: state.localHost)
             }
+            .menuIndicator(state.hosts.count > 1 ? .visible : .hidden)
             .buttonStyle(.glass)
             .buttonBorderShape(.capsule)
             .controlSize(.large)
             .padding(.horizontal, 10)
             // Level with the chat composer's pill row across the window.
             .padding(.bottom, 12)
+        }
+    }
+}
+
+/// The divider and title above one machine's repositories: its name, the
+/// link's state, and what you can do with it.
+private struct HostGroupHeader: View {
+    @EnvironmentObject private var state: AppState
+    let host: EngineHost
+    let isFirst: Bool
+    let onAddRepository: () -> Void
+    @State private var confirmingRemoval = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if !isFirst {
+                Rectangle()
+                    .fill(Color.primary.opacity(0.12))
+                    .frame(height: 1)
+                    .padding(.bottom, 4)
+            }
+            HStack(spacing: 7) {
+                Image(systemName: host.isLocal ? "laptopcomputer" : "server.rack")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text(host.name.uppercased())
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 6, height: 6)
+                    .help(statusHelp)
+                Spacer(minLength: 4)
+                Button(action: onAddRepository) {
+                    Image(systemName: "plus").font(.system(size: 11, weight: .semibold))
+                }
+                .buttonStyle(.borderless)
+                .disabled(!host.isLocal && !host.isSynced)
+                .help("Add a repository on \(host.isLocal ? "this Mac" : host.name)")
+                if !host.isLocal {
+                    Menu {
+                        Button("Reconnect") { host.connection.reconnectNow() }
+                        Divider()
+                        Button("Remove \(host.name)…", role: .destructive) { confirmingRemoval = true }
+                    } label: {
+                        Image(systemName: "ellipsis").font(.system(size: 11, weight: .semibold))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                }
+            }
+            if let detail {
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(.top, isFirst ? 2 : 8)
+        .padding(.bottom, 2)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 10))
+        .confirmationDialog(
+            "Remove \(host.name) from Jetline?",
+            isPresented: $confirmingRemoval
+        ) {
+            Button("Remove", role: .destructive) { state.removeRemoteHost(host.id) }
+        } message: {
+            Text("Its workspaces disappear from the sidebar. Everything keeps running on \(host.name); add it again to get back to it.")
+        }
+    }
+
+    private var statusColor: Color {
+        switch host.connection.status {
+        case .connected: return .green
+        case .connecting, .reconnecting: return .yellow
+        case .failed: return .red
+        case .idle: return .secondary
+        }
+    }
+
+    private var statusHelp: String {
+        switch host.connection.status {
+        case .connected:
+            if let hello = host.connection.hello, !host.isLocal {
+                return "Connected · \(hello.hostName) · \(hello.platform) · engine \(hello.engineVersion)"
+            }
+            return "Connected"
+        case .connecting: return "Connecting…"
+        case let .reconnecting(attempt, _): return "Reconnecting (attempt \(attempt))…"
+        case let .failed(message): return message
+        case .idle: return "Not connected"
+        }
+    }
+
+    /// Only when something needs saying: a down link, or gh trouble there.
+    private var detail: String? {
+        switch host.connection.status {
+        case .connecting where !host.isLocal: return "Connecting…"
+        case let .reconnecting(_, error): return error.map { "Reconnecting — \($0)" } ?? "Reconnecting…"
+        case let .failed(message): return message
+        default: return host.prTrackerStatus.userMessage
         }
     }
 }

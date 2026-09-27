@@ -81,25 +81,8 @@ final class EngineConnection {
     /// The link dropped; the mirror should mark itself stale.
     @ObservationIgnored var onDisconnected: (() -> Void)?
 
-    static let targetDefaultsKey = "JetlineEngineTarget"
-
     init(target: EngineTarget) {
         self.target = target
-    }
-
-    static func savedTarget() -> EngineTarget {
-        if let override = ProcessInfo.processInfo.environment["JETLINE_REMOTE_COMMAND"], !override.isEmpty {
-            return .remote(RemoteEngine(name: "remote", command: override))
-        }
-        guard let data = UserDefaults.standard.data(forKey: targetDefaultsKey),
-              let target = try? JSONDecoder().decode(EngineTarget.self, from: data) else { return .local }
-        return target
-    }
-
-    static func save(_ target: EngineTarget) {
-        if let data = try? JSONEncoder().encode(target) {
-            UserDefaults.standard.set(data, forKey: targetDefaultsKey)
-        }
     }
 
     var isLocal: Bool { target.isLocal }
@@ -124,14 +107,23 @@ final class EngineConnection {
         Task { await attempt(attemptNumber: 0, generation: generation) }
     }
 
-    /// Point at a different engine. The current link is dropped first.
-    func switchTarget(_ target: EngineTarget) {
+    /// Point at a different engine (an edited remote command). The current
+    /// link is dropped first.
+    func retarget(_ target: EngineTarget) {
         guard target != self.target else { return }
-        Self.save(target)
         tearDownLink()
         self.target = target
         hello = nil
         connect()
+    }
+
+    /// Drop the link for good (the host was removed).
+    func disconnect() {
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        generation += 1
+        tearDownLink()
+        status = .idle
     }
 
     private func attempt(attemptNumber: Int, generation: Int) async {

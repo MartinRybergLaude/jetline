@@ -167,19 +167,23 @@ private struct SessionSurface: View {
     @EnvironmentObject private var state: AppState
 
     var body: some View {
-        ZStack(alignment: .top) {
-            TerminalHostView(
-                session: session,
-                isActive: isActive,
-                paddingX: state.settings.terminalPaddingX
-            )
-
+        // The fallback banner sits above the terminal rather than over it:
+        // over it, it hid the first row — all of a shell whose prompt only
+        // ever redraws in place.
+        VStack(spacing: 0) {
             if session.fellBackToShell {
                 FallbackBanner(agent: session.agent)
             }
+            ZStack(alignment: .top) {
+                TerminalHostView(
+                    session: session,
+                    isActive: isActive,
+                    paddingX: state.settings.terminalPaddingX
+                )
 
-            if let err = session.lastError {
-                ErrorOverlay(message: err)
+                if let err = session.lastError {
+                    ErrorOverlay(message: err)
+                }
             }
         }
     }
@@ -427,7 +431,7 @@ private final class TerminalDropContainer: NSView {
         Task { @MainActor in
             var enginePaths: [String] = []
             for path in paths {
-                if let uploaded = try? await EngineFiles.shared.upload(URL(fileURLWithPath: path)) {
+                if let uploaded = try? await session.files.upload(URL(fileURLWithPath: path)) {
                     enginePaths.append(uploaded)
                 }
             }

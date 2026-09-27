@@ -104,7 +104,7 @@ struct RepositorySection: View {
                 } label: {
                     HStack(spacing: 8) {
                         Group {
-                            if let favicon = iconLoader.icon(for: repo.path) {
+                            if state.isLocal(repoId: repo.id), let favicon = iconLoader.icon(for: repo.path) {
                                 Image(nsImage: favicon)
                                     .resizable()
                                     .interpolation(.high)

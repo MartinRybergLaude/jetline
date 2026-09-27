@@ -465,9 +465,10 @@ final class ChatTimelineController: NSObject, NSTableViewDataSource, NSTableView
         guard !loadingFiles.contains(row) else { return nil }
         loadingFiles.insert(row)
         let cwd = cwd
+        // Checkpoints live in the owning engine's repository.
+        let connection = AppState.shared.connection(forWorkspace: session.workspaceId)
         Task { [weak self] in
-            // Checkpoints live in the engine's repository.
-            let result = (try? await AppState.shared.connection.call(API.CheckpointDiff(cwd: cwd, from: from, to: to))) ?? []
+            let result = (try? await connection.call(API.CheckpointDiff(cwd: cwd, from: from, to: to))) ?? []
             guard let self else { return }
             files[row] = result
             loadingFiles.remove(row)

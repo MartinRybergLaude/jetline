@@ -165,11 +165,12 @@ final class MainWindowCoordinator: NSObject, NSWindowDelegate {
             .store(in: &cancellables)
         // The menu commands' enabled states key off these; see
         // `refreshMenuCommands`.
-        Publishers.Merge4(
+        // Repositories and workspaces are aggregated across engine hosts;
+        // AppState announces their changes through objectWillChange.
+        Publishers.Merge3(
             state.$selectedWorkspaceId.map { _ in () },
             state.$navShortcutSuppressors.map { _ in () },
-            state.$repositories.map { _ in () },
-            state.$workspacesByRepo.map { _ in () }
+            state.objectWillChange.map { _ in () }
         )
         .receive(on: DispatchQueue.main)
         .sink { Self.refreshMenuCommands() }

@@ -20,7 +20,7 @@ action bar that fast-paths the common things and hands the rest to an agent.
 - Fast-path rebase + pull (no agent token spend on the no-conflict case) ✅
 - Per-repo branch naming controls, setup / run / archive scripts, exclusive run ✅
 - Settings: agents, binary paths, prompt overrides (global + per-repo), theme, terminal font ✅
-- Remote engine: run everything on a Linux box (`jetlined`) and drive it from the Mac over ssh ✅
+- Remote machines: repos on Linux boxes (`jetlined`, over ssh) sit in the sidebar next to this Mac's, one group per machine, all live at once ✅
 - File editor, Conductor import ❌ explicitly out of scope
 
 ## Build
@@ -53,12 +53,16 @@ directly, prepend the same env var.
 
 Jetline is split into an **engine** — repositories, git worktrees, agent
 processes, terminals, run scripts, PR tracking, the database — and the
-**app**, which only renders the engine's state and sends it requests. By
-default the engine runs inside the app. Point the app at `jetlined` on
-another machine instead and everything runs *there*: the Mac is just a
-window onto it. Close the laptop and the agents keep working; reconnect
-and every terminal, chat and run picks up where it was (terminal output is
-replayed from where the app last saw it).
+**app**, which only renders the engine's state and sends it requests. This
+Mac's engine runs inside the app. Add other machines running `jetlined` and
+the app connects to all of them at once: the sidebar gets a group per
+machine — *This Mac* first, then each remote — with that machine's
+repositories and workspaces inside, and everything else (tabs, chats,
+terminals, the inspector, git actions) works the same whichever group a
+workspace is in. A remote workspace's worktree, agents, terminals and run
+scripts live on that machine: close the laptop and they keep working;
+reconnect and every terminal, chat and run picks up where it was (terminal
+output is replayed from where the app last saw it).
 
 ### Set up a Linux host
 
@@ -79,13 +83,16 @@ Building on the host works too: install Swift 6.2+ and `libsqlite3-dev`, then
 
 ### Connect
 
-Settings → **Remote** → *A remote machine*, enter the ssh host (the same
-thing you'd type after `ssh`), **Connect**. The app runs
+Settings → **Remote** → **Add Remote Machine…**, enter the ssh host (the
+same thing you'd type after `ssh`). The app runs
 `ssh -T <host> '~/.jetline/bin/jetlined attach'`, which starts the engine on
 the host if it isn't running and bridges the connection to it; your ssh
 config, keys, ProxyJump and so on apply. (A custom command works too — any
-command whose stdin/stdout reach `jetlined attach`.) The sidebar shows the
-link, and reconnects on its own when it drops.
+command whose stdin/stdout reach `jetlined attach`.) The machine's group
+header shows its link — a dot, and the error when it's down — and
+reconnects on its own when it drops; a machine that's down only dims its
+own group. Add as many machines as you like; the group header's `+` (or
+the sidebar's *Add repository* menu) adds a repository on that machine.
 
 Things that follow from the engine living elsewhere:
 
@@ -95,8 +102,10 @@ Things that follow from the engine living elsewhere:
   images in a transcript are fetched from it.
 - *Open in* offers editors that can open a folder over ssh (VS Code,
   Cursor, Zed) and opens the worktree on the host.
-- Quitting the app no longer ends anything. `jetlined stop` on the host
-  does (it stops every agent and terminal it's running).
+- Quitting the app ends only this Mac's agents and terminals; a remote's
+  keep running. `jetlined stop` on the host ends those.
+- Preferences (prompts, default agent, appearance) are the app's and are
+  pushed to every machine; agent binary paths stay per machine.
 - Dev servers run on the host. Reach them the way you would any service
   there — an ssh `LocalForward`/`DynamicForward` in your ssh config applies
   to Jetline's connection as well.

@@ -14,13 +14,16 @@ final class PTYSession: ObservableObject, Identifiable {
     let cwd: String
     let emulator: TerminalEmulatorView
     let channel: TerminalChannel
+    /// The owning engine's file bridge (drops upload there).
+    let files: EngineFiles
 
     @Published private(set) var hasStarted: Bool = false
     @Published private(set) var lastError: String?
     @Published private(set) var fellBackToShell: Bool = false
     @Published private(set) var exitCode: Int32?
 
-    init(info: TerminalInfo, connection: EngineConnection) {
+    init(info: TerminalInfo, connection: EngineConnection, files: EngineFiles) {
+        self.files = files
         self.id = info.id
         self.workspaceId = info.workspaceId
         self.agent = info.agent

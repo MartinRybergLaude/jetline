@@ -189,7 +189,7 @@ final class TabToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
         guard let openIn else { return }
         // A remote engine reached by a custom command gives editors nothing
         // to open: the worktree isn't on this Mac and there's no ssh host.
-        let canOpen = state.connection.isLocal || (state.remoteSSHHost != nil && !availableOpenInApps.isEmpty)
+        let canOpen = workspaceIsLocal || (remoteSSHHost != nil && !availableOpenInApps.isEmpty)
         openIn.setHiddenIfNeeded(!canOpen)
         guard canOpen else { return }
         let app = currentOpenInApp
@@ -277,7 +277,7 @@ final class TabToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
     /// it was saved — Finder is always present.
     private var currentOpenInApp: OpenInApp {
         let stored = state.settings.defaultOpenInApp
-        if state.remoteSSHHost != nil {
+        if remoteSSHHost != nil {
             // Worktrees are on the engine's machine: only editors that can
             // reach it over ssh make sense.
             return availableOpenInApps.contains(stored) ? stored : (availableOpenInApps.first ?? .vscode)
@@ -285,17 +285,27 @@ final class TabToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
         return stored.isInstalled ? stored : .finder
     }
 
+    /// Where this tab's workspace lives decides what can open it.
+    private var workspaceIsLocal: Bool {
+        workspace.map { state.isLocal(workspaceId: $0.id) } ?? true
+    }
+
+    private var remoteSSHHost: String? {
+        workspace.flatMap { state.sshHost(forWorkspace: $0.id) }
+    }
+
     private var availableOpenInApps: [OpenInApp] {
-        OpenInApp.allCases.filter { app in
-            app.isInstalled && (state.connection.isLocal || app.supportsRemote)
+        let local = workspaceIsLocal
+        return OpenInApp.allCases.filter { app in
+            app.isInstalled && (local || app.supportsRemote)
         }
     }
 
     private func open(_ app: OpenInApp, _ path: String) {
-        if let host = state.remoteSSHHost {
-            app.open(directory: path, onSSHHost: host)
-        } else if state.connection.isLocal {
+        if workspaceIsLocal {
             app.open(directory: path)
+        } else if let host = remoteSSHHost {
+            app.open(directory: path, onSSHHost: host)
         }
     }
 

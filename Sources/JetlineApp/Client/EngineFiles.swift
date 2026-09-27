@@ -7,7 +7,10 @@ import Foundation
 /// the same disk and nothing moves.
 @MainActor
 final class EngineFiles {
-    static let shared = EngineFiles()
+    /// Every host's instance, for lookups that only have a path (a
+    /// transcript thumbnail).
+    private static var all: [WeakFiles] = []
+    private struct WeakFiles { weak var files: EngineFiles? }
 
     private weak var connection: EngineConnection?
     /// Engine path → local file with the same contents.
@@ -16,8 +19,21 @@ final class EngineFiles {
 
     private static let maxDownload = 32 * 1024 * 1024
 
-    func bind(_ connection: EngineConnection) {
+    init(connection: EngineConnection) {
         self.connection = connection
+        Self.all.removeAll { $0.files == nil }
+        Self.all.append(WeakFiles(files: self))
+    }
+
+    /// Where a transcript's image can be read on this Mac: a remote host's
+    /// copy if one was fetched or uploaded, else the path itself (which a
+    /// local engine's paths are).
+    static func localPath(for enginePath: String) -> String {
+        for entry in all {
+            guard let files = entry.files, !files.isLocal else { continue }
+            if let url = files.mirroredURL(for: enginePath) { return url.path }
+        }
+        return enginePath
     }
 
     private var isLocal: Bool { connection?.isLocal ?? true }
@@ -29,6 +45,14 @@ final class EngineFiles {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }()
+
+    private func mirroredURL(for enginePath: String) -> URL? {
+        if let hit = mirrored[enginePath] { return hit }
+        let cached = Self.cachedURL(for: enginePath)
+        guard FileManager.default.fileExists(atPath: cached.path) else { return nil }
+        mirrored[enginePath] = cached
+        return cached
+    }
 
     /// Where `enginePath` can be read on this Mac, if it's here yet.
     func localURL(for enginePath: String) -> URL? {

@@ -36,9 +36,6 @@ final class RepoIconLoader: ObservableObject {
         if let stored = cache[repoPath] {
             return stored
         }
-        // The repository is on the engine's machine; there's nothing to scan
-        // here.
-        guard AppState.shared.connection.isLocal else { return nil }
         guard !inFlight.contains(repoPath) else { return nil }
         inFlight.insert(repoPath)
         Task.detached(priority: .userInitiated) {

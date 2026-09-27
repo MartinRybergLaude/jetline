@@ -49,18 +49,18 @@ actor ChatFileIndex {
     static let shared = ChatFileIndex()
     private var cache: [String: (files: [String], at: Date)] = [:]
 
-    func files(in cwd: String) async -> [String] {
+    func files(in cwd: String, via connection: EngineConnection) async -> [String] {
         if let cached = cache[cwd], Date().timeIntervalSince(cached.at) < 30 { return cached.files }
-        // The worktree is on the engine's machine.
-        let listed = (try? await AppState.shared.connection.call(API.ListFiles(cwd: cwd))) ?? []
+        // The worktree is on its engine's machine.
+        let listed = (try? await connection.call(API.ListFiles(cwd: cwd))) ?? []
         let files = Array(listed.prefix(50_000))
         cache[cwd] = (files, Date())
         return files
     }
 
     /// Ranks on the actor so a large worktree doesn't block typing.
-    func ranked(in cwd: String, query: String) async -> [String] {
-        Self.rank(await files(in: cwd), query: query)
+    func ranked(in cwd: String, via connection: EngineConnection, query: String) async -> [String] {
+        Self.rank(await files(in: cwd, via: connection), query: query)
     }
 
     /// Subsequence match, preferring hits in the file name and shorter paths.
@@ -289,8 +289,9 @@ struct ChatComposer: View {
         case .file:
             let cwd = session.cwd
             let query = detected.query
+            let connection = AppState.shared.connection(forWorkspace: session.workspaceId)
             Task {
-                let ranked = await ChatFileIndex.shared.ranked(in: cwd, query: query)
+                let ranked = await ChatFileIndex.shared.ranked(in: cwd, via: connection, query: query)
                 guard completion == detected else { return }
                 suggestions = ranked.map { Suggestion(insertion: "@" + $0, title: $0, detail: nil) }
             }

@@ -7,17 +7,17 @@ import SwiftUI
 /// a browsable listing of the engine's filesystem.
 @MainActor
 enum RemoteFolderPicker {
-    static func pick(connection: EngineConnection) async -> String? {
+    static func pick(connection: EngineConnection, name: String) async -> String? {
         let start = connection.hello?.homeDirectory ?? "~"
         return await withCheckedContinuation { continuation in
-            let model = RemoteFolderModel(connection: connection, path: start)
+            let model = RemoteFolderModel(connection: connection, name: name, path: start)
             let panel = NSPanel(
                 contentRect: NSRect(x: 0, y: 0, width: 560, height: 460),
                 styleMask: [.titled, .closable, .resizable],
                 backing: .buffered,
                 defer: false
             )
-            panel.title = "Add Repository on \(connection.target.displayName)"
+            panel.title = "Add Repository on \(name)"
             panel.isReleasedWhenClosed = false
             // Not modal: the listing loads through async engine requests,
             // which a modal run loop would hold up.
@@ -50,13 +50,15 @@ private final class PanelCloser: NSObject, NSWindowDelegate {
 @Observable
 final class RemoteFolderModel {
     let connection: EngineConnection
+    let name: String
     var path: String
     var entries: [DirectoryEntry] = []
     var error: String?
     var isLoading = false
 
-    init(connection: EngineConnection, path: String) {
+    init(connection: EngineConnection, name: String, path: String) {
         self.connection = connection
+        self.name = name
         self.path = path
     }
 
@@ -105,7 +107,7 @@ private struct RemoteFolderPickerView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Choose a git repository on \(model.connection.target.displayName).")
+            Text("Choose a git repository on \(model.name).")
                 .font(.headline)
             HStack {
                 Button { model.up() } label: { Image(systemName: "arrow.up") }
