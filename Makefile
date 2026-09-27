@@ -29,7 +29,7 @@ ENTITLEMENTS   := BundleResources/Jetline.entitlements
 VERSION         = $(shell /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" BundleResources/Info.plist)
 DMG_NAME        = Jetline-$(VERSION).dmg
 
-.PHONY: all build app run release-app sign dmg notarize release clean test resolve
+.PHONY: all build app run release-app sign dmg notarize release clean test resolve linux-daemon deploy-daemon
 
 all: app
 
@@ -134,6 +134,20 @@ ship-patch ship-minor ship-major:
 		git tag "v$$NEW" && \
 		git push origin HEAD "v$$NEW" && \
 		echo "Pushed v$$NEW — CI: https://github.com/MartinRybergLaude/jetline/actions"
+
+# --- Remote engine ---------------------------------------------------------
+# `jetlined` runs Jetline's engine on a Linux box the app connects to over
+# ssh (Settings → Remote). Both targets build it in Docker.
+#
+#   make linux-daemon [ARCH=x86_64|aarch64]
+#   make deploy-daemon HOST=<ssh host>
+
+linux-daemon:
+	@scripts/linux/build-daemon.sh $(ARCH)
+
+deploy-daemon:
+	@test -n "$(HOST)" || (echo "usage: make deploy-daemon HOST=<ssh host>"; exit 1)
+	@scripts/linux/deploy-daemon.sh "$(HOST)"
 
 # -------------------------------------------------------------------------
 

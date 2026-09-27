@@ -80,6 +80,8 @@ final class EngineServer {
         nextClientId += 1
         let client = Client(id: id, connection: connection)
         clients[id] = client
+        let hub = terminals
+        connection.onDrained = { [weak hub] in hub?.catchUp(client: id) }
         connection.onFrames = { [weak self] frames in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { self?.receive(frames, from: id) }
@@ -695,6 +697,21 @@ final class TerminalHub: @unchecked Sendable {
 
     func detach(terminalId: String, client: Int) {
         lock.withLock { _ = subscribers[terminalId]?.removeValue(forKey: client) }
+    }
+
+    /// Send a client whatever it was skipped for while it was behind.
+    func catchUp(client: Int) {
+        lock.withLock {
+            for (terminalId, var targets) in subscribers {
+                guard var sub = targets[client], let buffer = buffers[terminalId],
+                      sub.next < buffer.range.end else { continue }
+                let (from, bytes) = buffer.read(from: sub.next)
+                Self.send(bytes, from: from, id: terminalId, on: sub.connection)
+                sub.next = from + UInt64(bytes.count)
+                targets[client] = sub
+                subscribers[terminalId] = targets
+            }
+        }
     }
 
     func removeClient(_ client: Int) {

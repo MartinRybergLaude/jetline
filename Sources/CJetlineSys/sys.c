@@ -1,3 +1,6 @@
+#if defined(__linux__)
+#define _GNU_SOURCE
+#endif
 #include "CJetlineSys.h"
 
 #include <unistd.h>
@@ -42,3 +45,17 @@ void jl_close_from(int lowfd, int maxfd) {
     }
 #endif
 }
+
+#if defined(__linux__)
+int jl_spawn_addchdir(posix_spawn_file_actions_t *actions, const char *path) {
+    return posix_spawn_file_actions_addchdir_np(actions, path);
+}
+
+int jl_spawn_addclosefrom(posix_spawn_file_actions_t *actions, int from) {
+    return posix_spawn_file_actions_addclosefrom_np(actions, from);
+}
+
+short jl_spawn_setsid_flag(void) {
+    return POSIX_SPAWN_SETSID;
+}
+#endif

@@ -4,6 +4,7 @@
 #include <sys/types.h>
 #include <sys/ioctl.h>
 #include <termios.h>
+#include <spawn.h>
 
 /// Thin wrappers over POSIX calls Swift can't reach portably: `forkpty` lives
 /// in <util.h> on Darwin and <pty.h> on Linux, and `pidfd_open` only exists as
@@ -26,5 +27,15 @@ int jl_set_winsize(int fd, unsigned short rows, unsigned short cols, unsigned sh
 /// subprocess's stdout, say, whose reader then never sees EOF.
 /// Async-signal-safe.
 void jl_close_from(int lowfd, int maxfd);
+
+#if defined(__linux__)
+/// glibc's `posix_spawn_file_actions_add{chdir,closefrom}_np` and
+/// `POSIX_SPAWN_SETSID` are only declared under _GNU_SOURCE, which Swift's
+/// Glibc module doesn't set on every distro's headers. Wrapped here, where
+/// it is set.
+int jl_spawn_addchdir(posix_spawn_file_actions_t *actions, const char *path);
+int jl_spawn_addclosefrom(posix_spawn_file_actions_t *actions, int from);
+short jl_spawn_setsid_flag(void);
+#endif
 
 #endif

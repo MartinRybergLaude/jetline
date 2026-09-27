@@ -1,4 +1,5 @@
 import Foundation
+import CJetlineSys
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -117,7 +118,11 @@ final class JSONLineProcess: @unchecked Sendable {
         posix_spawn_file_actions_adddup2(&fileActions, stdinPipe[0], STDIN_FILENO)
         posix_spawn_file_actions_adddup2(&fileActions, stdoutPipe[1], STDOUT_FILENO)
         posix_spawn_file_actions_adddup2(&fileActions, stderrPipe[1], STDERR_FILENO)
+        #if canImport(Darwin)
         posix_spawn_file_actions_addchdir_np(&fileActions, launch.cwd)
+        #else
+        jl_spawn_addchdir(&fileActions, launch.cwd)
+        #endif
 
         #if canImport(Darwin)
         var attributes: posix_spawnattr_t?
@@ -133,12 +138,11 @@ final class JSONLineProcess: @unchecked Sendable {
         )
         #else
         // glibc has no CLOEXEC_DEFAULT: close everything above stderr in the
-        // child instead (the dup2s above run first). POSIX_SPAWN_SETSID is
-        // 0x80 in glibc but only visible under _GNU_SOURCE.
-        posix_spawn_file_actions_addclosefrom_np(&fileActions, 3)
+        // child instead (the dup2s above run first).
+        jl_spawn_addclosefrom(&fileActions, 3)
         posix_spawnattr_setflags(
             &attributes,
-            Int16(0x80 | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK)
+            Int16(jl_spawn_setsid_flag()) | Int16(POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK)
         )
         #endif
         // The child inherits the spawning thread's signal mask, and GCD

@@ -20,6 +20,7 @@ action bar that fast-paths the common things and hands the rest to an agent.
 - Fast-path rebase + pull (no agent token spend on the no-conflict case) ✅
 - Per-repo branch naming controls, setup / run / archive scripts, exclusive run ✅
 - Settings: agents, binary paths, prompt overrides (global + per-repo), theme, terminal font ✅
+- Remote engine: run everything on a Linux box (`jetlined`) and drive it from the Mac over ssh ✅
 - File editor, Conductor import ❌ explicitly out of scope
 
 ## Build
@@ -48,12 +49,108 @@ github/gitlab via SSH from a subprocess. The `Makefile` works around this by
 running SwiftPM with `GIT_CONFIG_GLOBAL=/dev/null`. If you invoke `swift`
 directly, prepend the same env var.
 
+## Running workspaces on another machine
+
+Jetline is split into an **engine** — repositories, git worktrees, agent
+processes, terminals, run scripts, PR tracking, the database — and the
+**app**, which only renders the engine's state and sends it requests. By
+default the engine runs inside the app. Point the app at `jetlined` on
+another machine instead and everything runs *there*: the Mac is just a
+window onto it. Close the laptop and the agents keep working; reconnect
+and every terminal, chat and run picks up where it was (terminal output is
+replayed from where the app last saw it).
+
+### Set up a Linux host
+
+The host needs `git`, and whatever you use there: `gh` (logged in), the
+`claude` / `codex` CLIs (logged in), your toolchains. Then, from a Jetline
+checkout on the Mac:
+
+```bash
+make deploy-daemon HOST=devbox        # anything ssh accepts: alias, user@host
+```
+
+That builds `jetlined` for the host's architecture in Docker (glibc ≥ 2.35:
+Ubuntu 22.04+, Debian 12+; no other runtime dependencies) and installs it as
+`~/.jetline/bin/jetlined` on the host. `make linux-daemon ARCH=x86_64|aarch64`
+just builds `dist/jetlined-linux-<arch>` if you'd rather copy it yourself.
+Building on the host works too: install Swift 6.2+ and `libsqlite3-dev`, then
+`swift build -c release --product jetlined`.
+
+### Connect
+
+Settings → **Remote** → *A remote machine*, enter the ssh host (the same
+thing you'd type after `ssh`), **Connect**. The app runs
+`ssh -T <host> '~/.jetline/bin/jetlined attach'`, which starts the engine on
+the host if it isn't running and bridges the connection to it; your ssh
+config, keys, ProxyJump and so on apply. (A custom command works too — any
+command whose stdin/stdout reach `jetlined attach`.) The sidebar shows the
+link, and reconnects on its own when it drops.
+
+Things that follow from the engine living elsewhere:
+
+- *Add repository* browses the host's filesystem; worktrees live in the
+  host's `~/.jetline/worktrees`.
+- Chat images and files dropped on a terminal are uploaded to the host;
+  images in a transcript are fetched from it.
+- *Open in* offers editors that can open a folder over ssh (VS Code,
+  Cursor, Zed) and opens the worktree on the host.
+- Quitting the app no longer ends anything. `jetlined stop` on the host
+  does (it stops every agent and terminal it's running).
+- Dev servers run on the host. Reach them the way you would any service
+  there — an ssh `LocalForward`/`DynamicForward` in your ssh config applies
+  to Jetline's connection as well.
+
+### On the host
+
+```text
+jetlined serve     run in the foreground (e.g. under systemd)
+jetlined attach    what the app runs; starts the engine in the background if needed
+jetlined status    running?
+jetlined stop      stop it and everything it runs
+jetlined rpc M J   send one request (see Protocol/API.swift) — scripting/debugging
+```
+
+Data lives in `~/.jetline` on the host (`JETLINE_DATA_DIR` overrides); the
+engine logs to `~/.jetline/jetlined.log`. A Mac can be a host too:
+`/Applications/Jetline.app/Contents/MacOS/jetline daemon attach`.
+
 ## Architecture
+
+One library module, `JetlineApp`, and two thin executables: `jetline` (the
+Mac app) and `jetlined` (the daemon). UI sources are fenced with
+`#if os(macOS)`, so on Linux the module builds with only the engine inside.
+
+```
+Engine (in-process, or jetlined)            App (macOS)
+────────────────────────────────            ─────────────────────────────
+Engine          repos, workspaces, git      AppState      mirror + selection/tabs
+EngineWorkspace diff / PR / runtime         WorkspaceState per-workspace mirror
+EngineTerminal  PTY + offset-indexed buffer PTYSession    Ghostty surface ⇄ TerminalChannel
+ChatEngine      agent CLI, transcript       ChatSession   transcript mirror
+ScriptRun       setup / run scripts         Run/SetupController
+PRTracker, PRConversationLoader             PRTrackerProxy, PRConversationStore
+        │                                           ▲
+        └── EngineServer ── FramedConnection ── EngineClient / EngineConnection
+            (RPCs, observation-driven events,   (socketpair locally; ssh pipes
+             binary terminal frames)             or a unix socket remotely)
+```
+
+The protocol (`Protocol/`) is typed RPCs (`API.*`) plus `EngineEvent`s the
+engine pushes as its state changes: app-wide state and per-workspace slices
+as whole values, chat transcripts as patches (streamed text as appends), and
+terminal output as raw frames carrying byte offsets. Local mode runs the
+same protocol over a socketpair, so there is one code path.
 
 ```
 Sources/JetlineApp/
-├── JetlineApp.swift          ─ @main / WindowGroup / SettingsScene
-├── AppState.swift            ─ ObservableObject root state
+├── JetlineApp.swift          ─ SwiftUI App (entered from JetlineMain)
+├── AppState.swift            ─ client root state: engine mirror + UI state
+├── Engine/                   ─ Engine, EngineWorkspace, EngineTerminal, ChatEngine, ScriptRun
+├── Server/                   ─ EngineServer, ObservationPump, ChatPublisher, TerminalHub
+├── Protocol/                 ─ Wire envelopes + snapshots, API catalogue, framing
+├── Client/                   ─ EngineClient, EngineConnection, ChatSession mirror, TerminalChannel
+├── Daemon/                   ─ `jetlined` commands (serve / attach / status / stop / rpc)
 ├── Models/
 │   ├── Repository.swift          ─ repo + per-repo prompt/script overrides
 │   ├── Workspace.swift           ─ worktree + agent kind
@@ -72,7 +169,7 @@ Sources/JetlineApp/
 │   ├── GitRunner.swift           ─ async Process wrapper around system `git`
 │   ├── Worktree.swift            ─ branch + worktree create/import/remove
 │   ├── Diff.swift                ─ DiffSnapshot + unified-diff parser, modes
-│   ├── Watcher.swift             ─ FSEvents → coalesced refresh
+│   ├── Watcher.swift             ─ FSEvents (inotify on Linux) → coalesced refresh
 │   ├── BaseBranchSync.swift      ─ keeps repo.defaultBranch fresh
 │   ├── BranchPosition.swift      ─ ahead/behind vs base + remote
 │   ├── GitHub.swift              ─ `gh` wrapper: PR / checks / merge
@@ -107,14 +204,15 @@ Sources/JetlineApp/
 ### Data flow
 
 ```
-sidebar → AppState.selectWorkspace → ensure PTYSession → spawn agent
-                                  ↘ start FSEventsWatcher → throttle → DiffComputer
-                                                                     → WorkspaceState
-                                                                     → inspector views
+sidebar → AppState.selectWorkspace → ActivateWorkspace (engine) → restore chats / spawn a tab
+                                                                ↘ start watcher → DiffComputer
+                                                                                → EngineWorkspace
+        ← workspaceStatus / workspaceDiff events ← ObservationPump ←───────────────┘
+        → AppState mirror → WorkspaceState → views
 
 PRTracker (timer + kicks) → reconcile branch/upstream → gh GraphQL PR poll
                           → PR number/url identity + on-disk PRSnapshots cache
-                          → AppState.applyPR
+                          → Engine.applyPR → workspacePR event
 
 git action bar → GitActionPrompts.render → new PTYSession with initial prompt
               ↘ mergePR → gh pr merge (no agent)
@@ -142,7 +240,12 @@ Per-workspace mutable state (diff snapshots, PR snapshot, sessions, branch
 position, run/setup controllers) lives on `WorkspaceState` instances looked
 up via `AppState.workspaceState(for:)`, *not* in `@Published` dicts on
 `AppState` — so a single workspace's poll/diff update only invalidates the
-views that actually read it.
+views that actually read it. The engine side mirrors that split
+(`EngineWorkspace`), and publishes each slice separately.
+
+`make test` runs on macOS; the engine's tests also run on Linux
+(`scripts/linux/build-daemon.sh` shows the Docker setup), including an
+end-to-end one that drives a real engine through the protocol.
 
 ## License
 

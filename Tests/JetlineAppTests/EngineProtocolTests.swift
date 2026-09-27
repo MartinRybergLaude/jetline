@@ -268,6 +268,34 @@ final class EngineProtocolTests: XCTestCase {
         }
     }
 
+    /// A flood of output arrives complete, in order, with contiguous offsets.
+    func testTerminalFloodArrivesIntact() async throws {
+        _ = try await client.call(API.Hello(protocolVersion: Wire.protocolVersion, clientName: "test"))
+        let repoPath = try await makeRepo()
+        let repo = try await client.call(API.AddRepository(path: repoPath))
+        let workspaceId = Engine.repositoryBaseWorkspacePrefix + repo.id
+        let terminal = try await client.call(API.CreateTerminal(
+            workspaceId: workspaceId, agent: .shell, size: TerminalSize(cols: 120, rows: 40)
+        ))
+        var received = Data()
+        var nextOffset: UInt64?
+        var gaps = 0
+        client.setTerminalHandler(terminal.id) { offset, bytes in
+            if let expected = nextOffset, offset != expected { gaps += 1 }
+            nextOffset = offset + UInt64(bytes.count)
+            received.append(bytes)
+        }
+        _ = try await client.call(API.AttachTerminal(terminalId: terminal.id, fromOffset: nil))
+        // The marker is computed, so the echoed command line can't match it.
+        client.sendTerminalInput(terminal.id, Data("seq 1 200000; echo flood-$((6*7))-done\n".utf8))
+        await eventually("flood", timeout: 30) {
+            String(decoding: received.suffix(4096), as: UTF8.self).contains("flood-42-done")
+        }
+        XCTAssertEqual(gaps, 0)
+        let text = String(decoding: received, as: UTF8.self)
+        XCTAssertTrue(text.contains("199999\r\n200000\r\n"))
+    }
+
     func testChatPatchesStreamAppends() {
         var old = AgentItem(id: "a", turnId: "t", status: .inProgress, content: .assistantMessage(text: "Hello"))
         var new = old

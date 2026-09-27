@@ -1,9 +1,11 @@
 # Build environment for the Linux daemon (`jetlined`).
 #
-#   docker build -t jetline-linux-build -f scripts/linux/Dockerfile.build scripts/linux
-#   docker run --rm -v "$PWD":/src -w /src jetline-linux-build \
-#       swift build -c release --product jetlined --static-swift-stdlib --scratch-path /tmp/jl-build
-FROM swift:6.4-noble
+# Jammy (glibc 2.35) so the binary also runs on Ubuntu 22.04 and anything
+# newer. The libsqlite3.so dev symlink is removed so the link picks
+# libsqlite3.a: the daemon then needs nothing beyond glibc and libstdc++,
+# which every distro has. See scripts/linux/build-daemon.sh.
+FROM swift:6.4-jammy
 RUN apt-get update \
  && apt-get install -y --no-install-recommends libsqlite3-dev git \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/* \
+ && rm -f /usr/lib/*-linux-gnu/libsqlite3.so

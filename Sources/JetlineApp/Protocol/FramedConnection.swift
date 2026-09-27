@@ -51,6 +51,12 @@ final class FramedConnection: @unchecked Sendable {
     /// Called once, on the read queue, when the peer hangs up or `close()`
     /// is called.
     var onClose: (@Sendable () -> Void)?
+    /// Called on the write queue when a backlog above `drainThreshold`
+    /// clears — a sender that shed data while the peer was slow can catch
+    /// it up now.
+    var onDrained: (@Sendable () -> Void)?
+    var drainThreshold = 1024 * 1024
+    private var wasBacklogged = false
 
     init(readFD: Int32, writeFD: Int32, ownsFDs: Bool = true, label: String, preamble: Data? = nil) {
         self.readFD = readFD
@@ -88,7 +94,14 @@ final class FramedConnection: @unchecked Sendable {
         guard accepted else { return }
         writeQueue.async { [self] in
             let failure = writeAll(fd: writeFD, bytes)
-            lock.withLock { _pendingWriteBytes -= size }
+            let drained: Bool = lock.withLock {
+                _pendingWriteBytes -= size
+                if _pendingWriteBytes > drainThreshold { wasBacklogged = true }
+                guard wasBacklogged, _pendingWriteBytes == 0 else { return false }
+                wasBacklogged = false
+                return true
+            }
+            if drained { onDrained?() }
             if failure != nil {
                 readQueue.async { self.shutdown() }
             }

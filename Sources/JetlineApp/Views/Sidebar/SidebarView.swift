@@ -39,7 +39,9 @@ struct SidebarView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("No repositories yet")
                 .font(.headline)
-            Text("Add a local git repo and start a workspace.")
+            Text(state.connection.isLocal
+                 ? "Add a local git repo and start a workspace."
+                 : "Add a git repo on \(state.connection.target.displayName) and start a workspace.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

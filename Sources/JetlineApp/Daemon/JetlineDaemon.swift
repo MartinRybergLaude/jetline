@@ -1,4 +1,5 @@
 import Foundation
+import CJetlineSys
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -247,8 +248,8 @@ public enum JetlineDaemon {
         #if canImport(Darwin)
         posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
         #else
-        posix_spawn_file_actions_addclosefrom_np(&actions, 3)
-        posix_spawnattr_setflags(&attributes, Int16(0x80 | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
+        jl_spawn_addclosefrom(&actions, 3)
+        posix_spawnattr_setflags(&attributes, Int16(jl_spawn_setsid_flag()) | Int16(POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
         #endif
         var noSignals = sigset_t()
         sigemptyset(&noSignals)
@@ -362,9 +363,24 @@ public enum JetlineDaemon {
             exit(0)
         }
         let deadline = Date().addingTimeInterval(10)
-        while kill(pid, 0) == 0, Date() < deadline { usleep(100_000) }
-        print(kill(pid, 0) == 0 ? "still stopping (pid \(pid))" : "stopped")
+        while isAlive(pid), Date() < deadline { usleep(100_000) }
+        print(isAlive(pid) ? "still stopping (pid \(pid))" : "stopped")
         exit(0)
+    }
+
+    /// Running, as opposed to gone or exited-but-unreaped: in a container
+    /// whose PID 1 doesn't reap orphans, the stopped daemon lingers as a
+    /// zombie that still answers `kill(pid, 0)`.
+    private static func isAlive(_ pid: pid_t) -> Bool {
+        guard kill(pid, 0) == 0 else { return false }
+        #if os(Linux)
+        if let stat = try? String(contentsOfFile: "/proc/\(pid)/stat", encoding: .utf8),
+           let close = stat.lastIndex(of: ")") {
+            let state = stat[stat.index(after: close)...].split(separator: " ").first
+            if state == "Z" || state == "X" { return false }
+        }
+        #endif
+        return true
     }
 }
 
