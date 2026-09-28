@@ -115,6 +115,8 @@ enum API {
         static let method = "workspace.create"
         var repoId: String
         var name: String
+        /// Stack the new workspace on this one instead of the default branch.
+        var baseWorkspaceId: String?
         /// Force-remove a worktree already holding the branch.
         var overrideExisting: Bool = false
     }

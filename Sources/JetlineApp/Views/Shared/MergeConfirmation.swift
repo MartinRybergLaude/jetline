@@ -31,7 +31,7 @@ struct MergeConfirmation: ViewModifier {
                 methodButtons
             }
         } message: {
-            Text("Merges PR for `\(workspace.branchName)` into `\(workspace.baseBranch)` immediately and pushes the result to the remote.")
+            Text(message)
         }
     }
 
@@ -50,11 +50,23 @@ struct MergeConfirmation: ViewModifier {
         Button("Cancel", role: .cancel) {}
     }
 
-    private var title: String {
-        if case let .loaded(pr, _) = state.workspaceState(for: workspace.id).pr {
-            return "Merge PR #\(pr.number)?"
+    private var pr: PullRequest? {
+        if case let .loaded(pr, _) = state.workspaceState(for: workspace.id).pr { return pr }
+        return nil
+    }
+
+    private var message: String {
+        if let pr, let stack = pr.stack, pr.mergedTogether.count > 1 {
+            let numbers = pr.mergedTogether.map { "#\($0)" }.joined(separator: ", ")
+            return "Merges the stack up to this layer (\(numbers)) into `\(stack.baseRefName)` immediately. GitHub rebases the layers above onto it."
         }
-        return "Merge pull request?"
+        return "Merges PR for `\(workspace.branchName)` into `\(workspace.baseBranch)` immediately and pushes the result to the remote."
+    }
+
+    private var title: String {
+        guard let pr else { return "Merge pull request?" }
+        let count = pr.mergedTogether.count
+        return count > 1 ? "Merge \(count) stacked PRs?" : "Merge PR #\(pr.number)?"
     }
 }
 

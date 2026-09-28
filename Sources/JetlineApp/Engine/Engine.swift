@@ -261,7 +261,19 @@ final class Engine {
         )
     }
 
-    func createWorkspace(in repo: Repository, name: String, overrideExisting: Bool) async throws -> API.CreateWorkspaceResult {
+    /// `baseWorkspaceId` stacks the new workspace on that one: its branch
+    /// starts from, and diffs and PRs against, the other workspace's branch.
+    func createWorkspace(
+        in repo: Repository,
+        name: String,
+        baseWorkspaceId: String?,
+        overrideExisting: Bool
+    ) async throws -> API.CreateWorkspaceResult {
+        let parent = baseWorkspaceId.flatMap(workspaceById).flatMap { $0.repositoryId == repo.id ? $0 : nil }
+        if baseWorkspaceId != nil, parent == nil {
+            throw WireError("The workspace to stack on no longer exists.")
+        }
+        let baseBranch = parent?.branchName ?? repo.defaultBranch
         let id = UUID().uuidString
         let (worktreePath, shortName) = allocateWorktreePath(for: repo)
         let slug = WorktreeOps.slug(name)
@@ -278,7 +290,7 @@ final class Engine {
                     repoPath: repo.path,
                     worktreePath: worktreePath,
                     branchName: branch,
-                    baseBranch: repo.defaultBranch
+                    baseBranch: baseBranch
                 )
             }
         ) {
@@ -290,7 +302,7 @@ final class Engine {
             repositoryId: repo.id,
             name: name,
             branchName: branch,
-            baseBranch: repo.defaultBranch,
+            baseBranch: baseBranch,
             worktreePath: worktreePath,
             agent: agent,
             createdAt: now,
@@ -302,7 +314,8 @@ final class Engine {
         // `.absent` keeps the row from reading "Loading PR…" until the next
         // GitHub poll lands.
         applyPR(.absent, for: ws.id)
-        activityLog.record(.lifecycle, "Created workspace \(name) (\(branch))", repoId: repo.id, workspaceId: ws.id)
+        let stackedOn = parent.map { " stacked on \($0.name)" } ?? ""
+        activityLog.record(.lifecycle, "Created workspace \(name) (\(branch))\(stackedOn)", repoId: repo.id, workspaceId: ws.id)
         prTracker.kick(repoId: repo.id)
         startSetupIfNeeded(workspace: ws, repository: repo)
         return .created(ws)
@@ -443,6 +456,12 @@ final class Engine {
         workspacesByRepo[workspace.repositoryId]?.removeAll { $0.id == workspace.id }
         let repo = repositories.first(where: { $0.id == workspace.repositoryId })
         if let repo {
+            // The branch goes with the worktree, so anything stacked on it
+            // moves down onto what it was stacked on. GitHub retargets their
+            // PRs the same way when this one merges.
+            for child in WorkspaceStacks.children(of: workspace, in: workspacesByRepo[repo.id] ?? [], repo: repo) {
+                updateWorkspaceBaseBranch(workspace.baseBranch, for: child.id)
+            }
             try? await WorktreeOps.remove(
                 repoPath: repo.path,
                 worktreePath: workspace.worktreePath,
@@ -732,7 +751,7 @@ final class Engine {
             pr = nil
             checks = []
         }
-        let prompt = GitActionPrompts.render(template, workspace: workspace, pr: pr, checks: checks)
+        let prompt = GitActionPrompts.render(template, workspace: workspace, baseRef: baseRef(for: workspace), pr: pr, checks: checks)
         if settings.opensChat(for: agent), let provider = AgentProviderKind(agent: agent) {
             return .chat(startNewChat(for: workspace, provider: provider, prompt: prompt).summary)
         }
@@ -757,7 +776,7 @@ final class Engine {
         defer { ws.runningGitAction = nil }
         activityLog.record(.gitAction, "Merging PR #\(pr.number) (\(method.rawValue))", repoId: workspace.repositoryId, workspaceId: workspace.id)
         do {
-            try await GitHubRunner.mergePR(pr.number, method: method, cwd: workspace.worktreePath)
+            try await GitHubRunner.merge(pr, method: method, repo: repoMetadataByRepo[workspace.repositoryId], cwd: workspace.worktreePath)
         } catch {
             activityLog.record(.error, "Merge failed for PR #\(pr.number): \(error.localizedDescription)", repoId: workspace.repositoryId, workspaceId: workspace.id)
             throw WireError(error.localizedDescription)
@@ -822,7 +841,7 @@ final class Engine {
         activityLog.record(.gitAction, "Rebasing on \(workspace.baseBranch)", repoId: repo.id, workspaceId: workspace.id)
 
         let cwd = workspace.worktreePath
-        let baseRef = "\(repo.remoteOrigin)/\(repo.localName(forRemoteRef: workspace.baseBranch))"
+        let onto = baseRef(for: workspace)
         let hasRemote = ws.branchPosition.remoteTrackingExists
 
         WorktreeOps.beginIndexWrite(worktreePath: cwd)
@@ -831,7 +850,7 @@ final class Engine {
         let fellBack: Bool
         do {
             await BranchPositionOps.fetch(repoPath: cwd, remote: repo.remoteOrigin)
-            let rebase = try await GitRunner.run(["rebase", "--autostash", baseRef], cwd: cwd)
+            let rebase = try await GitRunner.run(["rebase", "--autostash", onto], cwd: cwd)
             if !rebase.success {
                 fellBack = true
             } else if hasRemote {
@@ -1031,6 +1050,39 @@ final class Engine {
             }
         }
         return workspace
+    }
+
+    /// Move a workspace onto another base (restacking, or following a PR
+    /// GitHub retargeted). The diff is against the base, so it's redone.
+    func updateWorkspaceBaseBranch(_ baseBranch: String, for workspaceId: String) {
+        guard var workspace = workspaceById(workspaceId), !isRepositoryBaseWorkspace(workspace),
+              workspace.baseBranch != baseBranch else { return }
+        let previous = workspace.baseBranch
+        workspace.baseBranch = baseBranch
+        replaceWorkspace(workspace)
+        activityLog.record(.lifecycle, "Base of \(workspace.name) moved \(previous) → \(baseBranch)", repoId: workspace.repositoryId, workspaceId: workspace.id)
+        Task.detached(priority: .utility) {
+            try? Workspaces.updateBaseBranch(id: workspaceId, baseBranch: baseBranch)
+        }
+        if workspaceState(for: workspaceId).isOpen {
+            Task { await refreshDiff(for: workspace) }
+        }
+    }
+
+    /// Follow the base GitHub reports for an open PR. The default branch
+    /// keeps the repository's spelling of it (`main` vs `origin/main`).
+    func syncBaseBranch(withPRBase prBase: String, for workspaceId: String) {
+        guard let workspace = workspaceById(workspaceId),
+              let repo = repository(id: workspace.repositoryId),
+              repo.localName(forRemoteRef: workspace.baseBranch) != prBase else { return }
+        let base = prBase == repo.localName(forRemoteRef: repo.defaultBranch) ? repo.defaultBranch : prBase
+        updateWorkspaceBaseBranch(base, for: workspaceId)
+    }
+
+    /// See `WorkspaceStacks.baseRef`.
+    func baseRef(for workspace: Workspace) -> String {
+        guard let repo = repository(id: workspace.repositoryId) else { return workspace.baseBranch }
+        return WorkspaceStacks.baseRef(for: workspace, in: workspacesByRepo[repo.id] ?? [], repo: repo)
     }
 
     /// Persist a durable PR identity once a poll or import has found it.

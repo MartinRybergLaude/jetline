@@ -8,6 +8,8 @@ import SwiftUI
 struct WorkspaceCreationSheet: View {
     @EnvironmentObject private var state: AppState
     let repository: Repository
+    /// Preselects stacking the new workspace on this one.
+    var baseWorkspaceId: String?
 
     @State private var tab: Tab = .new
 
@@ -49,7 +51,7 @@ struct WorkspaceCreationSheet: View {
     @ViewBuilder
     private var pane: some View {
         switch tab {
-        case .new:           NewWorkspacePane(repository: repository)
+        case .new:           NewWorkspacePane(repository: repository, initialBaseWorkspaceId: baseWorkspaceId)
         case .importBranch:  ImportBranchPane(repository: repository)
         case .importPR:      ImportPRPane(repository: repository)
         }
@@ -70,7 +72,7 @@ struct WorkspaceCreationSheet: View {
 
     private static func help(for tab: Tab) -> String? {
         switch tab {
-        case .new:          return "Create a new branch off the default branch"
+        case .new:          return "Create a new branch off the default branch, or stacked on another workspace"
         case .importBranch: return "Open an existing remote branch as a workspace"
         case .importPR:     return "Open a pull request as a workspace"
         }

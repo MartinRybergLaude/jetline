@@ -128,6 +128,14 @@ enum Workspaces {
         }
     }
 
+    static func updateBaseBranch(id: String, baseBranch: String) throws {
+        _ = try Database.shared.writer.write { db in
+            try Workspace
+                .filter(key: id)
+                .updateAll(db, Workspace.Columns.baseBranch.set(to: baseBranch))
+        }
+    }
+
     static func updatePRIdentity(id: String, number: Int?, url: String?) throws {
         try Database.shared.writer.write { db in
             try db.execute(

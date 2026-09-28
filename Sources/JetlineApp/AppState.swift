@@ -588,16 +588,18 @@ final class AppState: ObservableObject {
         perform(API.ReorderRepositories(orderedIds: host.repositories.map(\.id)), on: host.connection)
     }
 
-    /// Same convention, scoped to one repo's workspace rows.
-    func moveWorkspaces(in repoId: String, from offsets: IndexSet, to destination: Int) {
+    /// Move a stack (a workspace and everything stacked on it) into `gap`
+    /// of the sidebar's stack-grouped order.
+    func moveWorkspaceStack(in repoId: String, moving workspaceId: String, toGap gap: Int) {
         guard let host = host(forRepo: repoId),
-              var list = host.workspacesByRepo[repoId],
-              offsets.allSatisfy({ list.indices.contains($0) }),
-              (0...list.count).contains(destination) else { return }
-        list.move(fromOffsets: offsets, toOffset: destination)
-        host.workspacesByRepo[repoId] = list
+              let repo = host.repositories.first(where: { $0.id == repoId }),
+              let list = host.workspacesByRepo[repoId] else { return }
+        let orderedIds = WorkspaceStacks.reorder(list, moving: workspaceId, toGap: gap, repo: repo)
+        guard orderedIds != list.map(\.id) else { return }
+        let byId = Dictionary(uniqueKeysWithValues: list.map { ($0.id, $0) })
+        host.workspacesByRepo[repoId] = orderedIds.compactMap { byId[$0] }
         rebuildAggregates()
-        perform(API.ReorderWorkspaces(repoId: repoId, orderedIds: list.map(\.id)), on: host.connection)
+        perform(API.ReorderWorkspaces(repoId: repoId, orderedIds: orderedIds), on: host.connection)
     }
 
     /// Git refs for the repo settings sheet.
@@ -653,10 +655,29 @@ final class AppState: ObservableObject {
         )
     }
 
-    func createWorkspace(in repo: Repository, name: String) async {
+    /// `baseWorkspaceId` stacks the new workspace on that one.
+    func createWorkspace(in repo: Repository, name: String, baseWorkspaceId: String? = nil) async {
         let connection = self.connection(forRepo: repo.id)
         await create(in: repo) { override in
-            try await connection.call(API.CreateWorkspace(repoId: repo.id, name: name, overrideExisting: override))
+            try await connection.call(API.CreateWorkspace(
+                repoId: repo.id,
+                name: name,
+                baseWorkspaceId: baseWorkspaceId,
+                overrideExisting: override
+            ))
+        }
+    }
+
+    /// The stack `workspace` is a layer of, for the PR panel.
+    func stackSummary(for workspace: Workspace) -> StackSummary? {
+        guard let repo = repositories.first(where: { $0.id == workspace.repositoryId }) else { return nil }
+        return StackSummary.build(
+            for: workspace,
+            in: workspacesByRepo[repo.id] ?? [],
+            repo: repo
+        ) { ws in
+            if case let .loaded(pr, _) = self.workspaceState(for: ws.id).pr { return pr }
+            return nil
         }
     }
 

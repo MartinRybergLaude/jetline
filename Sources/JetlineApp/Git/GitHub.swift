@@ -39,6 +39,9 @@ struct PullRequest: Codable, Sendable, Hashable {
     /// Strategy the queued auto-merge will use. `nil` when auto-merge is
     /// off, or when GitHub reports a method we don't model.
     var autoMergeMethod: MergeMethod?
+    /// The GitHub stack this PR is a layer of. `nil` for a PR in no stack,
+    /// and on hosts whose API has no stacks.
+    var stack: PRStack?
 
     /// Normalized `reviewDecision`. `.unreviewed` covers the `nil` case —
     /// no branch protection and nobody has signed off yet.
@@ -64,6 +67,12 @@ struct PullRequest: Codable, Sendable, Hashable {
 
     var isOpen: Bool { state.uppercased() == "OPEN" }
 
+    /// What merging this PR lands, bottom first: the open stack layers
+    /// below it, then itself.
+    var mergedTogether: [Int] {
+        (stack?.openEntriesBelow.map(\.number) ?? []) + [number]
+    }
+
     var hasOpenComments: Bool {
         unresolvedThreadCount > 0 || issueCommentCount > 0
     }
@@ -85,7 +94,8 @@ struct PullRequest: Codable, Sendable, Hashable {
         issueCommentCount: Int = 0,
         reviewDecision: String? = nil,
         autoMergeEnabled: Bool = false,
-        autoMergeMethod: MergeMethod? = nil
+        autoMergeMethod: MergeMethod? = nil,
+        stack: PRStack? = nil
     ) {
         self.number = number
         self.title = title
@@ -104,13 +114,14 @@ struct PullRequest: Codable, Sendable, Hashable {
         self.reviewDecision = reviewDecision
         self.autoMergeEnabled = autoMergeEnabled
         self.autoMergeMethod = autoMergeMethod
+        self.stack = stack
     }
 
     enum CodingKeys: String, CodingKey {
         case number, title, url, state, isDraft, headRefName, baseRefName, author
         case createdAt, mergedAt
         case mergeable, mergeStateStatus, unresolvedThreadCount, issueCommentCount
-        case reviewDecision, autoMergeEnabled, autoMergeMethod
+        case reviewDecision, autoMergeEnabled, autoMergeMethod, stack
     }
 
     /// Custom decode so PR snapshots persisted before the comment-tracking
@@ -137,7 +148,41 @@ struct PullRequest: Codable, Sendable, Hashable {
         reviewDecision = try c.decodeIfPresent(String.self, forKey: .reviewDecision)
         autoMergeEnabled = try c.decodeIfPresent(Bool.self, forKey: .autoMergeEnabled) ?? false
         autoMergeMethod = try c.decodeIfPresent(MergeMethod.self, forKey: .autoMergeMethod)
+        stack = try c.decodeIfPresent(PRStack.self, forKey: .stack)
     }
+}
+
+/// A GitHub stacked-PR chain: each layer's PR targets the branch of the one
+/// below it, the bottom one targets `baseRefName`. GitHub merges a layer
+/// together with every open layer below it.
+struct PRStack: Codable, Sendable, Hashable {
+    struct Entry: Codable, Sendable, Hashable {
+        /// 1 is the layer next to the trunk.
+        var position: Int
+        var number: Int
+        var title: String
+        var url: String
+        var state: String
+        var isDraft: Bool
+        var headRefName: String
+
+        var isOpen: Bool { state.uppercased() == "OPEN" }
+    }
+
+    var number: Int
+    /// The trunk the bottom layer targets.
+    var baseRefName: String
+    /// The PR this was read from, 1-based from the trunk.
+    var position: Int
+    /// Bottom first.
+    var entries: [Entry]
+
+    /// Open layers under `position`, which merging it lands too. Bottom first.
+    var openEntriesBelow: [Entry] {
+        entries.filter { $0.position < position && $0.isOpen }
+    }
+
+    var isTop: Bool { entries.last?.position == position }
 }
 
 /// Discriminated string enums whose serialized form matches the GitHub API's
@@ -348,40 +393,86 @@ enum MergeMethod: String, CaseIterable, Hashable, Sendable, Codable {
 }
 
 enum GitHubRunner {
-    private static let pullRequestFragment = """
-    fragment PR on PullRequest {
-      number title url state isDraft headRefName baseRefName createdAt mergedAt
-      mergeable mergeStateStatus reviewDecision
-      autoMergeRequest { mergeMethod }
-      reviewThreads(first: 50) {
-        nodes { isResolved }
-        pageInfo { hasNextPage }
+    /// `stackEntry` exists only where GitHub has shipped stacked PRs; a host
+    /// without it (older GHES) rejects the whole query, so the first such
+    /// rejection drops the field for the rest of the process.
+    private static let stackFields = """
+      stackEntry {
+        position
+        stack {
+          number baseRefName
+          entries(first: 50) {
+            nodes { position pullRequest { number title url state isDraft headRefName } }
+          }
+        }
       }
-      comments { totalCount }
-      author { login }
-      commits(last: 1) {
-        nodes {
-          commit {
-            statusCheckRollup {
-              contexts(first: 100) {
-                nodes {
-                  __typename
-                  ... on CheckRun {
-                    name status conclusion detailsUrl startedAt completedAt
-                    checkSuite { workflowRun { workflow { name } } }
-                  }
-                  ... on StatusContext {
-                    context state targetUrl createdAt
+    """
+
+    private final class StackSupport: @unchecked Sendable {
+        let lock = NSLock()
+        var available = true
+    }
+
+    private static let stackSupport = StackSupport()
+
+    /// Runs a PR query built around `pullRequestFragment`, retrying once
+    /// without the stack fields when the host doesn't know them.
+    private static func runPRQuery<T: Decodable>(
+        _ type: T.Type,
+        cwd: String,
+        args: (_ fragment: String) -> [String]
+    ) async throws -> GraphQLResponse<T> {
+        let includeStack = stackSupport.lock.withLock { stackSupport.available }
+        do {
+            let stdout = try await runGH(args(pullRequestFragment(includeStack: includeStack)), cwd: cwd)
+            let response = try JSONDecoder().decode(GraphQLResponse<T>.self, from: Data(stdout.utf8))
+            guard includeStack, response.errors?.contains(where: { $0.message.contains("stackEntry") }) == true else {
+                return response
+            }
+        } catch Error.other(let message) where includeStack && message.contains("stackEntry") {
+            // Falls through to the retry.
+        }
+        stackSupport.lock.withLock { stackSupport.available = false }
+        return try await runPRQuery(type, cwd: cwd, args: args)
+    }
+
+    private static func pullRequestFragment(includeStack: Bool) -> String {
+        """
+        fragment PR on PullRequest {
+          number title url state isDraft headRefName baseRefName createdAt mergedAt
+        \(includeStack ? stackFields : "")
+          mergeable mergeStateStatus reviewDecision
+          autoMergeRequest { mergeMethod }
+          reviewThreads(first: 50) {
+            nodes { isResolved }
+            pageInfo { hasNextPage }
+          }
+          comments { totalCount }
+          author { login }
+          commits(last: 1) {
+            nodes {
+              commit {
+                statusCheckRollup {
+                  contexts(first: 100) {
+                    nodes {
+                      __typename
+                      ... on CheckRun {
+                        name status conclusion detailsUrl startedAt completedAt
+                        checkSuite { workflowRun { workflow { name } } }
+                      }
+                      ... on StatusContext {
+                        context state targetUrl createdAt
+                      }
+                    }
+                    pageInfo { hasNextPage }
                   }
                 }
-                pageInfo { hasNextPage }
               }
             }
           }
         }
-      }
+        """
     }
-    """
 
     enum Error: LocalizedError {
         case ghMissing
@@ -490,26 +581,24 @@ enum GitHubRunner {
               }
             """
         }.joined(separator: "\n")
-        let query = """
-        query(\(varDecls)) {
-          repository(owner: $owner, name: $name) {
-        \(aliasFields)
-          }
+        let response = try await runPRQuery(RepoBatch.self, cwd: cwd) { fragment in
+            let query = """
+            query(\(varDecls)) {
+              repository(owner: $owner, name: $name) {
+            \(aliasFields)
+              }
+            }
+            \(fragment)
+            """
+            var args: [String] = [
+                "api", "graphql",
+                "-F", "owner=\(repo.owner)",
+                "-F", "name=\(repo.name)"
+            ]
+            for a in aliases { args.append(contentsOf: ["-F", "\(a.alias)=\(a.branch)"]) }
+            args.append(contentsOf: ["-f", "query=\(query)"])
+            return args
         }
-        \(pullRequestFragment)
-        """
-
-        var args: [String] = [
-            "api", "graphql",
-            "-F", "owner=\(repo.owner)",
-            "-F", "name=\(repo.name)"
-        ]
-        for a in aliases { args.append(contentsOf: ["-F", "\(a.alias)=\(a.branch)"]) }
-        args.append(contentsOf: ["-f", "query=\(query)"])
-
-        let stdout = try await runGH(args, cwd: cwd)
-
-        let response = try JSONDecoder().decode(GraphQLResponse<RepoBatch>.self, from: Data(stdout.utf8))
         if let errors = response.errors, !errors.isEmpty {
             throw Error.other(errors.map(\.message).joined(separator: "; "))
         }
@@ -551,25 +640,24 @@ enum GitHubRunner {
               \(a.alias): pullRequest(number: $\(a.alias)) { ...PR }
             """
         }.joined(separator: "\n")
-        let query = """
-        query(\(varDecls)) {
-          repository(owner: $owner, name: $name) {
-        \(aliasFields)
-          }
+        let response = try await runPRQuery(RepoNumberBatch.self, cwd: cwd) { fragment in
+            let query = """
+            query(\(varDecls)) {
+              repository(owner: $owner, name: $name) {
+            \(aliasFields)
+              }
+            }
+            \(fragment)
+            """
+            var args: [String] = [
+                "api", "graphql",
+                "-F", "owner=\(repo.owner)",
+                "-F", "name=\(repo.name)"
+            ]
+            for a in aliases { args.append(contentsOf: ["-F", "\(a.alias)=\(a.number)"]) }
+            args.append(contentsOf: ["-f", "query=\(query)"])
+            return args
         }
-        \(pullRequestFragment)
-        """
-
-        var args: [String] = [
-            "api", "graphql",
-            "-F", "owner=\(repo.owner)",
-            "-F", "name=\(repo.name)"
-        ]
-        for a in aliases { args.append(contentsOf: ["-F", "\(a.alias)=\(a.number)"]) }
-        args.append(contentsOf: ["-f", "query=\(query)"])
-
-        let stdout = try await runGH(args, cwd: cwd)
-        let response = try JSONDecoder().decode(GraphQLResponse<RepoNumberBatch>.self, from: Data(stdout.utf8))
         if let errors = response.errors, !errors.isEmpty {
             throw Error.other(errors.map(\.message).joined(separator: "; "))
         }
@@ -606,6 +694,76 @@ enum GitHubRunner {
     /// Cancel a queued auto-merge. The PR itself is untouched.
     static func disableAutoMerge(_ number: Int, cwd: String) async throws {
         _ = try await runGH(["pr", "merge", String(number), "--disable-auto"], cwd: cwd)
+    }
+
+    /// REST version that carries the stacks and async-merge endpoints.
+    private static let stacksAPIVersion = "X-GitHub-Api-Version: 2026-03-10"
+
+    /// Stack `numbers` (bottom first) on top of stack `onto`, or start a new
+    /// stack from them. Each PR's base must be the head of the one before.
+    static func stackPRs(_ numbers: [Int], onto stack: Int?, repo: RepoIdentifier, cwd: String) async throws {
+        let path = stack.map { "stacks/\($0)/add" } ?? "stacks"
+        var args = ["api", "-X", "POST", "-H", stacksAPIVersion, "repos/\(repo.owner)/\(repo.name)/\(path)"]
+        for n in numbers { args += ["-F", "pull_requests[]=\(n)"] }
+        _ = try await runGH(args, cwd: cwd)
+    }
+
+    /// Merge `pr` with `method`. A stacked PR goes through the async
+    /// endpoint, the only one that merges stacks, and lands every open
+    /// layer below it too.
+    static func merge(_ pr: PullRequest, method: MergeMethod, repo: RepoIdentifier?, cwd: String) async throws {
+        if pr.stack != nil, let repo {
+            try await mergeStacked(pr.number, method: method, repo: repo, cwd: cwd)
+        } else {
+            try await mergePR(pr.number, method: method, cwd: cwd)
+        }
+    }
+
+    /// Merge a stacked PR, and with it every open layer below it. Stacks
+    /// only merge through the async endpoint: this submits, then polls
+    /// until GitHub reports the group merged or queued, or gives up.
+    private static func mergeStacked(
+        _ number: Int,
+        method: MergeMethod,
+        repo: RepoIdentifier,
+        cwd: String
+    ) async throws {
+        let path = "repos/\(repo.owner)/\(repo.name)/pulls/\(number)/merge-async"
+        var result = try await asyncMergeResult(
+            runGH(["api", "-X", "PUT", "-H", stacksAPIVersion, path, "-f", "merge_method=\(method.rawValue)"], cwd: cwd)
+        )
+        let deadline = Date().addingTimeInterval(120)
+        while result.status == "pending", let id = result.id, Date() < deadline {
+            try await Task.sleep(for: .seconds(2))
+            result = try await asyncMergeResult(runGH(["api", "-H", stacksAPIVersion, "\(path)/\(id)"], cwd: cwd))
+        }
+        switch result.status {
+        // Still pending means GitHub accepted it and is working through the
+        // layers; the tracker's next polls show them land.
+        case "merged", "enqueued", "pending":
+            return
+        default:
+            throw Error.other(result.message ?? "GitHub couldn't merge the stack.")
+        }
+    }
+
+    private struct AsyncMergeResult {
+        var status: String
+        var id: String?
+        var message: String?
+    }
+
+    /// `{"status": …, "details": {…}}`. Where the id to poll sits isn't
+    /// documented yet, so this reads the likely spellings at both levels.
+    private static func asyncMergeResult(_ stdout: String) throws -> AsyncMergeResult {
+        guard let object = try JSONSerialization.jsonObject(with: Data(stdout.utf8)) as? [String: Any],
+              let status = object["status"] as? String else {
+            throw Error.other("Unexpected response from GitHub's merge API.")
+        }
+        let levels = [object, object["details"] as? [String: Any] ?? [:]]
+        let id = levels.lazy.flatMap { level in ["uuid", "id"].compactMap { level[$0].map { "\($0)" } } }.first
+        let message = levels.lazy.compactMap { $0["message"] as? String }.first
+        return AsyncMergeResult(status: status.lowercased(), id: id, message: message)
     }
 
     /// Ask `gh` which PR is associated with the checkout's current branch.
@@ -795,8 +953,31 @@ private struct PRNode: Decodable {
     let comments: CommentsConnection?
     let author: AuthorNode?
     let commits: CommitsConnection?
+    let stackEntry: StackEntryNode?
 
     struct AuthorNode: Decodable { let login: String }
+    struct StackEntryNode: Decodable {
+        let position: Int
+        let stack: StackNode?
+    }
+    struct StackNode: Decodable {
+        let number: Int
+        let baseRefName: String
+        let entries: Entries
+        struct Entries: Decodable { let nodes: [EntryNode] }
+        struct EntryNode: Decodable {
+            let position: Int
+            let pullRequest: EntryPR?
+        }
+        struct EntryPR: Decodable {
+            let number: Int
+            let title: String
+            let url: String
+            let state: String
+            let isDraft: Bool
+            let headRefName: String
+        }
+    }
     /// Present exactly when auto-merge is queued; `mergeMethod` is GitHub's
     /// SCREAMING_SNAKE enum, which our lowercase raw values don't match.
     struct AutoMergeRequest: Decodable { let mergeMethod: String? }
@@ -858,7 +1039,30 @@ private struct PRNode: Decodable {
             reviewDecision: reviewDecision,
             autoMergeEnabled: autoMergeRequest != nil,
             autoMergeMethod: autoMergeRequest?.mergeMethod
-                .flatMap { MergeMethod(rawValue: $0.lowercased()) }
+                .flatMap { MergeMethod(rawValue: $0.lowercased()) },
+            stack: prStack
+        )
+    }
+
+    private var prStack: PRStack? {
+        guard let stackEntry, let stack = stackEntry.stack else { return nil }
+        let entries = stack.entries.nodes.compactMap { node -> PRStack.Entry? in
+            guard let pr = node.pullRequest else { return nil }
+            return PRStack.Entry(
+                position: node.position,
+                number: pr.number,
+                title: pr.title,
+                url: pr.url,
+                state: pr.state,
+                isDraft: pr.isDraft,
+                headRefName: pr.headRefName
+            )
+        }
+        return PRStack(
+            number: stack.number,
+            baseRefName: stack.baseRefName,
+            position: stackEntry.position,
+            entries: entries.sorted { $0.position < $1.position }
         )
     }
 

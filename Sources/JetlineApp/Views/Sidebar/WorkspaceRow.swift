@@ -5,6 +5,9 @@ import AppKit
 struct WorkspaceRow: View {
     @EnvironmentObject private var state: AppState
     let workspace: Workspace
+    /// Levels deep in a stack; 0 for a workspace on the default branch.
+    var depth: Int = 0
+    let onStackNew: () -> Void
 
     var body: some View {
         // Inner view observes the per-workspace state directly so a poll
@@ -13,6 +16,8 @@ struct WorkspaceRow: View {
             workspace: workspace,
             workspaceState: state.workspaceState(for: workspace.id),
             isSelected: state.selectedWorkspaceId == workspace.id,
+            depth: depth,
+            onStackNew: onStackNew,
             onDelete: { Task { await state.deleteWorkspace(workspace) } },
             onClose: { state.closeWorkspace(workspace.id) }
         )
@@ -23,12 +28,20 @@ private struct WorkspaceRowContent: View {
     let workspace: Workspace
     let workspaceState: WorkspaceState
     let isSelected: Bool
+    let depth: Int
+    let onStackNew: () -> Void
     let onDelete: () -> Void
     let onClose: () -> Void
 
     var body: some View {
         let isOpen = workspaceState.hasAgentTabs
         HStack(spacing: 0) {
+            if depth > 0 {
+                // Capped so a tall stack doesn't walk the name off the row.
+                Spacer().frame(width: CGFloat(min(depth, 3) - 1) * Self.indent)
+                StackElbow()
+                    .frame(width: Self.indent, height: 13)
+            }
             PRStatusIcon(snapshot: workspaceState.pr, size: 13)
             Spacer().frame(width: 10)
             Text(workspace.name)
@@ -56,6 +69,8 @@ private struct WorkspaceRowContent: View {
         .accessibilityValue(isOpen ? "Open" : "")
         .contentShape(Rectangle())
         .contextMenu {
+            Button("New workspace stacked on this…") { onStackNew() }
+            Divider()
             Button("Reveal worktree in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: workspace.worktreePath)])
             }
@@ -67,9 +82,26 @@ private struct WorkspaceRowContent: View {
         }
     }
 
+    private static let indent: CGFloat = 14
+
     private func nameColor(isOpen: Bool) -> Color {
         if isSelected { return Color.accentColor.opacity(0.9) }
         return isOpen ? Color.primary : Color.secondary
+    }
+}
+
+/// The └ that ties a stacked row to the row it sits on.
+private struct StackElbow: View {
+    var body: some View {
+        Canvas { context, size in
+            var path = Path()
+            let x = size.width * 0.35
+            path.move(to: CGPoint(x: x, y: -3))
+            path.addLine(to: CGPoint(x: x, y: size.height / 2))
+            path.addLine(to: CGPoint(x: size.width - 2, y: size.height / 2))
+            context.stroke(path, with: .color(.secondary.opacity(0.5)), lineWidth: 1)
+        }
+        .accessibilityHidden(true)
     }
 }
 

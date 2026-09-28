@@ -486,7 +486,12 @@ final class EngineServer {
 
         // Workspaces
         on(API.CreateWorkspace.self) { [unowned self] req, _ in
-            try await engine.createWorkspace(in: try self.repository(req.repoId), name: req.name, overrideExisting: req.overrideExisting)
+            try await engine.createWorkspace(
+                in: try self.repository(req.repoId),
+                name: req.name,
+                baseWorkspaceId: req.baseWorkspaceId,
+                overrideExisting: req.overrideExisting
+            )
         }
         on(API.ImportBranch.self) { [unowned self] req, _ in
             try await engine.importBranch(

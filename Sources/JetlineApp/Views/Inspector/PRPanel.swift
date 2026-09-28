@@ -86,10 +86,16 @@ private struct PRPanelContent: View {
             .id(workspace.id)
         } else {
             ScrollView {
-                PRSnapshotPlaceholder(
-                    snapshot: workspaceState.pr,
-                    branchName: workspace.branchName
-                )
+                VStack(spacing: 12) {
+                    PRSnapshotPlaceholder(
+                        snapshot: workspaceState.pr,
+                        branchName: workspace.branchName
+                    )
+                    // A layer with no PR yet still shows where it sits.
+                    if let stack = state.stackSummary(for: workspace) {
+                        StackCard(stack: stack).padding(.horizontal, 12)
+                    }
+                }
                 .padding(.vertical, 8)
             }
             .scrollIndicators(.visible)
@@ -102,7 +108,7 @@ private struct PRPanelContent: View {
         let view: AnyView
         switch kind {
         case .header:
-            view = AnyView(PRHeaderRow(workspaceState: workspaceState))
+            view = AnyView(PRHeaderRow(workspace: workspace, workspaceState: workspaceState))
         case .gates:
             view = AnyView(PRGatesRow(workspaceState: workspaceState))
         case .conversation:
@@ -133,10 +139,21 @@ private struct PRPanelContent: View {
 
 private struct PRHeaderRow: View {
     @EnvironmentObject private var state: AppState
+    let workspace: Workspace
     let workspaceState: WorkspaceState
 
     var body: some View {
         if case let .loaded(pr, _) = workspaceState.pr {
+            VStack(spacing: 12) {
+                header(pr)
+                if let stack = state.stackSummary(for: workspace) {
+                    StackCard(stack: stack)
+                }
+            }
+        }
+    }
+
+    private func header(_ pr: PullRequest) -> some View {
             PRHeaderCard(
                 pr: pr,
                 isRefreshing: workspaceState.isRefreshingPR,
@@ -147,7 +164,110 @@ private struct PRHeaderRow: View {
                     }
                 }
             )
+    }
+}
+
+/// Where this PR sits in its stack: every layer from the top down to the
+/// trunk, this one highlighted. A layer with a workspace selects it; any
+/// other opens on GitHub.
+private struct StackCard: View {
+    @EnvironmentObject private var state: AppState
+    let stack: StackSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 5) {
+                Image(systemName: "square.stack.3d.up")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("Stack")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer(minLength: 0)
+                Text(stack.isOnGitHub ? "\(stack.layers.count) layers" : "\(stack.layers.count) layers · local")
+                    .font(.caption)
+                    .help(stack.isOnGitHub
+                          ? "GitHub merges and rebases these pull requests as one stack"
+                          : "Stacked in Jetline. Becomes a stack on GitHub once each layer has a pull request")
+            }
+            .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(stack.layers) { layer in
+                    StackLayerRow(layer: layer) { open(layer) }
+                }
+                HStack(spacing: 7) {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 10.5))
+                        .frame(width: 14)
+                    Text(stack.trunk).monoFont(size: 11.5)
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+            }
         }
+        .padding(12)
+        .cardSurface()
+    }
+
+    private func open(_ layer: StackSummary.Layer) {
+        if let id = layer.workspaceId {
+            if !layer.isCurrent { state.selectWorkspace(id) }
+        } else if let url = layer.url.flatMap(URL.init(string:)) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+}
+
+private struct StackLayerRow: View {
+    let layer: StackSummary.Layer
+    let action: () -> Void
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 7) {
+                Image(systemName: style?.symbol ?? "circle.dashed")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(style?.color ?? .secondary)
+                    .frame(width: 14)
+                if let number = layer.number {
+                    Text("#\(number)")
+                        .monoFont(size: 11.5)
+                        .foregroundStyle(.secondary)
+                }
+                Text(layer.title)
+                    .font(.callout.weight(layer.isCurrent ? .semibold : .regular))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .foregroundStyle(layer.state == "MERGED" || layer.state == "CLOSED" ? .secondary : .primary)
+                Spacer(minLength: 0)
+                if layer.number == nil {
+                    Text("No PR").font(.caption).foregroundStyle(.tertiary)
+                }
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background(
+                layer.isCurrent
+                    ? Color.accentColor.opacity(0.14)
+                    : (isHovering ? Color.primary.opacity(0.06) : .clear),
+                in: RoundedRectangle(cornerRadius: 5)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+        .help(help)
+    }
+
+    /// `nil` for a layer with no PR yet.
+    private var style: PRStateStyle? {
+        layer.state.map { PRStateStyle(state: $0, isDraft: layer.isDraft) }
+    }
+
+    private var help: String {
+        if layer.isCurrent { return layer.branch }
+        return layer.workspaceId != nil ? "Show \(layer.branch)" : "Open on GitHub"
     }
 }
 
@@ -334,6 +454,15 @@ private struct MergeSection: View {
         }
         if let blocker = readiness.blocker {
             return (blocker.message, blocker.symbol)
+        }
+        let below = pr.mergedTogether.dropLast()
+        if !below.isEmpty {
+            return ("Also merges \(below.map { "#\($0)" }.joined(separator: ", ")) below it", "square.stack.3d.up")
+        }
+        if pr.stack == nil,
+           let repo = state.repositories.first(where: { $0.id == workspace.repositoryId }),
+           pr.baseRefName != repo.localName(forRemoteRef: repo.defaultBranch) {
+            return ("Merges into \(pr.baseRefName)", "arrow.triangle.branch")
         }
         return nil
     }
@@ -585,16 +714,28 @@ private struct PRHeaderCard: View {
     }
 
     private var statePill: some View {
-        let (label, symbol, color): (String, String, Color) = {
-            if pr.isDraft { return ("Draft", "arrow.triangle.pull", .gray) }
-            switch pr.state.uppercased() {
-            case "OPEN":   return ("Open", "arrow.triangle.pull", .readableGreen)
-            case "MERGED": return ("Merged", "arrow.triangle.merge", .purple)
-            case "CLOSED": return ("Closed", "xmark", .red)
-            default:       return (pr.state.capitalized, "questionmark", .secondary)
-            }
-        }()
-        return StatusChip(label: label, symbol: symbol, color: color)
+        let style = PRStateStyle(state: pr.state, isDraft: pr.isDraft)
+        return StatusChip(label: style.label, symbol: style.symbol, color: style.color)
+    }
+}
+
+/// How a PR's state reads: the header chip and the stack card's rows.
+private struct PRStateStyle {
+    let label: String
+    let symbol: String
+    let color: Color
+
+    init(state: String, isDraft: Bool) {
+        if isDraft {
+            (label, symbol, color) = ("Draft", "arrow.triangle.pull", .gray)
+            return
+        }
+        switch state.uppercased() {
+        case "OPEN":   (label, symbol, color) = ("Open", "arrow.triangle.pull", .readableGreen)
+        case "MERGED": (label, symbol, color) = ("Merged", "arrow.triangle.merge", .purple)
+        case "CLOSED": (label, symbol, color) = ("Closed", "xmark", .red)
+        default:       (label, symbol, color) = (state.capitalized, "questionmark", .secondary)
+        }
     }
 }
 

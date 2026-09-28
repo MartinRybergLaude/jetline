@@ -104,6 +104,9 @@ final class PRTracker {
     /// polls won't see it — but the delete is fire-and-forget, so this
     /// guard prevents a re-trigger before it lands.
     private var autoDeleted: Set<String> = []
+    /// `"<lower>><upper>"` PR pairs already offered to GitHub as a stack,
+    /// so a repo without stacked PRs is asked once per launch, not per poll.
+    private var stackLinkAttempts: Set<String> = []
 
     init(state: Engine) {
         self.state = state
@@ -127,6 +130,7 @@ final class PRTracker {
         for repoId in loops.keys { stop(repoId: repoId) }
         repoIdentifiers.removeAll()
         autoDeleted.removeAll()
+        stackLinkAttempts.removeAll()
     }
 
     /// Wake both loops so the next poll of each fires immediately. If a
@@ -294,11 +298,13 @@ final class PRTracker {
                 let worktreePath = ws.worktreePath
                 let branchName = ws.branchName
                 let baseBranch = ws.baseBranch
+                let baseRef = WorkspaceStacks.baseRef(for: ws, in: workspaces, repo: repo)
                 group.addTask {
                     let pos = await BranchPositionOps.compute(
                         worktreePath: worktreePath,
                         branchName: branchName,
                         baseBranch: baseBranch,
+                        baseRef: baseRef,
                         remote: remote
                     )
                     return (id, pos)
@@ -385,10 +391,14 @@ final class PRTracker {
                         _ = state.updateWorkspaceBranchName(pr.headRefName, for: ws.id)
                     }
                     state.applyPRIdentity(number: pr.number, url: pr.url, for: ws.id)
+                    // GitHub retargets a stacked PR when the layer below
+                    // merges; the workspace follows.
+                    if pr.isOpen { state.syncBaseBranch(withPRBase: pr.baseRefName, for: ws.id) }
                 }
                 state.applyPR(snap, for: ws.id)
                 autoDeleteIfMerged(workspace: state.workspaceById(ws.id) ?? ws, snapshot: snap, state: state)
             }
+            await linkStacks(in: repo, identifier: identifier, state: state)
         } catch GitHubRunner.Error.ghMissing {
             updateStatus(.ghMissing)
             loops[repoId]?.githubFailures += 1
@@ -573,6 +583,48 @@ final class PRTracker {
             return false
         })
         return anyActive ? 15 : 60
+    }
+
+    /// Workspaces stacked in Jetline become a stack on GitHub once both
+    /// layers have open PRs, so GitHub merges and rebases them as one.
+    /// Bottom-up: a layer links only once the one below it is in a stack or
+    /// targets the trunk, which a later poll gets to.
+    private func linkStacks(in repo: Repository, identifier: RepoIdentifier, state: Engine) async {
+        let workspaces = state.workspacesByRepo[repo.id] ?? []
+        let trunk = repo.localName(forRemoteRef: repo.defaultBranch)
+        func openPR(_ ws: Workspace) -> PullRequest? {
+            guard case let .loaded(pr, _) = state.workspaceState(for: ws.id).pr, pr.isOpen else { return nil }
+            return pr
+        }
+        var linkedAny = false
+        for ws in workspaces {
+            guard let pr = openPR(ws), pr.stack == nil,
+                  let parent = WorkspaceStacks.parent(of: ws, in: workspaces, repo: repo),
+                  let below = openPR(parent), below.headRefName == pr.baseRefName else { continue }
+            let key = "\(below.number)>\(pr.number)"
+            guard !stackLinkAttempts.contains(key) else { continue }
+            // Onto the stack below when this would be its top, else a new
+            // stack of the two when the one below targets the trunk.
+            let onto: Int?
+            let numbers: [Int]
+            if let stack = below.stack {
+                guard stack.isTop else { continue }
+                (onto, numbers) = (stack.number, [pr.number])
+            } else {
+                guard below.baseRefName == trunk else { continue }
+                (onto, numbers) = (nil, [below.number, pr.number])
+            }
+            stackLinkAttempts.insert(key)
+            let what = onto.map { "PR #\(pr.number) to stack #\($0)" } ?? "PR #\(pr.number) on #\(below.number)"
+            do {
+                try await GitHubRunner.stackPRs(numbers, onto: onto, repo: identifier, cwd: repo.path)
+                linkedAny = true
+                state.activityLog.record(.gitAction, "Stacked \(what)", repoId: repo.id, workspaceId: ws.id)
+            } catch {
+                state.activityLog.record(.error, "Couldn't stack \(what): \(error.localizedDescription)", repoId: repo.id, workspaceId: ws.id)
+            }
+        }
+        if linkedAny { kick(repoId: repo.id) }
     }
 
     /// Auto-cleanup is tied to the specific PR lifetime, not just the branch

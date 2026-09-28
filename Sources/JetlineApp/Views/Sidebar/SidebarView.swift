@@ -3,7 +3,7 @@ import SwiftUI
 
 struct SidebarView: View {
     @EnvironmentObject private var state: AppState
-    @State private var showingCreation: Repository?
+    @State private var showingCreation: CreationRequest?
     @State private var showingRepoSettings: Repository?
 
     var body: some View {
@@ -18,7 +18,7 @@ struct SidebarView: View {
                 ForEach(host.repositories) { repo in
                     RepositorySection(
                         repo: repo,
-                        onNewWorkspace: { showingCreation = repo },
+                        onNewWorkspace: { showingCreation = CreationRequest(repository: repo, baseWorkspaceId: $0) },
                         onOpenSettings: { showingRepoSettings = repo }
                     )
                     // A remote whose link is down stays listed, dimmed.
@@ -37,8 +37,8 @@ struct SidebarView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             sidebarFooter
         }
-        .sheet(item: $showingCreation) { repo in
-            WorkspaceCreationSheet(repository: repo)
+        .sheet(item: $showingCreation) { request in
+            WorkspaceCreationSheet(repository: request.repository, baseWorkspaceId: request.baseWorkspaceId)
         }
         .sheet(item: $showingRepoSettings) { repo in
             RepositorySettingsSheet(repository: repo)
@@ -104,6 +104,14 @@ struct SidebarView: View {
             .padding(.bottom, 12)
         }
     }
+}
+
+/// The creation sheet to show: which repo, and the workspace to stack on.
+private struct CreationRequest: Identifiable {
+    let repository: Repository
+    let baseWorkspaceId: String?
+
+    var id: String { repository.id + "|" + (baseWorkspaceId ?? "") }
 }
 
 /// The divider and title above one machine's repositories: its name, the

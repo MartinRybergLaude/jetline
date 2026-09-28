@@ -7,7 +7,8 @@ struct RepositorySection: View {
     /// Singleton: the loader's lifecycle is the app's, not this view's.
     @ObservedObject private var iconLoader = RepoIconLoader.shared
     let repo: Repository
-    let onNewWorkspace: () -> Void
+    /// Opens the creation sheet; a workspace id stacks the new one on it.
+    let onNewWorkspace: (_ baseWorkspaceId: String?) -> Void
     let onOpenSettings: () -> Void
 
     @State private var expanded: Bool = true
@@ -23,6 +24,10 @@ struct RepositorySection: View {
     }
 
     private var workspaces: [Workspace] { state.workspacesByRepo[repo.id] ?? [] }
+    /// Rows as shown: each stack's layers under the workspace they sit on.
+    private var rows: [(workspace: Workspace, depth: Int)] {
+        WorkspaceStacks.sidebarOrder(workspaces, repo: repo)
+    }
     private var hasWorkspaces: Bool { !workspaces.isEmpty }
     private var baseWorkspaceId: String { state.repositoryBaseWorkspaceId(for: repo) }
     private var isBaseSelected: Bool {
@@ -38,8 +43,11 @@ struct RepositorySection: View {
                 // Rows are plain views with a tap gesture, not Buttons — a
                 // Button would capture mouseDown and starve the hold+drag
                 // reorder gesture (same pitfall as the header, see below).
-                ForEach(Array(workspaces.enumerated()), id: \.element.id) { idx, ws in
-                    WorkspaceRow(workspace: ws)
+                let rows = self.rows
+                let dropGap = dropGap(in: rows)
+                ForEach(Array(rows.enumerated()), id: \.element.workspace.id) { idx, row in
+                    let ws = row.workspace
+                    WorkspaceRow(workspace: ws, depth: row.depth) { onNewWorkspace(ws.id) }
                         .opacity(rowDrag?.workspaceId == ws.id ? 0.55 : 1)
                         .background {
                             if rowDrag?.workspaceId == ws.id {
@@ -53,13 +61,14 @@ struct RepositorySection: View {
                             }
                         }
                         .overlay(alignment: .bottom) {
-                            if idx == workspaces.count - 1, dropGap == workspaces.count {
+                            if idx == rows.count - 1, dropGap == rows.count {
                                 dropIndicator.offset(y: 1)
                             }
                         }
                         .contentShape(Rectangle())
                         .onTapGesture { state.selectWorkspace(ws.id) }
-                        .gesture(reorderGesture(for: ws, at: idx))
+                        // Stacks move as a whole, by their bottom layer.
+                        .gesture(reorderGesture(for: ws, at: idx, in: rows), isEnabled: row.depth == 0)
                         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
                             rowHeight = $0
                         }
@@ -137,7 +146,7 @@ struct RepositorySection: View {
                 .buttonStyle(.plain)
                 .help("Open \(repo.defaultBranch) in \(repo.name)")
                 Spacer(minLength: 0)
-                Button(action: onNewWorkspace) {
+                Button { onNewWorkspace(nil) } label: {
                     Image(systemName: "plus")
                         .font(.system(size: 13, weight: .regular))
                         .foregroundStyle(.secondary)
@@ -173,7 +182,7 @@ struct RepositorySection: View {
             // selection pill (`listSectionSpacing` et al., which would trim
             // the spacing properly, are macOS-unavailable).
             .contextMenu {
-                Button("New workspace…", action: onNewWorkspace)
+                Button("New workspace…") { onNewWorkspace(nil) }
                 if isBaseOpen {
                     Button("Close workspace") { state.closeWorkspace(baseWorkspaceId) }
                 }
@@ -198,7 +207,7 @@ struct RepositorySection: View {
     /// mutates mid-drag, so the gesture — and the constraint that a row
     /// only reorders inside its own repository — survives the whole
     /// interaction.
-    private func reorderGesture(for ws: Workspace, at index: Int) -> some Gesture {
+    private func reorderGesture(for ws: Workspace, at index: Int, in rows: [(workspace: Workspace, depth: Int)]) -> some Gesture {
         LongPressGesture(minimumDuration: 0.35, maximumDistance: 6)
             .sequenced(before: DragGesture(minimumDistance: 0))
             .updating($rowDrag) { value, drag, _ in
@@ -212,11 +221,11 @@ struct RepositorySection: View {
                 guard case .second(true, .some(let dragValue)) = value else { return }
                 // Re-resolve the row by id — the array may have shifted
                 // under the drag (poll-driven delete, new workspace).
-                guard let from = workspaces.firstIndex(where: { $0.id == ws.id }) else { return }
-                let dest = dropDestination(from: from, translation: dragValue.translation.height)
+                guard let from = rows.firstIndex(where: { $0.workspace.id == ws.id }) else { return }
+                let dest = dropDestination(from: from, translation: dragValue.translation.height, in: rows)
                 guard dest != from, dest != from + 1 else { return }
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    state.moveWorkspaces(in: repo.id, from: IndexSet(integer: from), to: dest)
+                    state.moveWorkspaceStack(in: repo.id, moving: ws.id, toGap: dest)
                 }
             }
     }
@@ -224,18 +233,23 @@ struct RepositorySection: View {
     /// Insertion gap the lifted row would land in, in `onMove`'s
     /// "insert before this index" convention. Derived from the vertical
     /// translation and the uniform row pitch (row height plus the 1pt
-    /// `listRowInsets` above and below), clamped to this repo's rows.
-    private func dropDestination(from index: Int, translation: CGFloat) -> Int {
+    /// `listRowInsets` above and below), clamped to this repo's rows, then
+    /// snapped out of any stack it would split: stacks only move whole.
+    private func dropDestination(from index: Int, translation: CGFloat, in rows: [(workspace: Workspace, depth: Int)]) -> Int {
         let pitch = max(rowHeight + 2, 1)
         let shift = Int((translation / pitch).rounded())
-        let landing = max(0, min(workspaces.count - 1, index + shift))
-        return landing > index ? landing + 1 : landing
+        let landing = max(0, min(rows.count - 1, index + shift))
+        var gap = landing > index ? landing + 1 : landing
+        while gap < rows.count, rows[gap].depth > 0 { gap += 1 }
+        // The moved stack's own end is a no-op spot, same as its start.
+        let end = rows[(index + 1)...].firstIndex { $0.depth == 0 } ?? rows.count
+        return gap == end ? index : gap
     }
 
     /// Gap to draw the indicator in, `nil` while the drop would be a no-op.
-    private var dropGap: Int? {
+    private func dropGap(in rows: [(workspace: Workspace, depth: Int)]) -> Int? {
         guard let drag = rowDrag else { return nil }
-        let dest = dropDestination(from: drag.fromIndex, translation: drag.translation)
+        let dest = dropDestination(from: drag.fromIndex, translation: drag.translation, in: rows)
         guard dest != drag.fromIndex, dest != drag.fromIndex + 1 else { return nil }
         return dest
     }

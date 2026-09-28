@@ -38,19 +38,17 @@ enum BranchPositionOps {
     /// zero counts rather than throwing. The two halves (remote tracking
     /// + base distance) are independent and run in parallel; the local
     /// base fallback runs only when the remote base ref doesn't resolve.
+    /// `baseRef` is what "behind base" measures against (see
+    /// `WorkspaceStacks.baseRef`); `baseBranch` is the fallback when it
+    /// doesn't resolve.
     static func compute(
         worktreePath: String,
         branchName: String,
         baseBranch: String,
+        baseRef: String,
         remote: String
     ) async -> BranchPosition {
         let remoteBranch = "\(remote)/\(branchName)"
-        // Prefer the remote-tracking form of the base ref since `git fetch`
-        // updates it. Fall back to the local form for repos with no remote
-        // base (rare, but DiffComputer also accepts whatever resolves).
-        let baseLocalName = stripRemotePrefix(baseBranch, remote: remote)
-        let remoteBase = "\(remote)/\(baseLocalName)"
-
         async let remoteCounts = leftRightCount(
             cwd: worktreePath,
             left: "HEAD",
@@ -59,7 +57,7 @@ enum BranchPositionOps {
         async let remoteBaseCounts = leftRightCount(
             cwd: worktreePath,
             left: "HEAD",
-            right: remoteBase
+            right: baseRef
         )
 
         var pos = BranchPosition()
@@ -80,11 +78,6 @@ enum BranchPositionOps {
             pos.behindBase = behind
         }
         return pos
-    }
-
-    private static func stripRemotePrefix(_ ref: String, remote: String) -> String {
-        let prefix = "\(remote)/"
-        return ref.hasPrefix(prefix) ? String(ref.dropFirst(prefix.count)) : ref
     }
 
     /// Resolve `ref` to its SHA, or `nil` if it doesn't exist or git

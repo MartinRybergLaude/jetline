@@ -4,7 +4,7 @@ import Foundation
 /// workspace/PR placeholders. The fallback chain is:
 ///   Repository.<actionPrompt> → AppSettings.<actionPrompt> → defaults[action]
 ///
-/// Templates use `{branch}`, `{baseBranch}`, `{prNumber}`, `{prTitle}`,
+/// Templates use `{branch}`, `{baseBranch}`, `{baseRef}`, `{prNumber}`, `{prTitle}`,
 /// `{prUrl}`, `{ciFailures}`, `{worktreePath}`. Missing values render as
 /// empty strings so half-populated prompts don't leak `{prNumber}` placeholders.
 enum GitActionPrompts {
@@ -16,8 +16,9 @@ enum GitActionPrompts {
         """,
         .createPR: """
         Push branch {branch} and open a pull request against {baseBranch} using \
-        `gh pr create`. Pick a clear title and a brief summary based on the diff. \
-        Include a "Test plan" section if relevant.
+        `gh pr create --base {baseBranch}`. If {baseBranch} isn't on the remote \
+        yet, push it first. Pick a clear title and a brief summary based on the \
+        diff. Include a "Test plan" section if relevant.
         """,
         .pullUpdates: """
         The remote branch origin/{branch} has commits the local worktree \
@@ -27,7 +28,7 @@ enum GitActionPrompts {
         """,
         .rebaseOnMain: """
         Rebase {branch} onto the latest {baseBranch}. Fetch first, then \
-        `git rebase origin/{baseBranch}`, resolving any conflicts with \
+        `git rebase {baseRef}`, resolving any conflicts with \
         judgement (don't blindly accept either side). Force-push with \
         `--force-with-lease` when the rebase is clean.
         """,
@@ -67,6 +68,7 @@ enum GitActionPrompts {
     static func render(
         _ template: String,
         workspace: Workspace,
+        baseRef: String? = nil,
         pr: PullRequest?,
         checks: [CheckRun]
     ) -> String {
@@ -81,6 +83,7 @@ enum GitActionPrompts {
         var out = template
         out = out.replacingOccurrences(of: "{branch}", with: workspace.branchName)
         out = out.replacingOccurrences(of: "{baseBranch}", with: workspace.baseBranch)
+        out = out.replacingOccurrences(of: "{baseRef}", with: baseRef ?? "origin/\(workspace.baseBranch)")
         out = out.replacingOccurrences(of: "{worktreePath}", with: workspace.worktreePath)
         out = out.replacingOccurrences(of: "{prNumber}", with: pr.map { String($0.number) } ?? "")
         out = out.replacingOccurrences(of: "{prTitle}", with: pr?.title ?? "")
