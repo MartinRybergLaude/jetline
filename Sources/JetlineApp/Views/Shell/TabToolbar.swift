@@ -501,12 +501,16 @@ private enum RunImage {
             return symbol
         }
         let size = symbol.size
-        let image = NSImage(size: size, flipped: false) { rect in
+        // The dot straddles the symbol's top-right corner; pad every side
+        // so it isn't clipped and the symbol stays centred.
+        let pad: CGFloat = 3
+        let canvas = NSSize(width: size.width + 2 * pad, height: size.height + 2 * pad)
+        let image = NSImage(size: canvas, flipped: false) { _ in
             // Not a template once the dot is in, so tint the symbol here.
             let tinted = symbol.withSymbolConfiguration(.init(paletteColors: [.secondaryLabelColor])) ?? symbol
-            tinted.draw(in: rect)
+            tinted.draw(in: NSRect(x: pad, y: pad, width: size.width, height: size.height))
             dot.setFill()
-            NSBezierPath(ovalIn: NSRect(x: size.width - 3, y: size.height - 3, width: 6, height: 6)).fill()
+            NSBezierPath(ovalIn: NSRect(x: size.width, y: size.height, width: 6, height: 6)).fill()
             return true
         }
         cache[key] = image
