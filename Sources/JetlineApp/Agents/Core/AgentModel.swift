@@ -91,6 +91,8 @@ struct AgentSessionConfig: Sendable {
     var interactionMode: AgentInteractionMode
     /// Opaque provider state from a previous run (see `AgentResumeCursor`).
     var resume: AgentResumeCursor?
+    /// Jetline's own tools, served over MCP. `nil` gives the agent none.
+    var tools: AgentToolsLaunch? = nil
 }
 
 /// Provider-specific identity of a conversation, persisted so a chat can be

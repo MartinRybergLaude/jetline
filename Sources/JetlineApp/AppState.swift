@@ -506,11 +506,24 @@ final class AppState: ObservableObject {
         }
         let cwd = workspaceById(ws.id)?.worktreePath ?? ""
         let chat = ChatSession(summary: summary, workspaceId: ws.id, cwd: cwd, backend: host.connection, files: host.files)
+        prefillNote(into: chat)
         ws.chats.append(chat)
         let tab = TabRef.chat(summary.id)
         ws.insertTab(tab, replacing: pendingPlacements.removeValue(forKey: tab))
         chat.subscribe()
         return chat
+    }
+
+    /// The first chat opened in a workspace an agent created starts with
+    /// the agent's note as its draft: there to edit and send, never sent.
+    /// Once per workspace, so closing the chat doesn't bring it back.
+    private func prefillNote(into chat: ChatSession) {
+        guard let note = workspaceById(chat.workspaceId)?.note?.nonBlank else { return }
+        let key = "JetlineNotesPrefilled"
+        var done = Set(UserDefaults.standard.stringArray(forKey: key) ?? [])
+        guard done.insert(chat.workspaceId).inserted else { return }
+        UserDefaults.standard.set(Array(done), forKey: key)
+        chat.draft = note
     }
 
     private func dropSession(_ session: PTYSession, from ws: WorkspaceState) {

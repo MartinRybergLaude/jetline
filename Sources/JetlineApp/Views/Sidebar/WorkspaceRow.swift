@@ -17,6 +17,7 @@ struct WorkspaceRow: View {
             workspaceState: state.workspaceState(for: workspace.id),
             isSelected: state.selectedWorkspaceId == workspace.id,
             depth: depth,
+            creator: workspace.createdByWorkspaceId.map { state.workspaceById($0)?.name ?? "a workspace since deleted" },
             onStackNew: onStackNew,
             onDelete: { Task { await state.deleteWorkspace(workspace) } },
             onClose: { state.closeWorkspace(workspace.id) }
@@ -29,6 +30,8 @@ private struct WorkspaceRowContent: View {
     let workspaceState: WorkspaceState
     let isSelected: Bool
     let depth: Int
+    /// Name of the workspace whose agent created this one.
+    let creator: String?
     let onStackNew: () -> Void
     let onDelete: () -> Void
     let onClose: () -> Void
@@ -49,6 +52,13 @@ private struct WorkspaceRowContent: View {
                 .foregroundStyle(nameColor(isOpen: isOpen))
                 .lineLimit(1)
                 .truncationMode(.tail)
+            if let creator {
+                Image(systemName: "sparkle")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 5)
+                    .help(creatorHelp(creator))
+            }
             Spacer(minLength: 0)
             ChatActivityIndicator(chats: workspaceState.chats)
         }
@@ -83,6 +93,11 @@ private struct WorkspaceRowContent: View {
     }
 
     private static let indent: CGFloat = 14
+
+    private func creatorHelp(_ creator: String) -> String {
+        let line = "Created by the agent in \(creator)"
+        return workspace.note.map { "\(line): \($0)" } ?? line
+    }
 
     private func nameColor(isOpen: Bool) -> Color {
         if isSelected { return Color.accentColor.opacity(0.9) }

@@ -379,5 +379,14 @@ enum Schema {
             try db.alter(table: "repositories") { t in t.drop(column: "archiveScript") }
             try db.alter(table: "app_settings") { t in t.drop(column: "deleteWorktreeOnMerge") }
         }
+
+        // Workspaces an agent created through the agent tools, and the note
+        // it left on them.
+        migrator.registerMigration("v27_agent_created_workspaces") { db in
+            try db.alter(table: "workspaces") { t in
+                t.add(column: "createdByWorkspaceId", .text)
+                t.add(column: "note", .text)
+            }
+        }
     }
 }

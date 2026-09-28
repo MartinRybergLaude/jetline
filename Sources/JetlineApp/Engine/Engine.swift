@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import Observation
 
 /// The headless half of Jetline: repositories, worktree workspaces, agent
@@ -28,6 +29,9 @@ final class Engine {
     /// Per-repo GitHub metadata (owner/name + allowed merge methods).
     private(set) var repoMetadataByRepo: [String: RepoIdentifier] = [:]
     var prTrackerStatus: PRTrackerStatus = .ok
+    /// Unix socket the agent tools' MCP server reaches the engine on. Set
+    /// by whoever listens there; `nil` means agents get no Jetline tools.
+    @ObservationIgnored var agentToolsSocket: String?
     let rateLimits = AgentRateLimits()
     let activityLog = ActivityLog()
 
@@ -267,6 +271,8 @@ final class Engine {
         in repo: Repository,
         name: String,
         baseWorkspaceId: String?,
+        createdBy: String? = nil,
+        note: String? = nil,
         overrideExisting: Bool
     ) async throws -> API.CreateWorkspaceResult {
         let parent = baseWorkspaceId.flatMap(workspaceById).flatMap { $0.repositoryId == repo.id ? $0 : nil }
@@ -306,7 +312,9 @@ final class Engine {
             worktreePath: worktreePath,
             agent: agent,
             createdAt: now,
-            lastActiveAt: now
+            lastActiveAt: now,
+            createdByWorkspaceId: createdBy,
+            note: note?.nonBlank
         )
         try Workspaces.insert(ws)
         workspacesByRepo[repo.id, default: []].insert(ws, at: 0)
@@ -329,6 +337,8 @@ final class Engine {
         remoteRef: String?,
         pullRequest: PRSummary?,
         name: String,
+        createdBy: String? = nil,
+        note: String? = nil,
         overrideExisting: Bool
     ) async throws -> API.CreateWorkspaceResult {
         let branchName: String
@@ -373,7 +383,9 @@ final class Engine {
             worktreePath: worktreePath,
             agent: agent,
             createdAt: now,
-            lastActiveAt: now
+            lastActiveAt: now,
+            createdByWorkspaceId: createdBy,
+            note: note?.nonBlank
         )
         do {
             try Workspaces.insert(ws)
@@ -591,11 +603,12 @@ final class Engine {
         noteWorkspaceActivity(workspace.id)
         let ws = workspaceState(for: workspace.id)
         ws.isOpen = true
+        let toolArgs = agentToolsLaunch(for: workspace.id)?.args(for: agent) ?? []
         let terminal = EngineTerminal(
             workspaceId: workspace.id,
             agent: agent,
             cwd: workspace.worktreePath,
-            launch: .agent(initialPrompt: initialPrompt, launchArgs: launchArgs),
+            launch: .agent(initialPrompt: initialPrompt, launchArgs: toolArgs + launchArgs),
             settings: { [weak self] in self?.settings ?? AppSettings() }
         )
         ws.terminals.append(terminal)
@@ -659,6 +672,7 @@ final class Engine {
 
     private func attach(_ chat: ChatEngine, to workspaceId: String) {
         let ws = workspaceState(for: workspaceId)
+        chat.agentTools = agentToolsLaunch(for: workspaceId)
         ws.chats.append(chat)
         chat.onTurnFinished = { [weak self] chat in
             guard let self, let workspace = self.workspaceById(chat.workspaceId) else { return }
@@ -826,93 +840,131 @@ final class Engine {
         try? updateRepository(repo)
     }
 
-    /// Fast path for `Rebase`: `git fetch` + `git rebase --autostash`, then a
-    /// `--force-with-lease` push when the branch is on the remote. Anything
-    /// that goes wrong aborts the partial rebase and hands off to the agent
-    /// flow, whose tab is returned.
-    func performRebase(for workspace: Workspace, terminalSize: TerminalSize?) async -> OpenedTab? {
-        guard let repo = repositories.first(where: { $0.id == workspace.repositoryId }) else {
-            return startGitActionSession(for: workspace, action: .rebaseOnMain, terminalSize: terminalSize)
-        }
-        let ws = workspaceState(for: workspace.id)
-        guard ws.runningGitAction == nil else { return nil }
-        ws.runningGitAction = .rebaseOnMain
-        defer { ws.runningGitAction = nil }
-        activityLog.record(.gitAction, "Rebasing on \(workspace.baseBranch)", repoId: repo.id, workspaceId: workspace.id)
+    /// Why a git fast path didn't finish. Anything partial was undone.
+    enum FastPathFailure: LocalizedError {
+        /// Another git action is already running in the workspace.
+        case busy
+        case failed(String)
 
-        let cwd = workspace.worktreePath
-        let onto = baseRef(for: workspace)
-        let hasRemote = ws.branchPosition.remoteTrackingExists
-
-        WorktreeOps.beginIndexWrite(worktreePath: cwd)
-        defer { WorktreeOps.endIndexWrite(worktreePath: cwd) }
-
-        let fellBack: Bool
-        do {
-            await BranchPositionOps.fetch(repoPath: cwd, remote: repo.remoteOrigin)
-            let rebase = try await GitRunner.run(["rebase", "--autostash", onto], cwd: cwd)
-            if !rebase.success {
-                fellBack = true
-            } else if hasRemote {
-                let push = try await GitRunner.run(
-                    ["push", "--force-with-lease", repo.remoteOrigin, workspace.branchName],
-                    cwd: cwd
-                )
-                fellBack = !push.success
-            } else {
-                fellBack = false
+        var errorDescription: String? {
+            switch self {
+            case .busy: return "Another git action is already running in this workspace."
+            case let .failed(message): return message
             }
-        } catch {
-            fellBack = true
         }
-
-        if fellBack {
-            _ = try? await GitRunner.run(["rebase", "--abort"], cwd: cwd)
-            activityLog.record(.gitAction, "Rebase fell back to agent", repoId: repo.id, workspaceId: workspace.id)
-            return startGitActionSession(for: workspace, action: .rebaseOnMain, terminalSize: terminalSize)
-        }
-        activityLog.record(.gitAction, "Rebase completed", repoId: repo.id, workspaceId: workspace.id)
-        prTracker.kick(workspaceId: workspace.id)
-        await refreshDiff(for: workspace)
-        return nil
     }
 
-    /// Fast path for `Pull updates`: `git pull --rebase --autostash`, falling
-    /// back to the agent flow on conflict / failure.
-    func performPull(for workspace: Workspace, terminalSize: TerminalSize?) async -> OpenedTab? {
-        guard let repo = repositories.first(where: { $0.id == workspace.repositoryId }) else {
-            return startGitActionSession(for: workspace, action: .pullUpdates, terminalSize: terminalSize)
+    /// `Rebase` / `Pull updates` from the toolbar: the fast path, handing
+    /// off to the agent flow (whose tab is returned) when it can't finish
+    /// on its own. Any other action goes straight to the agent.
+    func performFastPath(_ action: GitAction, for workspace: Workspace, terminalSize: TerminalSize?) async -> OpenedTab? {
+        let outcome: Result<Void, FastPathFailure>
+        switch action {
+        case .rebaseOnMain: outcome = await rebase(workspace)
+        case .pullUpdates: outcome = await pull(workspace)
+        default: return startGitActionSession(for: workspace, action: action, terminalSize: terminalSize)
         }
-        let ws = workspaceState(for: workspace.id)
-        guard ws.runningGitAction == nil else { return nil }
-        ws.runningGitAction = .pullUpdates
-        defer { ws.runningGitAction = nil }
-        activityLog.record(.gitAction, "Pulling \(workspace.branchName)", repoId: repo.id, workspaceId: workspace.id)
+        switch outcome {
+        case .success, .failure(.busy):
+            return nil
+        case .failure:
+            return startGitActionSession(for: workspace, action: action, terminalSize: terminalSize)
+        }
+    }
 
-        let cwd = workspace.worktreePath
-        WorktreeOps.beginIndexWrite(worktreePath: cwd)
-        defer { WorktreeOps.endIndexWrite(worktreePath: cwd) }
+    /// `git fetch` + `git rebase --autostash` onto the base (`--onto` a new
+    /// one when `onto` is set, replaying only the commits above `upstream`),
+    /// then a `--force-with-lease` push when the branch is on the remote.
+    func rebase(
+        _ workspace: Workspace,
+        onto: String? = nil,
+        upstream: String? = nil
+    ) async -> Result<Void, FastPathFailure> {
+        let base = upstream ?? baseRef(for: workspace)
+        let target = onto ?? base
+        let hasRemote = workspaceState(for: workspace.id).branchPosition.remoteTrackingExists
+        return await withFastPath(.rebaseOnMain, workspace, "Rebasing on \(target)") { repo, cwd in
+            await BranchPositionOps.fetch(repoPath: cwd, remote: repo.remoteOrigin)
+            let args = onto.map { ["rebase", "--autostash", "--onto", $0, base] } ?? ["rebase", "--autostash", base]
+            guard (try? await GitRunner.run(args, cwd: cwd))?.success == true else {
+                return "Rebasing onto \(target) hit conflicts, so it was undone. Resolve them with git in the worktree."
+            }
+            guard hasRemote else { return nil }
+            let push = try? await GitRunner.run(["push", "--force-with-lease", repo.remoteOrigin, workspace.branchName], cwd: cwd)
+            return push?.success == true ? nil : "Rebased locally, but the push failed: \(push?.stderr.nonBlank ?? "unknown error")"
+        }
+    }
 
-        let fellBack: Bool
-        do {
-            let result = try await GitRunner.run(
+    /// `git pull --rebase --autostash` of the branch's own remote commits.
+    func pull(_ workspace: Workspace) async -> Result<Void, FastPathFailure> {
+        await withFastPath(.pullUpdates, workspace, "Pulling \(workspace.branchName)") { repo, cwd in
+            let result = try? await GitRunner.run(
                 ["pull", "--rebase", "--autostash", repo.remoteOrigin, workspace.branchName],
                 cwd: cwd
             )
-            fellBack = !result.success
-        } catch {
-            fellBack = true
+            return result?.success == true ? nil : "Pulling \(workspace.branchName) failed and was undone: \(result?.stderr.nonBlank ?? "unknown error")"
         }
+    }
 
-        if fellBack {
+    /// One git fast path at a time per workspace, with the index marked as
+    /// being written. `body` returns why it failed, or `nil`; a failure
+    /// aborts any rebase it left half done.
+    private func withFastPath(
+        _ action: GitAction,
+        _ workspace: Workspace,
+        _ description: String,
+        body: (Repository, String) async -> String?
+    ) async -> Result<Void, FastPathFailure> {
+        guard let repo = repository(id: workspace.repositoryId) else { return .failure(.failed("Unknown repository.")) }
+        let ws = workspaceState(for: workspace.id)
+        guard ws.runningGitAction == nil else { return .failure(.busy) }
+        ws.runningGitAction = action
+        defer { ws.runningGitAction = nil }
+        activityLog.record(.gitAction, description, repoId: repo.id, workspaceId: workspace.id)
+
+        let cwd = workspace.worktreePath
+        WorktreeOps.beginIndexWrite(worktreePath: cwd)
+        defer { WorktreeOps.endIndexWrite(worktreePath: cwd) }
+        if let failure = await body(repo, cwd) {
             _ = try? await GitRunner.run(["rebase", "--abort"], cwd: cwd)
-            activityLog.record(.gitAction, "Pull fell back to agent", repoId: repo.id, workspaceId: workspace.id)
-            return startGitActionSession(for: workspace, action: .pullUpdates, terminalSize: terminalSize)
+            activityLog.record(.gitAction, "\(action.displayName) stopped: \(failure)", repoId: repo.id, workspaceId: workspace.id)
+            return .failure(.failed(failure))
         }
-        activityLog.record(.gitAction, "Pull completed", repoId: repo.id, workspaceId: workspace.id)
+        activityLog.record(.gitAction, "\(action.displayName) completed", repoId: repo.id, workspaceId: workspace.id)
         prTracker.kick(workspaceId: workspace.id)
         await refreshDiff(for: workspace)
-        return nil
+        return .success(())
+    }
+
+    /// Move `workspace` onto `parent` (`nil`: the default branch): rebase
+    /// its own commits there, push, re-base the workspace and retarget its
+    /// open PR. Refused for a loop, and for a PR in a GitHub stack, which
+    /// GitHub has to unstack first. Returns a warning when only the PR
+    /// retarget failed.
+    func restackWorkspace(_ workspace: Workspace, onto parent: Workspace?) async throws -> String? {
+        guard let repo = repository(id: workspace.repositoryId) else { throw WireError("Unknown repository.") }
+        if let parent, WorkspaceStacks.isStacked(parent, onTopOf: workspace, in: workspacesByRepo[repo.id] ?? [], repo: repo) {
+            throw WireError("Can't stack \(workspace.name) on itself or on a workspace above it.")
+        }
+        let pr: PullRequest? = {
+            if case let .loaded(pr, _) = workspaceState(for: workspace.id).pr, pr.isOpen { return pr }
+            return nil
+        }()
+        if let pr, let stack = pr.stack {
+            throw WireError("PR #\(pr.number) is in GitHub stack #\(stack.number). Unstack it on GitHub first.")
+        }
+        let newBase = parent?.branchName ?? repo.defaultBranch
+        try await rebase(workspace, onto: parent?.branchName ?? repo.remoteRef(newBase), upstream: baseRef(for: workspace)).get()
+        updateWorkspaceBaseBranch(newBase, for: workspace.id)
+        prTracker.kick(repoId: repo.id)
+        guard let pr else { return nil }
+        let base = repo.localName(forRemoteRef: newBase)
+        do {
+            _ = try await GitHubRunner.runGH(["pr", "edit", String(pr.number), "--base", base], cwd: workspace.worktreePath)
+            return nil
+        } catch {
+            return "Couldn't retarget PR #\(pr.number) to \(base): \(error.localizedDescription)"
+        }
     }
 
     // MARK: - Run script
@@ -1052,21 +1104,43 @@ final class Engine {
         return workspace
     }
 
+    func renameWorkspace(_ workspaceId: String, to name: String) {
+        updateWorkspace(workspaceId, Workspace.Columns.name.set(to: name)) { $0.name = name }
+    }
+
+    func setWorkspaceNote(_ workspaceId: String, note: String?) {
+        updateWorkspace(workspaceId, Workspace.Columns.note.set(to: note)) { $0.note = note }
+    }
+
     /// Move a workspace onto another base (restacking, or following a PR
     /// GitHub retargeted). The diff is against the base, so it's redone.
     func updateWorkspaceBaseBranch(_ baseBranch: String, for workspaceId: String) {
-        guard var workspace = workspaceById(workspaceId), !isRepositoryBaseWorkspace(workspace),
-              workspace.baseBranch != baseBranch else { return }
-        let previous = workspace.baseBranch
-        workspace.baseBranch = baseBranch
-        replaceWorkspace(workspace)
+        guard let previous = workspaceById(workspaceId)?.baseBranch,
+              let workspace = updateWorkspace(workspaceId, Workspace.Columns.baseBranch.set(to: baseBranch), { $0.baseBranch = baseBranch }) else { return }
         activityLog.record(.lifecycle, "Base of \(workspace.name) moved \(previous) → \(baseBranch)", repoId: workspace.repositoryId, workspaceId: workspace.id)
-        Task.detached(priority: .utility) {
-            try? Workspaces.updateBaseBranch(id: workspaceId, baseBranch: baseBranch)
-        }
         if workspaceState(for: workspaceId).isOpen {
             Task { await refreshDiff(for: workspace) }
         }
+    }
+
+    /// Apply `change` to the workspace and persist `column`. Returns the
+    /// updated workspace, or `nil` when nothing changed (or it's the
+    /// repository's own checkout, which has no row).
+    @discardableResult
+    private func updateWorkspace(
+        _ workspaceId: String,
+        _ column: ColumnAssignment,
+        _ change: (inout Workspace) -> Void
+    ) -> Workspace? {
+        guard let old = workspaceById(workspaceId), !isRepositoryBaseWorkspace(old) else { return nil }
+        var workspace = old
+        change(&workspace)
+        guard workspace != old else { return nil }
+        replaceWorkspace(workspace)
+        // Not `Sendable`, but handed over whole: nothing here touches it after.
+        nonisolated(unsafe) let column = column
+        Task.detached(priority: .utility) { try? Workspaces.update(id: workspaceId, column) }
+        return workspace
     }
 
     /// Follow the base GitHub reports for an open PR. The default branch

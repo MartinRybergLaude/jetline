@@ -84,6 +84,11 @@ struct Repository: Codable, Identifiable, Hashable, Sendable, FetchableRecord, P
         return ref.hasPrefix(prefix) ? String(ref.dropFirst(prefix.count)) : ref
     }
 
+    /// The remote-tracking ref for `branch` (`main` or `origin/main`).
+    func remoteRef(_ branch: String) -> String {
+        "\(remoteOrigin)/\(localName(forRemoteRef: branch))"
+    }
+
     /// Lookup helper for the action-prompt fallback chain. Mirrors
     /// `AppSettings.prompt(for:)` so callers can chain the two.
     func prompt(for action: GitAction) -> String? {

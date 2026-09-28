@@ -13,6 +13,19 @@ enum API {
         var clientName: String
     }
 
+    /// The handshake for a command-line client (`jetlined rpc`, `jetlined
+    /// mcp`) that only makes calls: no snapshot, no events.
+    struct ToolHello: RPC {
+        typealias Response = ToolHelloResult
+        static let method = "toolHello"
+        var protocolVersion: Int
+        var clientName: String
+    }
+
+    struct ToolHelloResult: Codable, Sendable {
+        var engineVersion: String
+    }
+
     struct HelloResult: Codable, Sendable {
         var protocolVersion: Int
         var engineVersion: String
@@ -136,6 +149,21 @@ enum API {
         case created(Workspace)
         /// The branch is checked out elsewhere; ask before overriding.
         case branchInUse(branch: String, path: String, hasUncommittedChanges: Bool)
+    }
+
+    /// A tool call from an agent running in `workspaceId`, relayed by the
+    /// agent tools' MCP server. See `AgentTools`.
+    struct AgentToolCall: RPC {
+        typealias Response = AgentToolResult
+        static let method = "agentTools.call"
+        var workspaceId: String
+        var tool: String
+        var arguments: JSONValue
+    }
+
+    struct AgentToolResult: Codable, Sendable {
+        var text: String
+        var isError: Bool
     }
 
     struct DeleteWorkspace: RPC {

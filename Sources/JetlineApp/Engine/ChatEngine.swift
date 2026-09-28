@@ -152,6 +152,8 @@ final class ChatEngine: Identifiable {
     @ObservationIgnored private var itemSeq = 0
     @ObservationIgnored private var executableResolver: (AgentProviderKind) async -> String?
     @ObservationIgnored private let rateLimits: AgentRateLimits
+    /// Jetline's tools for this chat's agent; picked up on its next start.
+    @ObservationIgnored var agentTools: AgentToolsLaunch?
 
     /// Fired when a turn finishes or starts waiting on the user, so the app
     /// can badge or notify.
@@ -310,7 +312,8 @@ final class ChatEngine: Identifiable {
                 effort: effort,
                 runtimeMode: runtimeMode,
                 interactionMode: interactionMode,
-                resume: resumableSession
+                resume: resumableSession,
+                tools: agentTools
             ))
             // Disconnected while starting: nothing else will stop it.
             if generation != agentGeneration {

@@ -124,6 +124,7 @@ actor ClaudeProvider: AgentProvider {
             // claude.ai over Remote Control show up here too.
             "--replay-user-messages"
         ]
+        if let tools = config.tools { args += tools.args(for: .claude) }
         if let model = config.model { args += ["--model", model] }
         if let effort = config.effort { args += ["--effort", effort] }
         if let fork {
