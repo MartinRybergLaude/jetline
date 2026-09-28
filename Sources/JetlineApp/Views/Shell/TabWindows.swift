@@ -39,9 +39,10 @@ final class TabSlot {
     /// The toolbar's Merge asks for confirmation, which the tab's content
     /// presents.
     var pendingMerge = false
-    /// Height of the chat composer's bar, divider included, while a chat
-    /// is showing, so the inspector's merge footer can match it and the
-    /// two dividers line up.
+    /// Height of the chat composer's bar at rest (one-line draft, no
+    /// banners), divider included, while a chat is showing, so the
+    /// inspector's merge footer can match it and the two dividers line up.
+    /// Not the live height: the footer stays put as a draft grows.
     var composerBarHeight: CGFloat?
     @ObservationIgnored fileprivate var toolbar: TabToolbar?
 

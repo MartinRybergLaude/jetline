@@ -97,6 +97,9 @@ struct ChatComposer: View {
     let session: ChatSession
     /// Completion popup state; ChatView draws the list above the timeline.
     let popup: ComposerPopup
+    /// The composer's height with an empty, one-line draft: what the
+    /// merge footer beside it matches, however tall the draft grows.
+    var onRestingHeight: ((CGFloat) -> Void)? = nil
 
     @State private var height: CGFloat = ComposerTextView.minHeight
     @State private var completion: ComposerCompletion?
@@ -141,6 +144,9 @@ struct ChatComposer: View {
                     // past the text column so its label, not its edge,
                     // lines up with the text above.
                     .padding(.leading, -8)
+                    .onGeometryChange(for: CGFloat.self, of: \.size.height) {
+                        onRestingHeight?(ComposerTextView.minHeight + 8 + $0)
+                    }
             }
         }
         .onAppear { popup.onAccept = { accept($0) } }
