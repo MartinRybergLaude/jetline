@@ -145,7 +145,9 @@ final class EngineConnection {
         do {
             let client = try makeClient()
             client.onClose = { [weak self] in
-                guard let self, self.generation == generation else { return }
+                // Before `hello` completes, the failed call below handles it
+                // (and keeps the backoff growing).
+                guard let self, self.generation == generation, self.status == .connected else { return }
                 self.linkDropped()
             }
             self.client = client
