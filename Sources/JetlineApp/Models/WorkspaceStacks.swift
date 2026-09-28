@@ -23,8 +23,19 @@ enum WorkspaceStacks {
     /// may not be pushed. Otherwise the remote-tracking base, which the
     /// tracker's fetch keeps current.
     static func baseRef(for workspace: Workspace, in workspaces: [Workspace], repo: Repository) -> String {
-        if let parent = parent(of: workspace, in: workspaces, repo: repo) { return parent.branchName }
-        return "\(repo.remoteOrigin)/\(repo.localName(forRemoteRef: workspace.baseBranch))"
+        parent(of: workspace, in: workspaces, repo: repo)?.branchName ?? repo.remoteRef(workspace.baseBranch)
+    }
+
+    /// Whether `workspace` is `base` or sits anywhere above it: stacking
+    /// `base` on it would make a loop.
+    static func isStacked(_ workspace: Workspace, onTopOf base: Workspace, in workspaces: [Workspace], repo: Repository) -> Bool {
+        var seen: Set<String> = []
+        var cursor: Workspace? = workspace
+        while let ws = cursor, seen.insert(ws.id).inserted {
+            if ws.id == base.id { return true }
+            cursor = parent(of: ws, in: workspaces, repo: repo)
+        }
+        return false
     }
 
     /// Sidebar order: every workspace that isn't stacked on another, in list

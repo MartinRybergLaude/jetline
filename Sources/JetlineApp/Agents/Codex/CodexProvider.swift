@@ -78,7 +78,7 @@ actor CodexProvider: AgentProvider {
         _ = await LoginShellPath.get()
         let env = Subprocess.inheritedEnvironment(overrides: ["JETLINE": "1"])
         let process = JSONLineProcess(.init(
-            executable: config.executable, args: ["app-server"], cwd: config.cwd, env: env
+            executable: config.executable, args: ["app-server"] + (config.tools?.args(for: .codex) ?? []), cwd: config.cwd, env: env
         ))
         try process.start()
         self.process = process

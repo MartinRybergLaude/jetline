@@ -95,6 +95,31 @@ final class EngineServer {
 
     // MARK: - Connections
 
+    private var listenerSources: [DispatchSourceRead] = []
+
+    /// Accept every connection on a listening unix socket, from this user's
+    /// processes only (the socket is 0600 in a 0700 directory already;
+    /// this is belt and braces).
+    func accept(onListener listener: Int32) {
+        // Accept until EAGAIN: on Linux a dispatch source doesn't report
+        // readiness a handler left unconsumed.
+        _ = fcntl(listener, F_SETFL, fcntl(listener, F_GETFL) | O_NONBLOCK)
+        let source = DispatchSource.makeReadSource(fileDescriptor: listener, queue: .main)
+        source.setEventHandler { [weak self] in
+            while let fd = Sockets.accept(listener) {
+                guard jl_peer_uid(fd) == Int32(getuid()) else {
+                    close(fd)
+                    continue
+                }
+                MainActor.assumeIsolated {
+                    _ = self?.accept(FramedConnection(readFD: fd, writeFD: fd, label: "client"))
+                }
+            }
+        }
+        source.resume()
+        listenerSources.append(source)
+    }
+
     /// Take over a connection. The client must `hello` first.
     @discardableResult
     func accept(_ connection: FramedConnection) -> Int {
@@ -175,7 +200,7 @@ final class EngineServer {
             respondError(head.id, WireError("Unknown method \(head.method). The engine may be older than this app.", code: "unknownMethod"), to: clientId)
             return
         }
-        if head.method == API.Hello.method {
+        if head.method == API.Hello.method || head.method == API.ToolHello.method {
             clients[clientId]?.greeted = true
         } else if clients[clientId]?.greeted != true {
             respondError(head.id, WireError("hello first", code: "notReady"), to: clientId)
@@ -436,6 +461,13 @@ final class EngineServer {
                 features: API.features
             )
         }
+        on(API.ToolHello.self) { [unowned self] req, clientId in
+            guard req.protocolVersion == Wire.protocolVersion else {
+                self.clients[clientId]?.greeted = false
+                throw WireError("Protocol \(req.protocolVersion) against the engine's \(Wire.protocolVersion).", code: "protocolMismatch")
+            }
+            return API.ToolHelloResult(engineVersion: self.engineVersion)
+        }
         on(API.WatchPorts.self) { [unowned self] _, clientId in
             self.clients[clientId]?.watchesPorts = true
             let scanner = self.portScanner
@@ -502,6 +534,9 @@ final class EngineServer {
                 overrideExisting: req.overrideExisting
             )
         }
+        on(API.AgentToolCall.self) { req, _ in
+            await engine.runAgentTool(req.tool, arguments: req.arguments, callerId: req.workspaceId)
+        }
         on(API.DeleteWorkspace.self) { [unowned self] req, _ in
             await engine.deleteWorkspace(try self.workspace(req.workspaceId))
             return Empty()
@@ -543,11 +578,11 @@ final class EngineServer {
         }
         on(API.FastPathGitAction.self) { [unowned self] req, _ in
             let ws = try self.workspace(req.workspaceId)
-            switch req.action {
-            case .rebaseOnMain: return await engine.performRebase(for: ws, terminalSize: req.terminalSize)
-            case .pullUpdates: return await engine.performPull(for: ws, terminalSize: req.terminalSize)
-            default: return engine.startGitActionSession(for: ws, action: req.action, terminalSize: req.terminalSize)
-            }
+            return await engine.performFastPath(req.action, for: ws, terminalSize: req.terminalSize)
+        }
+        on(API.MergeStack.self) { [unowned self] req, _ in
+            try await engine.mergeStack(for: try self.workspace(req.workspaceId), method: req.method)
+            return Empty()
         }
         on(API.Merge.self) { [unowned self] req, _ in
             try await engine.performMerge(for: try self.workspace(req.workspaceId), method: req.method)

@@ -36,7 +36,10 @@ struct NewWorkspacePane: View {
                         }
                     }
                     .labelsHidden()
-                    .fixedSize()
+                    // Not `fixedSize`: a menu picker's ideal width is its
+                    // longest item, which pushed the whole sheet wider than
+                    // its window and clipped both edges.
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     if let base = stackable.first(where: { $0.id == baseWorkspaceId }) {
                         Text("Stacked on \(base.name): the branch starts from \(base.branchName) and its pull request targets it. Once both have PRs, they become a stack on GitHub.")
                             .font(.caption)

@@ -22,6 +22,12 @@ struct Workspace: Codable, Identifiable, Hashable, Sendable, FetchableRecord, Pe
     /// the top. New workspaces are inserted below the current min so they
     /// land at the top; reorders rewrite the column with 0…n-1 values.
     var sortIndex: Int = 0
+    /// The workspace whose agent created this one through Jetline's agent
+    /// tools. That agent may change it; agents elsewhere may not.
+    var createdByWorkspaceId: String?
+    /// Why the workspace exists, left by the agent that created it. Shown
+    /// (never sent) as the first chat's draft.
+    var note: String?
 
     enum AgentKind: String, Codable, Sendable, CaseIterable, DatabaseValueConvertible {
         case claude
@@ -63,6 +69,8 @@ struct Workspace: Codable, Identifiable, Hashable, Sendable, FetchableRecord, Pe
         static let createdAt = Column(CodingKeys.createdAt)
         static let lastActiveAt = Column(CodingKeys.lastActiveAt)
         static let sortIndex = Column(CodingKeys.sortIndex)
+        static let createdByWorkspaceId = Column(CodingKeys.createdByWorkspaceId)
+        static let note = Column(CodingKeys.note)
     }
 
     static let repository = belongsTo(Repository.self)

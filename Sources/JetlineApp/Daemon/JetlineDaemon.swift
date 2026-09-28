@@ -39,6 +39,8 @@ public enum JetlineDaemon {
             stop(options)
         case "rpc":
             rpc(options)
+        case "mcp":
+            AgentToolsServer.run()
         case "version", "--version", "-v":
             print(JetlineVersion.current)
             exit(0)
@@ -67,6 +69,8 @@ public enum JetlineDaemon {
       rpc METHOD [JSON]
                 Send one request to the running engine and print the reply
                 (for scripting and debugging; methods are in Protocol/API.swift).
+      mcp       Serve Jetline's agent tools over MCP on stdin/stdout. Jetline
+                starts this for the agents it launches.
       version   Print the version.
       info      Print version and protocol as JSON.
 
@@ -93,19 +97,28 @@ public enum JetlineDaemon {
         }
 
         var socket: String {
-            if let socketPath { return socketPath }
-            let dataDir = Database.dataDirectory().path
-            let preferred = (dataDir as NSString).appendingPathComponent("jetlined.sock")
-            // sockaddr_un caps the path at 104 bytes (macOS) / 108 (Linux).
-            // A long data dir gets a short, stable path in /tmp instead.
-            guard preferred.utf8.count >= 100 else { return preferred }
-            var hash: UInt64 = 1469598103934665603
-            for byte in dataDir.utf8 { hash = (hash ^ UInt64(byte)) &* 1099511628211 }
-            // In a private directory: a predictable name straight in /tmp
-            // could be squatted by another user.
-            let dir = JetlineDaemon.privateTempDirectory()
-            return "\(dir)/\(String(hash, radix: 16)).sock"
+            socketPath ?? JetlineDaemon.socketPath(named: "jetlined")
         }
+    }
+
+    /// `<data dir>/<name>.sock`, or a short stable path in a private /tmp
+    /// directory when that would be too long for a unix socket.
+    static func socketPath(named name: String) -> String {
+        let dataDir = Database.dataDirectory().path
+        let preferred = (dataDir as NSString).appendingPathComponent("\(name).sock")
+        // sockaddr_un caps the path at 104 bytes (macOS) / 108 (Linux).
+        // A long data dir gets a short, stable path in /tmp instead.
+        guard preferred.utf8.count >= 100 else { return preferred }
+        // The daemon's hash covers the data dir alone, as it always has, so
+        // a running older daemon is still found.
+        var hash: UInt64 = 1469598103934665603
+        for byte in (name == "jetlined" ? dataDir : dataDir + "/" + name).utf8 {
+            hash = (hash ^ UInt64(byte)) &* 1099511628211
+        }
+        // In a private directory: a predictable name straight in /tmp
+        // could be squatted by another user.
+        let dir = JetlineDaemon.privateTempDirectory()
+        return "\(dir)/\(String(hash, radix: 16)).sock"
     }
 
     struct DaemonError: Error, CustomStringConvertible {
@@ -182,27 +195,9 @@ public enum JetlineDaemon {
             let server = EngineServer(engine: engine, engineVersion: JetlineVersion.current)
             server.onClientCountChanged = { count in log("clients: \(count)") }
             DaemonRuntime.shared.server = server
-
-            // Accept until EAGAIN: on Linux a dispatch source doesn't report
-            // readiness a handler left unconsumed.
-            _ = fcntl(listener, F_SETFL, fcntl(listener, F_GETFL) | O_NONBLOCK)
-            let acceptSource = DispatchSource.makeReadSource(fileDescriptor: listener, queue: .main)
-            acceptSource.setEventHandler {
-                while let fd = Sockets.accept(listener) {
-                    // Only this user's processes (the socket is 0600 in a 0700
-                    // directory already; this is belt and braces).
-                    guard jl_peer_uid(fd) == Int32(getuid()) else {
-                        close(fd)
-                        continue
-                    }
-                    MainActor.assumeIsolated {
-                        let connection = FramedConnection(readFD: fd, writeFD: fd, label: "client")
-                        server.accept(connection)
-                    }
-                }
-            }
-            acceptSource.resume()
-            DaemonRuntime.shared.sources.append(acceptSource)
+            server.accept(onListener: listener)
+            // Agents this engine launches reach it on the same socket.
+            engine.agentToolsSocket = socketPath
 
             for sig in [SIGTERM, SIGINT] {
                 signal(sig, SIG_IGN)
@@ -286,7 +281,7 @@ public enum JetlineDaemon {
     private static func startBackgroundServer(_ options: Options) {
         try? FileManager.default.createDirectory(at: Database.dataDirectory(), withIntermediateDirectories: true)
         guard let executable = currentExecutable() else { fail("can't locate my own executable") }
-        var argv = [executable] + serveCommandPrefix + ["serve"]
+        var argv = [executable] + commandPrefix + ["serve"]
         if let socket = options.socketPath { argv += ["--socket", socket] }
 
         #if canImport(Darwin)
@@ -339,13 +334,13 @@ public enum JetlineDaemon {
         }
     }
 
-    /// `jetline daemon serve` when running as the macOS app binary.
-    private static var serveCommandPrefix: [String] {
-        let name = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? ""
-        return name == "jetlined" ? [] : (CommandLine.arguments.dropFirst().first == "daemon" ? ["daemon"] : [])
-    }
+    /// What precedes a daemon command when running this binary: nothing
+    /// for `jetlined`; the macOS app binary sets `daemon` (`jetline daemon …`).
+    /// Set by the entry point rather than guessed from the executable's
+    /// name, which a renamed install would get wrong.
+    nonisolated(unsafe) public static var commandPrefix: [String] = []
 
-    private static func currentExecutable() -> String? {
+    static func currentExecutable() -> String? {
         #if os(Linux)
         if let path = try? FileManager.default.destinationOfSymbolicLink(atPath: "/proc/self/exe") { return path }
         #endif
@@ -358,46 +353,16 @@ public enum JetlineDaemon {
     private static func rpc(_ options: Options) -> Never {
         guard let method = options.positional.first else { fail("usage: jetlined rpc METHOD [JSON]") }
         let paramsJSON = options.positional.dropFirst().first ?? "{}"
-        guard let fd = Sockets.connect(path: options.socket) else { fail("not running") }
+        guard let params = try? JSONValue.parse(Data(paramsJSON.utf8)) else { fail("params aren't valid JSON") }
         DispatchQueue.global().asyncAfter(deadline: .now() + 60) { fail("no reply after 60s") }
-        func frame(_ json: String) -> Data {
-            let payload = Data(json.utf8)
-            var data = Data()
-            var length = UInt32(payload.count + 1).bigEndian
-            withUnsafeBytes(of: &length) { data.append(contentsOf: $0) }
-            data.append(FrameKind.message.rawValue)
-            data.append(payload)
-            return data
-        }
-        _ = writeAll(fd: fd, frame(#"{"id":1,"method":"hello","params":{"protocolVersion":\#(Wire.protocolVersion),"clientName":"jetlined rpc"}}"#))
-        _ = writeAll(fd: fd, frame(#"{"id":2,"method":"\#(method)","params":\#(paramsJSON)}"#))
-        var inbox = Data()
-        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
-        while true {
-            let n = read(fd, &buffer, buffer.count)
-            guard n > 0 else { fail("connection closed") }
-            inbox.append(contentsOf: buffer[0..<n])
-            while inbox.count >= 4 {
-                let length = inbox.prefix(4).reduce(0) { ($0 << 8) | Int($1) }
-                guard inbox.count >= 4 + length else { break }
-                let kind = inbox[inbox.startIndex + 4]
-                let payload = inbox.subdata(in: (inbox.startIndex + 5)..<(inbox.startIndex + 4 + length))
-                inbox.removeFirst(4 + length)
-                guard kind == FrameKind.message.rawValue,
-                      let object = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
-                      object["type"] as? String == "response" else { continue }
-                if let error = object["error"] as? [String: Any] {
-                    if (object["id"] as? Int) == 1 || (object["id"] as? Int) == 2 {
-                        fail("\(error["message"] ?? error)")
-                    }
-                }
-                guard (object["id"] as? Int) == 2 else { continue }
-                let result = object["result"] ?? NSNull()
-                if let data = try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys, .fragmentsAllowed]) {
-                    print(String(decoding: data, as: UTF8.self))
-                }
-                exit(0)
-            }
+        do {
+            let client = try BlockingEngineClient(socketPath: options.socket, clientName: "jetlined rpc")
+            print(try client.call(method, params).prettyPrinted())
+            exit(0)
+        } catch let error as WireError where error.code == "notRunning" {
+            fail("not running")
+        } catch {
+            fail(error.localizedDescription)
         }
     }
 

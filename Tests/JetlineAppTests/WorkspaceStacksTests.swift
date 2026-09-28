@@ -102,6 +102,28 @@ final class WorkspaceStacksTests: XCTestCase {
         XCTAssertEqual(pr(12, head: "c", base: "b", stack: stack).mergedTogether, [11, 12])
     }
 
+    func testStackMergesOnlyWhenEveryOpenLayerIsReady() {
+        var ready = entry(2, number: 11, head: "b", state: "OPEN")
+        ready.mergeable = "MERGEABLE"
+        ready.mergeStateStatus = "CLEAN"
+        var blocked = entry(3, number: 12, head: "c", state: "OPEN")
+        blocked.mergeable = "MERGEABLE"
+        blocked.mergeStateStatus = "BLOCKED"
+        blocked.reviewDecision = "REVIEW_REQUIRED"
+        let merged = entry(1, number: 10, head: "a", state: "MERGED")
+
+        var stack = PRStack(number: 7, baseRefName: "main", position: 3, entries: [merged, ready, blocked])
+        XCTAssertFalse(stack.mergeAll.ready)
+        XCTAssertEqual(stack.mergeAll.blocking?.number, 12)
+        XCTAssertEqual(stack.mergeAll.blocking?.reason, "Review required")
+
+        blocked.mergeStateStatus = "CLEAN"
+        blocked.reviewDecision = "APPROVED"
+        stack.entries = [merged, ready, blocked]
+        XCTAssertTrue(stack.mergeAll.ready)
+        XCTAssertEqual(stack.openEntries.map(\.number), [11, 12])
+    }
+
     func testPullRequestRoundTripsStack() throws {
         let stack = PRStack(number: 7, baseRefName: "main", position: 1, entries: [entry(1, number: 10, head: "a", state: "OPEN")])
         let original = pr(10, head: "a", base: "main", stack: stack)

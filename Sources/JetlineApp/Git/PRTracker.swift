@@ -328,7 +328,12 @@ final class PRTracker {
               let repo = state.repositories.first(where: { $0.id == repoId }) else { return }
         let workspaces = state.workspacesByRepo[repoId] ?? []
         guard !workspaces.isEmpty else {
-            loops[repoId]?.githubFailures = 0
+            // Nothing to poll, but the repo's GitHub metadata still decides
+            // what the creation sheet offers (Import PR). One `gh` call,
+            // cached once it resolves.
+            if case .resolved = await resolvedIdentifier(for: repo) {
+                loops[repoId]?.githubFailures = 0
+            }
             return
         }
 

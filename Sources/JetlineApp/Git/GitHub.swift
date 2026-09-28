@@ -165,8 +165,21 @@ struct PRStack: Codable, Sendable, Hashable {
         var state: String
         var isDraft: Bool
         var headRefName: String
+        /// GitHub's verdict on merging this layer, as on `PullRequest`.
+        var mergeable: String?
+        var mergeStateStatus: String?
+        var reviewDecision: String?
 
         var isOpen: Bool { state.uppercased() == "OPEN" }
+
+        /// Whether GitHub would merge this layer, and what's in the way.
+        var readiness: MergeReadiness {
+            MergeReadiness.evaluate(pr: PullRequest(
+                number: number, title: title, url: url, state: state, isDraft: isDraft,
+                headRefName: headRefName, baseRefName: "", author: .init(login: ""),
+                mergeable: mergeable, mergeStateStatus: mergeStateStatus, reviewDecision: reviewDecision
+            ))
+        }
     }
 
     var number: Int
@@ -183,6 +196,17 @@ struct PRStack: Codable, Sendable, Hashable {
     }
 
     var isTop: Bool { entries.last?.position == position }
+
+    var openEntries: [Entry] { entries.filter(\.isOpen) }
+
+    /// Whether the whole stack can land in one go: every open layer is one
+    /// GitHub would merge. `blocking` is the lowest layer in the way.
+    var mergeAll: (ready: Bool, blocking: (number: Int, reason: String)?) {
+        for entry in openEntries {
+            if let reason = entry.readiness.reason { return (false, (entry.number, reason)) }
+        }
+        return (true, nil)
+    }
 }
 
 /// Discriminated string enums whose serialized form matches the GitHub API's
@@ -402,7 +426,10 @@ enum GitHubRunner {
         stack {
           number baseRefName
           entries(first: 50) {
-            nodes { position pullRequest { number title url state isDraft headRefName } }
+            nodes {
+              position
+              pullRequest { number title url state isDraft headRefName mergeable mergeStateStatus reviewDecision }
+            }
           }
         }
       }
@@ -722,7 +749,7 @@ enum GitHubRunner {
     /// Merge a stacked PR, and with it every open layer below it. Stacks
     /// only merge through the async endpoint: this submits, then polls
     /// until GitHub reports the group merged or queued, or gives up.
-    private static func mergeStacked(
+    static func mergeStacked(
         _ number: Int,
         method: MergeMethod,
         repo: RepoIdentifier,
@@ -827,6 +854,47 @@ enum GitHubRunner {
         }
         let nodes = connection?.nodes ?? []
         return nodes.compactMap { $0.toSummary() }
+    }
+
+    /// One PR by number, in the picker's slim shape (so callers can tell a
+    /// fork). `nil` when the repo has no such PR.
+    static func fetchPRSummary(
+        repo: RepoIdentifier,
+        number: Int,
+        cwd: String
+    ) async throws -> PRSummary? {
+        let query = """
+        query($owner: String!, $name: String!, $number: Int!) {
+          repository(owner: $owner, name: $name) {
+            pullRequest(number: $number) {
+              number title url isDraft updatedAt
+              headRefName baseRefName
+              headRepositoryOwner { login }
+              author { login }
+              commits(last: 1) {
+                nodes {
+                  commit { statusCheckRollup { state } }
+                }
+              }
+            }
+          }
+        }
+        """
+        let stdout = try await runGH(
+            [
+                "api", "graphql",
+                "-F", "owner=\(repo.owner)",
+                "-F", "name=\(repo.name)",
+                "-F", "number=\(number)",
+                "-f", "query=\(query)"
+            ],
+            cwd: cwd
+        )
+        let decoded = try JSONDecoder().decode(GraphQLResponse<SinglePRRepo>.self, from: Data(stdout.utf8))
+        if let errors = decoded.errors, !errors.isEmpty {
+            throw Error.other(errors.map(\.message).joined(separator: "; "))
+        }
+        return decoded.data?.repository?.pullRequest?.toSummary()
     }
 
     /// Not `private`: the conversation/mutation surface in
@@ -976,6 +1044,9 @@ private struct PRNode: Decodable {
             let state: String
             let isDraft: Bool
             let headRefName: String
+            let mergeable: String?
+            let mergeStateStatus: String?
+            let reviewDecision: String?
         }
     }
     /// Present exactly when auto-merge is queued; `mergeMethod` is GitHub's
@@ -1055,7 +1126,10 @@ private struct PRNode: Decodable {
                 url: pr.url,
                 state: pr.state,
                 isDraft: pr.isDraft,
-                headRefName: pr.headRefName
+                headRefName: pr.headRefName,
+                mergeable: pr.mergeable,
+                mergeStateStatus: pr.mergeStateStatus,
+                reviewDecision: pr.reviewDecision
             )
         }
         return PRStack(
@@ -1142,6 +1216,11 @@ private struct OpenPRsRepo: Decodable {
         let nodes: [PRSummaryNode]
         let pageInfo: PageInfo?
     }
+}
+
+private struct SinglePRRepo: Decodable {
+    let repository: Repo?
+    struct Repo: Decodable { let pullRequest: PRSummaryNode? }
 }
 
 private struct PRSummaryNode: Decodable {

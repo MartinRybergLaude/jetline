@@ -5,6 +5,7 @@ import SwiftUI
 struct ChatView: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.tabSlot) private var slot
+    @Environment(\.displayScale) private var displayScale
     let session: ChatSession
     @State private var popup = ComposerPopup()
 
@@ -31,10 +32,9 @@ struct ChatView: View {
                 bottom
                     .frame(maxWidth: 720)
                     .padding(.horizontal, 24)
-                    .padding(.vertical, 12)
+                    .padding(.vertical, Self.barPadding)
                     .frame(maxWidth: .infinity)
             }
-            .onGeometryChange(for: CGFloat.self, of: \.size.height) { slot?.composerBarHeight = $0 }
         }
         .background(Color(nsColor: .textBackgroundColor))
         // The column's width floor is `TabContentRoot`'s, not the content's.
@@ -67,6 +67,9 @@ struct ChatView: View {
 
     // MARK: Bottom
 
+    /// Above and below the composer bar's content.
+    private static let barPadding: CGFloat = 12
+
     @ViewBuilder
     private var bottom: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -86,8 +89,10 @@ struct ChatView: View {
             if let request = session.requests.first {
                 ChatRequestPanel(session: session, request: request)
             } else {
-                ChatComposer(session: session, popup: popup)
-                    .disabled(session.isReverting)
+                ChatComposer(session: session, popup: popup) { composer in
+                    slot?.composerBarHeight = 1 / displayScale + 2 * Self.barPadding + composer
+                }
+                .disabled(session.isReverting)
             }
         }
     }

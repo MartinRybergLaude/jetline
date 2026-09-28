@@ -217,7 +217,7 @@ final class EngineConnection {
     private func makeClient() throws -> EngineClient {
         switch target {
         case .local:
-            let server = localServer ?? EngineServer(engine: Engine(), engineVersion: JetlineVersion.current)
+            let server = localServer ?? Self.makeLocalServer()
             localServer = server
             guard let (a, b) = Sockets.pair() else { throw WireError("Couldn't create a local socket pair.") }
             server.accept(FramedConnection(readFD: a, writeFD: a, label: "local-server"))
@@ -225,6 +225,21 @@ final class EngineConnection {
         case let .remote(remote):
             return try spawnRemote(remote)
         }
+    }
+
+    /// The in-process engine, also listening on a socket in the data
+    /// directory so the agents it launches can reach its tools. Without the
+    /// socket everything else still works; the agents just get no tools.
+    private static func makeLocalServer() -> EngineServer {
+        let server = EngineServer(engine: Engine(), engineVersion: JetlineVersion.current)
+        let path = JetlineDaemon.socketPath(named: "jetline-app")
+        let previous = umask(0o077)
+        defer { umask(previous) }
+        if let listener = try? Sockets.listen(path: path) {
+            server.accept(onListener: listener)
+            server.engine.agentToolsSocket = path
+        }
+        return server
     }
 
     private func spawnRemote(_ remote: RemoteEngine) throws -> EngineClient {

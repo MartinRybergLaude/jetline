@@ -92,12 +92,18 @@ final class FramedConnection: @unchecked Sendable {
         source.resume()
     }
 
-    func send(_ kind: FrameKind, _ payload: Data) {
+    /// `[u32 length][u8 kind][payload]`, length counting the kind byte.
+    static func frame(_ kind: FrameKind, _ payload: Data) -> Data {
         var frame = Data(capacity: payload.count + 5)
         var length = UInt32(payload.count + 1).bigEndian
         withUnsafeBytes(of: &length) { frame.append(contentsOf: $0) }
         frame.append(kind.rawValue)
         frame.append(payload)
+        return frame
+    }
+
+    func send(_ kind: FrameKind, _ payload: Data) {
+        let frame = Self.frame(kind, payload)
         let size = frame.count
         let bytes = frame
         // Enqueue under the lock, so nothing can be queued after shutdown

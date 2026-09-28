@@ -3,6 +3,7 @@ import JetlineApp
 #if os(macOS)
 // The macOS app. `jetline daemon …` runs the headless daemon from the same
 // binary, so a Mac can host remote clients too.
+JetlineDaemon.commandPrefix = ["daemon"]
 if CommandLine.arguments.dropFirst().first == "daemon" {
     JetlineDaemon.run(arguments: Array(CommandLine.arguments.dropFirst(2)))
 } else {
