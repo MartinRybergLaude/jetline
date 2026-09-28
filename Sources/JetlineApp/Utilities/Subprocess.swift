@@ -64,18 +64,16 @@ enum Subprocess {
         if let cwd { process.currentDirectoryURL = URL(fileURLWithPath: cwd) }
         process.environment = Subprocess.inheritedEnvironment(overrides: env)
 
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        process.standardOutput = outPipe
-        process.standardError = errPipe
+        guard let outDrain = PipeDrain() else { return spawnFailure(errno) }
+        guard let errDrain = PipeDrain() else {
+            let error = errno
+            outDrain.cancel()
+            outDrain.closeWriteEnd()
+            return spawnFailure(error)
+        }
+        process.standardOutput = outDrain.writeEnd
+        process.standardError = errDrain.writeEnd
         if closeStdin { process.standardInput = FileHandle.nullDevice }
-
-        // Drain stdout/stderr via Foundation's `readabilityHandler` so reads
-        // run on its private kqueue source instead of pinning a thread inside
-        // a blocking `readDataToEndOfFile`. See PipeDrain for why we don't
-        // close the fd from another thread (ObjC exception inside read).
-        let outDrain = PipeDrain(handle: outPipe.fileHandleForReading)
-        let errDrain = PipeDrain(handle: errPipe.fileHandleForReading)
 
         return await withCheckedContinuation { (cont: CheckedContinuation<Result, Never>) in
             // Fires once the child has exited and Process has observed it.
@@ -100,12 +98,17 @@ enum Subprocess {
 
             do {
                 try process.run()
+                // The child has its copies; EOF only comes once ours are gone.
+                outDrain.closeWriteEnd()
+                errDrain.closeWriteEnd()
             } catch {
                 // `process.run()` threw — terminationHandler will never
                 // fire because the child never started. Tear the drains
                 // down and resume with the spawn-failure sentinel.
                 outDrain.cancel()
                 errDrain.cancel()
+                outDrain.closeWriteEnd()
+                errDrain.closeWriteEnd()
                 processSlots.release()
                 cont.resume(returning: Result(
                     stdout: "",
@@ -121,6 +124,13 @@ enum Subprocess {
                 }
             }
         }
+    }
+
+    /// Out of file descriptors, most likely: report it like a failed spawn.
+    private static func spawnFailure(_ error: Int32) -> Result {
+        let reason = String(cString: strerror(error))
+        processSlots.release()
+        return Result(stdout: "", stderr: "spawn failed: couldn't create a pipe (\(reason))", status: -1)
     }
 }
 
@@ -161,37 +171,64 @@ private final class ConcurrencyGate: @unchecked Sendable {
     }
 }
 
-/// Pulls bytes off a child-process pipe via `readabilityHandler`.
-/// The drain runs on Foundation's private dispatch source, not on the
-/// caller's thread, so the caller can abandon the drain at any time
-/// (`cancel`) by clearing the handler — no in-flight syscall to
-/// interrupt, and no need to close the fd from a parallel thread,
-/// which raises an uncatchable ObjC exception inside the read.
+/// A child-process output pipe and the drain on its read end. The read
+/// end is a raw fd on a dispatch source, closed by the source's cancel
+/// handler: the caller can abandon the drain at any time (`cancel`) with
+/// no read in flight to interrupt, and the fd is always closed.
+/// `Pipe` + `readabilityHandler` isn't used because corelibs Foundation
+/// never closes a read handle that had a handler, leaking two fds per
+/// subprocess until the daemon runs out; its `Pipe()` then hands back
+/// fd -1, and setting a handler on that traps.
 private final class PipeDrain: @unchecked Sendable {
-    private let handle: FileHandle
+    /// The end the child writes to. `closeWriteEnd()` once it has spawned.
+    let writeEnd: FileHandle
+    private let source: DispatchSourceRead
     private let lock = NSLock()
     private var data = Data()
     private var done = false
     private let semaphore = DispatchSemaphore(value: 0)
 
-    init(handle: FileHandle) {
-        self.handle = handle
-        handle.readabilityHandler = { [weak self] handle in
-            guard let self else { return }
-            let chunk = handle.availableData
-            if chunk.isEmpty {
-                self.markDone()
+    init?() {
+        var fds: [Int32] = [-1, -1]
+        guard pipe(&fds) == 0 else { return nil }
+        let readFD = fds[0]
+        // Close-on-exec so other children don't inherit these; the child's
+        // own stdout/stderr come from dup2, which clears the flag.
+        _ = fcntl(readFD, F_SETFD, FD_CLOEXEC)
+        _ = fcntl(fds[1], F_SETFD, FD_CLOEXEC)
+        _ = fcntl(readFD, F_SETFL, fcntl(readFD, F_GETFL) | O_NONBLOCK)
+        writeEnd = FileHandle(fileDescriptor: fds[1], closeOnDealloc: false)
+        source = DispatchSource.makeReadSource(fileDescriptor: readFD, queue: DispatchQueue(label: "jetline.subprocess.drain"))
+        source.setEventHandler { [weak self] in self?.drain(readFD) }
+        source.setCancelHandler { _ = close(readFD) }
+        source.resume()
+    }
+
+    func closeWriteEnd() {
+        try? writeEnd.close()
+    }
+
+    private func drain(_ fd: Int32) {
+        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        while true {
+            let n = read(fd, &buffer, buffer.count)
+            if n > 0 {
+                lock.lock()
+                data.append(contentsOf: buffer[0..<n])
+                lock.unlock()
+            } else if n < 0, errno == EINTR {
+                continue
+            } else if n < 0, errno == EAGAIN || errno == EWOULDBLOCK {
+                return
             } else {
-                self.lock.lock()
-                self.data.append(chunk)
-                self.lock.unlock()
+                markDone()
+                return
             }
         }
     }
 
     /// Wait for EOF up to `timeout`, then return whatever has been
-    /// collected so far. After return, the handler is detached and no
-    /// further bytes are appended.
+    /// collected so far. After return, no further bytes are appended.
     func waitAndCollect(timeout: DispatchTimeInterval) -> Data {
         _ = semaphore.wait(timeout: .now() + timeout)
         cancel()
@@ -211,7 +248,7 @@ private final class PipeDrain: @unchecked Sendable {
         done = true
         lock.unlock()
         if wasFirst {
-            handle.readabilityHandler = nil
+            source.cancel()
             semaphore.signal()
         }
     }
