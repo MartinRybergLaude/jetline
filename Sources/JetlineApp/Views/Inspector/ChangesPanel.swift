@@ -46,19 +46,32 @@ private struct ChangesPanelContent: View {
                 title: emptyTitle
             )
         } else {
-            LazyVStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 6) {
                 summaryHeader(snap: snap)
-                ForEach(DiffTree.rows(for: snap.files, collapsed: collapsedFolders)) { row in
-                    Group {
-                        switch row {
-                        case .folder(let path, let name, _): folderRow(path: path, name: name)
-                        case .file(let file, _):             fileRow(file)
+                // Fills the rest of the inspector and scrolls within the
+                // card, so the summary stays put.
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(DiffTree.rows(for: snap.files, collapsed: collapsedFolders)) { row in
+                            Group {
+                                switch row {
+                                case .folder(let path, let name, _): folderRow(path: path, name: name)
+                                case .file(let file, _):             fileRow(file)
+                                }
+                            }
+                            .padding(.leading, CGFloat(row.depth) * Self.indentWidth)
                         }
                     }
-                    .padding(.leading, CGFloat(row.depth) * Self.indentWidth)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
                 }
+                .scrollIndicators(.visible)
+                .frame(maxHeight: .infinity)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .cardSurface()
             }
             .padding(.horizontal, 12)
+            .padding(.bottom, 12)
         }
     }
 

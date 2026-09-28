@@ -72,8 +72,9 @@ private struct OutputShell<Status: View>: View {
     var body: some View {
         VStack(spacing: 0) {
             statusRow
-            Divider()
             outputArea
+                .padding(.horizontal, 12)
+                .padding(.bottom, 12)
         }
     }
 
@@ -105,9 +106,12 @@ private struct OutputShell<Status: View>: View {
     /// until SwiftUI got round to dismantling the host — invisible when the
     /// next run spawned in the same frame, obvious once a run could sit
     /// queued behind a peer for a couple of seconds.
+    ///
+    /// Inset inside the card rather than clipped to it: the terminal is a
+    /// Metal-backed NSView, which SwiftUI's clip shapes don't reach.
     private var outputArea: some View {
         RunTerminalHost(emulator: emulator)
-            .background(Color(nsColor: .textBackgroundColor))
+            .padding(8)
             .overlay {
                 if emulator == nil {
                     Text(emptyLabel)
@@ -115,6 +119,7 @@ private struct OutputShell<Status: View>: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .cardSurface(raised: false, fill: Color(nsColor: .textBackgroundColor))
     }
 
     private func showCopyFeedback() {

@@ -46,9 +46,9 @@ struct InspectorView: View {
             }
     }
 
-    /// Only the changes panel is scrolled from here — the others own their
-    /// scrolling because they pin something to an edge (run output
-    /// autoscrolls to the tail, the PR panel pins the merge footer).
+    /// Every panel owns its scrolling: the file list scrolls inside its
+    /// card, run output autoscrolls to the tail, the PR panel pins the
+    /// merge footer.
     @ViewBuilder
     private var content: some View {
         switch state.inspectorTab {
@@ -58,11 +58,8 @@ struct InspectorView: View {
                     .padding(.horizontal, 12)
                     .padding(.top, 8)
                     .padding(.bottom, 4)
-                ScrollView {
-                    ChangesPanel(mode: ui.diffMode)
-                        .padding(.vertical, 8)
-                }
-                .scrollIndicators(.visible)
+                ChangesPanel(mode: ui.diffMode)
+                    .padding(.top, 8)
             }
         case .pr:
             // Owns its own scrolling: the merge button is pinned in a footer
