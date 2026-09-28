@@ -5,21 +5,25 @@ struct SidebarView: View {
     @EnvironmentObject private var state: AppState
     @State private var showingCreation: CreationRequest?
     @State private var showingRepoSettings: Repository?
+    @State private var collapsedHosts: Set<String> = []
 
     var body: some View {
         List {
             ForEach(state.hosts) { host in
                 // With only this Mac there's nothing to group.
-                if state.hosts.count > 1 {
-                    HostGroupHeader(host: host, isFirst: host === state.hosts.first) {
-                        addRepository(on: host)
-                    }
+                let grouped = state.hosts.count > 1
+                let repos = isCollapsed(host) ? [] : host.repositories
+                if grouped, repos.isEmpty {
+                    hostHeader(host)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 10))
                 }
-                ForEach(host.repositories) { repo in
+                ForEach(repos) { repo in
                     RepositorySection(
                         repo: repo,
                         onNewWorkspace: { showingCreation = CreationRequest(repository: repo, baseWorkspaceId: $0) },
-                        onOpenSettings: { showingRepoSettings = repo }
+                        onOpenSettings: { showingRepoSettings = repo },
+                        groupHeader: grouped && repo.id == repos.first?.id ? AnyView(hostHeader(host)) : nil
                     )
                     // A remote whose link is down stays listed, dimmed.
                     .opacity(host.isLocal || host.isSynced ? 1 : 0.5)
@@ -28,7 +32,7 @@ struct SidebarView: View {
                     state.moveRepositorySections(in: host, from: offsets, to: destination)
                 }
 
-                if host.repositories.isEmpty, host.isSynced || host.isLocal {
+                if !isCollapsed(host), host.repositories.isEmpty, host.isSynced || host.isLocal {
                     emptyHint(for: host)
                 }
             }
@@ -46,6 +50,25 @@ struct SidebarView: View {
         .sheet(item: $state.pendingRemoteSetup) { request in
             ConnectRemoteSheet(request: request) { state.pendingRemoteSetup = nil }
         }
+    }
+
+    private func hostHeader(_ host: EngineHost) -> HostGroupHeader {
+        HostGroupHeader(host: host, isFirst: host === state.hosts.first, isExpanded: expansion(of: host)) {
+            addRepository(on: host)
+        }
+    }
+
+    private func isCollapsed(_ host: EngineHost) -> Bool {
+        state.hosts.count > 1 && collapsedHosts.contains(host.id)
+    }
+
+    private func expansion(of host: EngineHost) -> Binding<Bool> {
+        Binding(
+            get: { !collapsedHosts.contains(host.id) },
+            set: { expanded in
+                if expanded { collapsedHosts.remove(host.id) } else { collapsedHosts.insert(host.id) }
+            }
+        )
     }
 
     private func addRepository(on host: EngineHost) {
@@ -114,94 +137,94 @@ private struct CreationRequest: Identifiable {
     var id: String { repository.id + "|" + (baseWorkspaceId ?? "") }
 }
 
-/// The divider and title above one machine's repositories: its name, the
-/// link's state, and what you can do with it.
+/// The title above one machine's repositories, drawn like a Finder sidebar
+/// section header: plain secondary text, separated by whitespace, with its
+/// controls fading in on hover. A remote's link shows beside its name: a
+/// green dot when up, a spinner while connecting, a warning when down.
 private struct HostGroupHeader: View {
     @EnvironmentObject private var state: AppState
     let host: EngineHost
     let isFirst: Bool
+    @Binding var isExpanded: Bool
     let onAddRepository: () -> Void
+    @State private var hovering = false
     @State private var confirmingRemoval = false
     @State private var forwardingPort = false
     @State private var portText = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if !isFirst {
-                Rectangle()
-                    .fill(Color.primary.opacity(0.12))
-                    .frame(height: 1)
-                    .padding(.bottom, 4)
-            }
-            HStack(spacing: 7) {
-                Image(systemName: host.isLocal ? "laptopcomputer" : "server.rack")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Text(host.name.uppercased())
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 5) {
+                Text(host.name)
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 6, height: 6)
-                    .help(statusHelp)
+                statusIndicator
                 Spacer(minLength: 4)
-                Button(action: onAddRepository) {
-                    Image(systemName: "plus").font(.system(size: 11, weight: .semibold))
-                }
-                .buttonStyle(.borderless)
-                .disabled(!host.isLocal && !host.isSynced)
-                .help("Add a repository on \(host.isLocal ? "this Mac" : host.name)")
-                if !host.isLocal {
-                    Menu {
-                        Button("Reconnect") { host.connection.reconnectNow() }
-                        Button("Set Up / Update jetlined…") {
-                            state.pendingRemoteSetup = RemoteSetupRequest(hostId: host.id)
-                        }
-                        if let ports = host.ports {
-                            Divider()
-                            PortForwardingMenuItems(ports: ports) {
-                                portText = ""
-                                forwardingPort = true
-                            }
-                        }
-                        Divider()
-                        Button("Remove \(host.name)…", role: .destructive) { confirmingRemoval = true }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.primary)
-                            .frame(width: 16, height: 16)
-                            .contentShape(Rectangle())
+                HStack(spacing: 10) {
+                    Button(action: onAddRepository) {
+                        Image(systemName: "plus")
                     }
-                    .menuStyle(.button)
-                    .buttonStyle(.plain)
-                    .menuIndicator(.hidden)
-                    .fixedSize()
+                    .disabled(!host.isLocal && !host.isSynced)
+                    .help("Add a repository on \(host.isLocal ? "this Mac" : host.name)")
+                    if !host.isLocal {
+                        Menu {
+                            menuItems
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
+                        .menuStyle(.button)
+                        .menuIndicator(.hidden)
+                        .fixedSize()
+                        .help("\(host.name) options")
+                    }
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
+                    } label: {
+                        Image(systemName: "chevron.right")
+                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                            .frame(width: 10)
+                    }
+                    .help(isExpanded ? "Hide" : "Show")
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .opacity(hovering ? 1 : 0)
+            }
+            .frame(minHeight: 18)
+            .contentShape(Rectangle())
+            .onHover { hovering = $0 }
+            .contextMenu {
+                Button(host.isLocal ? "Add Repository…" : "Add Repository on \(host.name)…", action: onAddRepository)
+                    .disabled(!host.isLocal && !host.isSynced)
+                if !host.isLocal {
+                    Divider()
+                    menuItems
                 }
             }
+
             if let detail {
-                Text(detail)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .textSelection(.enabled)
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(detail)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                    if needsSetup {
+                        // Most first-time failures are a missing or outdated engine.
+                        Button("Set Up…") { state.pendingRemoteSetup = RemoteSetupRequest(hostId: host.id) }
+                            .buttonStyle(.link)
+                    }
+                }
+                .font(.caption)
             }
-            if needsSetup {
-                // Most first-time failures are a missing or outdated engine.
-                Button("Set Up…") { state.pendingRemoteSetup = RemoteSetupRequest(hostId: host.id) }
-                    .controlSize(.small)
-            }
-            if let ports = host.ports {
+            if isExpanded, let ports = host.ports {
                 ForwardedPortsView(ports: ports) {
                     state.pendingRemoteSetup = RemoteSetupRequest(hostId: host.id)
                 }
             }
         }
-        .padding(.top, isFirst ? 2 : 8)
-        .padding(.bottom, 2)
-        .listRowSeparator(.hidden)
-        .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 10))
+        .padding(.top, isFirst ? 0 : 10)
         .confirmationDialog(
             "Remove \(host.name) from Jetline?",
             isPresented: $confirmingRemoval
@@ -221,12 +244,51 @@ private struct HostGroupHeader: View {
         }
     }
 
-    private var statusColor: Color {
+    @ViewBuilder
+    private var menuItems: some View {
+        Button("Reconnect") { host.connection.reconnectNow() }
+        Button("Set Up / Update jetlined…") {
+            state.pendingRemoteSetup = RemoteSetupRequest(hostId: host.id)
+        }
+        if let ports = host.ports {
+            Divider()
+            PortForwardingMenuItems(ports: ports) {
+                portText = ""
+                forwardingPort = true
+            }
+        }
+        Divider()
+        Button("Remove \(host.name)…", role: .destructive) { confirmingRemoval = true }
+    }
+
+    @ViewBuilder
+    private var statusIndicator: some View {
         switch host.connection.status {
-        case .connected: return .green
-        case .connecting, .reconnecting: return .yellow
-        case .failed: return .red
-        case .idle: return .secondary
+        case .connected:
+            if !host.isLocal {
+                Circle()
+                    .fill(.green.gradient)
+                    .frame(width: 6, height: 6)
+                    .help(statusHelp)
+            }
+        case .connecting, .reconnecting:
+            ProgressView()
+                .controlSize(.mini)
+                .scaleEffect(0.8)
+                .frame(width: 12, height: 12)
+                .help(statusHelp)
+        case .failed:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .symbolRenderingMode(.multicolor)
+                .font(.system(size: 10))
+                .help(statusHelp)
+        case .idle:
+            if !host.isLocal {
+                Image(systemName: "bolt.horizontal.circle")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .help(statusHelp)
+            }
         }
     }
 

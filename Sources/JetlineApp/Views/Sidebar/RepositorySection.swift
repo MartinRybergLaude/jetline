@@ -10,6 +10,10 @@ struct RepositorySection: View {
     /// Opens the creation sheet; a workspace id stacks the new one on it.
     let onNewWorkspace: (_ baseWorkspaceId: String?) -> Void
     let onOpenSettings: () -> Void
+    /// A machine's title, when this is the first repository under it. It
+    /// rides in this section's header because a row of its own would sit a
+    /// full section gap above its repositories.
+    var groupHeader: AnyView? = nil
 
     @State private var expanded: Bool = true
     @State private var rowHeight: CGFloat = 30
@@ -78,123 +82,136 @@ struct RepositorySection: View {
                 }
             }
         } header: {
-            HStack(spacing: 8) {
-                // Small dedicated chevron button. The expand/collapse used
-                // to be a Button (or tap gesture) wrapping the entire row,
-                // which captured mouseDown and prevented `.onMove` from
-                // arming the row drag. Keeping the tap target tiny — just
-                // the chevron — means the icon + name area is plain
-                // non-interactive content, which `.onMove` is free to
-                // drag. The plus/gear buttons at the trailing edge are
-                // also Buttons but stay narrow for the same reason.
-                Button {
-                    withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
-                } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                if let groupHeader {
+                    // Title lines up with the chevron, controls with the gear.
+                    groupHeader
+                        .padding(.leading, 5)
+                        .padding(.trailing, 8)
+                        .offset(x: -6)
+                }
+                repositoryHeader
+            }
+        }
+    }
+
+    private var repositoryHeader: some View {
+        HStack(spacing: 8) {
+            // Small dedicated chevron button. The expand/collapse used
+            // to be a Button (or tap gesture) wrapping the entire row,
+            // which captured mouseDown and prevented `.onMove` from
+            // arming the row drag. Keeping the tap target tiny — just
+            // the chevron — means the icon + name area is plain
+            // non-interactive content, which `.onMove` is free to
+            // drag. The plus/gear buttons at the trailing edge are
+            // also Buttons but stay narrow for the same reason.
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+            } label: {
+                Group {
+                    if hasWorkspaces {
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Color.clear
+                    }
+                }
+                .frame(width: 12, alignment: .center)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!hasWorkspaces)
+            // Pull the repo label to 3pt from the chevron; the stack's
+            // 8pt spacing is right for the trailing buttons but too
+            // airy here.
+            .padding(.trailing, -5)
+            Button {
+                state.selectRepositoryHead(repo)
+            } label: {
+                HStack(spacing: 8) {
                     Group {
-                        if hasWorkspaces {
-                            Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(.secondary)
+                        if state.isLocal(repoId: repo.id), let favicon = iconLoader.icon(for: repo.path) {
+                            Image(nsImage: favicon)
+                                .resizable()
+                                .interpolation(.high)
+                                .aspectRatio(contentMode: .fit)
+                                .frame(width: 15, height: 15)
                         } else {
-                            Color.clear
+                            Image(systemName: "folder")
+                                .font(.system(size: 14, weight: .regular))
+                                .foregroundStyle(.primary)
                         }
                     }
-                    .frame(width: 12, alignment: .center)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(!hasWorkspaces)
-                // Pull the repo label to 3pt from the chevron; the stack's
-                // 8pt spacing is right for the trailing buttons but too
-                // airy here.
-                .padding(.trailing, -5)
-                Button {
-                    state.selectRepositoryHead(repo)
-                } label: {
-                    HStack(spacing: 8) {
-                        Group {
-                            if state.isLocal(repoId: repo.id), let favicon = iconLoader.icon(for: repo.path) {
-                                Image(nsImage: favicon)
-                                    .resizable()
-                                    .interpolation(.high)
-                                    .aspectRatio(contentMode: .fit)
-                                    .frame(width: 15, height: 15)
-                            } else {
-                                Image(systemName: "folder")
-                                    .font(.system(size: 14, weight: .regular))
-                                    .foregroundStyle(.primary)
-                            }
-                        }
-                        .frame(width: 22, alignment: .center)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(repo.name)
-                                .font(.body)
-                                .textCase(nil)
-                                .foregroundStyle(isBaseSelected ? Color.accentColor.opacity(0.9) : Color.primary)
-                            Text(repo.defaultBranch)
-                                .font(.caption2)
-                                .textCase(nil)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                        Spacer(minLength: 0)
+                    .frame(width: 22, alignment: .center)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(repo.name)
+                            .font(.body)
+                            .textCase(nil)
+                            .foregroundStyle(isBaseSelected ? Color.accentColor.opacity(0.9) : Color.primary)
+                        Text(repo.defaultBranch)
+                            .font(.caption2)
+                            .textCase(nil)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .contentShape(Rectangle())
+                    Spacer(minLength: 0)
                 }
-                .buttonStyle(.plain)
-                .help("Open \(repo.defaultBranch) in \(repo.name)")
-                Spacer(minLength: 0)
-                Button { onNewWorkspace(nil) } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 13, weight: .regular))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("New workspace")
-                Button(action: onOpenSettings) {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 13, weight: .regular))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Repository settings")
-                .padding(.trailing, 8)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1)
+                .contentShape(Rectangle())
             }
-            .padding(.leading, 4)
-            .padding(.vertical, 1)
-            .background {
-                if isBaseSelected {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(Color.primary.opacity(0.06))
-                }
+            .buttonStyle(.plain)
+            .help("Open \(repo.defaultBranch) in \(repo.name)")
+            Spacer(minLength: 0)
+            Button { onNewWorkspace(nil) } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundStyle(.secondary)
             }
-            // The sidebar list ignores `.listRowInsets` on section headers and
-            // places the header slot 6pt to the right of row slots (same
-            // width), so a plain translation is what lines the header pill up
-            // with the workspace-row pills below.
-            .offset(x: -6)
-            // Compactness comes from the real paddings above, not from
-            // negative padding: the list sizes the header slot from the
-            // content's fitting height and clips exactly at the slot's top,
-            // so a negative top padding shears that many points off the
-            // selection pill (`listSectionSpacing` et al., which would trim
-            // the spacing properly, are macOS-unavailable).
-            .contextMenu {
-                Button("New workspace…") { onNewWorkspace(nil) }
-                if isBaseOpen {
-                    Button("Close workspace") { state.closeWorkspace(baseWorkspaceId) }
-                }
-                Divider()
-                Button("Repository settings…", action: onOpenSettings)
-                Button("Reveal in Finder") {
-                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: repo.path)])
-                }
-                Divider()
-                Button("Remove…", role: .destructive) {
-                    state.removeRepository(repo.id)
-                }
+            .buttonStyle(.plain)
+            .help("New workspace")
+            Button(action: onOpenSettings) {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Repository settings")
+            .padding(.trailing, 8)
+        }
+        .padding(.leading, 4)
+        .padding(.vertical, 1)
+        .background {
+            if isBaseSelected {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color.primary.opacity(0.06))
+            }
+        }
+        // The sidebar list ignores `.listRowInsets` on section headers and
+        // places the header slot 6pt to the right of row slots (same
+        // width), so a plain translation is what lines the header pill up
+        // with the workspace-row pills below.
+        .offset(x: -6)
+        // Compactness comes from the real paddings above, not from
+        // negative padding: the list sizes the header slot from the
+        // content's fitting height and clips exactly at the slot's top,
+        // so a negative top padding shears that many points off the
+        // selection pill (`listSectionSpacing` et al., which would trim
+        // the spacing properly, are macOS-unavailable).
+        .contextMenu {
+            Button("New workspace…") { onNewWorkspace(nil) }
+            if isBaseOpen {
+                Button("Close workspace") { state.closeWorkspace(baseWorkspaceId) }
+            }
+            Divider()
+            Button("Repository settings…", action: onOpenSettings)
+            Button("Reveal in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: repo.path)])
+            }
+            Divider()
+            Button("Remove…", role: .destructive) {
+                state.removeRepository(repo.id)
             }
         }
     }
