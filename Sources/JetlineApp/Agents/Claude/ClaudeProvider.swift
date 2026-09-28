@@ -241,13 +241,14 @@ actor ClaudeProvider: AgentProvider {
         continuation.yield(.turnStarted(id: turnId))
     }
 
-    /// A user message starting. Ours are on screen already; any other came
-    /// in over Remote Control and starts a turn of its own.
+    /// A user message starting. Ours are on screen already; any other a
+    /// person wrote came in over Remote Control and starts a turn of its own.
     private func handleReplay(_ message: JSONValue) {
         let uuid = message["uuid"]?.string
         if let uuid, sentMessageIds.remove(uuid) != nil { return }
         guard message["parent_tool_use_id"]?.string == nil,
-              message["isSynthetic"]?.bool != true else { return }
+              message["isSynthetic"]?.bool != true,
+              Self.isFromAPerson(message) else { return }
         let content = message["message"]?["content"]
         let blocks = content?.array ?? []
         let text = content?.string ?? blocks
@@ -264,6 +265,15 @@ actor ClaudeProvider: AgentProvider {
             content: .userMessage(.init(text: text, images: images))
         )))
         recordAnchor(message, turnId: turnId)
+    }
+
+    /// The CLI tags input it made itself (a finished background task's
+    /// `<task-notification>`, an auto-continuation, a plugin) with an
+    /// `origin` kind; people are `human` / `person`, or untagged. The model
+    /// still gets the rest; they just aren't shown as the user speaking.
+    static func isFromAPerson(_ message: JSONValue) -> Bool {
+        guard let kind = message["origin"]?["kind"]?.string else { return true }
+        return kind == "human" || kind == "person"
     }
 
     /// Writes a base64 image block (a photo sent from the Claude app) to a

@@ -298,3 +298,17 @@ func finalItems(in events: [AgentEvent]) -> [AgentItem] {
 func lastItem(in events: [AgentEvent], where match: (AgentItem.Content) -> Bool) -> AgentItem? {
     finalItems(in: events).last { match($0.content) }
 }
+
+final class ClaudeReplayOriginTests: XCTestCase {
+    func testOnlyPeopleShowAsTheUserSpeaking() throws {
+        func replay(_ origin: String?) throws -> JSONValue {
+            let tag = origin.map { #","origin":{"kind":"\#($0)"}"# } ?? ""
+            return try JSONValue.parse(Data(#"{"type":"user","isReplay":true,"message":{"role":"user","content":"x"}\#(tag)}"#.utf8))
+        }
+        XCTAssertTrue(ClaudeProvider.isFromAPerson(try replay(nil)))
+        XCTAssertTrue(ClaudeProvider.isFromAPerson(try replay("human")))
+        // A finished background command, as Claude Code 2.1 echoes it.
+        XCTAssertFalse(ClaudeProvider.isFromAPerson(try replay("task-notification")))
+        XCTAssertFalse(ClaudeProvider.isFromAPerson(try replay("auto-continuation")))
+    }
+}
