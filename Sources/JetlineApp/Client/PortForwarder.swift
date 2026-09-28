@@ -81,6 +81,7 @@ final class PortForwarder {
 
     /// Forwarded, failing, or switched off — what the sidebar lists.
     var entries: [Entry] {
+        guard !isSameMachine else { return [] }
         let listening = Dictionary(remotePorts.map { ($0.port, $0) }, uniquingKeysWith: { a, _ in a })
         var ports = Set(prefs.manual)
         if prefs.automatic {

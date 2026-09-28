@@ -183,18 +183,22 @@ public enum JetlineDaemon {
             server.onClientCountChanged = { count in log("clients: \(count)") }
             DaemonRuntime.shared.server = server
 
+            // Accept until EAGAIN: on Linux a dispatch source doesn't report
+            // readiness a handler left unconsumed.
+            _ = fcntl(listener, F_SETFL, fcntl(listener, F_GETFL) | O_NONBLOCK)
             let acceptSource = DispatchSource.makeReadSource(fileDescriptor: listener, queue: .main)
             acceptSource.setEventHandler {
-                guard let fd = Sockets.accept(listener) else { return }
-                // Only this user's processes (the socket is 0600 in a 0700
-                // directory already; this is belt and braces).
-                guard jl_peer_uid(fd) == Int32(getuid()) else {
-                    close(fd)
-                    return
-                }
-                MainActor.assumeIsolated {
-                    let connection = FramedConnection(readFD: fd, writeFD: fd, label: "client")
-                    server.accept(connection)
+                while let fd = Sockets.accept(listener) {
+                    // Only this user's processes (the socket is 0600 in a 0700
+                    // directory already; this is belt and braces).
+                    guard jl_peer_uid(fd) == Int32(getuid()) else {
+                        close(fd)
+                        continue
+                    }
+                    MainActor.assumeIsolated {
+                        let connection = FramedConnection(readFD: fd, writeFD: fd, label: "client")
+                        server.accept(connection)
+                    }
                 }
             }
             acceptSource.resume()

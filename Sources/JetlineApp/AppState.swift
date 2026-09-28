@@ -229,6 +229,8 @@ final class AppState: ObservableObject {
         let ids = workspaceStates.keys.filter { host.owns(workspaceId: $0) }
         let selectedGoes = selectedWorkspaceId.map { host.owns(workspaceId: $0) } ?? false
         for id in ids { dropLocal(id) }
+        // The engine keeps these tabs running; a later reconnect should show them.
+        closingTabs = closingTabs.filter { !host.owns(workspaceId: $0.value) }
         host.repositories = []
         host.workspacesByRepo = [:]
         host.repoMetadataByRepo = [:]
