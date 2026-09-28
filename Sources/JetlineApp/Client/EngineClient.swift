@@ -34,9 +34,11 @@ final class EngineClient {
         connection.onFrames = { [weak self] frames in
             var deliveries: [@MainActor (EngineClient) -> Void] = []
             for frame in frames {
-                switch frame.kind {
-                case .tunnelOpen, .tunnelData, .tunnelClose, .tunnelAck:
+                if frame.kind.isTunnel {
                     tunnelRoute.mux?.receive(frame.kind, frame.payload)
+                    continue
+                }
+                switch frame.kind {
                 case .message:
                     guard let head = try? decoder.decode(Wire.ServerHead.self, from: frame.payload) else { continue }
                     if head.type == "response", let id = head.id {
@@ -56,7 +58,7 @@ final class EngineClient {
                 case .terminalOutput:
                     guard let (id, offset, bytes) = TerminalFrame.parseOutput(frame.payload) else { continue }
                     deliveries.append { $0.terminalHandlers[id]?(offset, bytes) }
-                case .terminalInput:
+                case .terminalInput, .tunnelOpen, .tunnelData, .tunnelClose, .tunnelAck:
                     continue
                 }
             }
@@ -85,7 +87,6 @@ final class EngineClient {
     func close() {
         guard !isClosed else { return }
         isClosed = true
-        tunnelRoute.mux?.close()
         pending.failAll(WireError.disconnected)
         connection.close()
     }

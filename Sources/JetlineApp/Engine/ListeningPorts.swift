@@ -28,8 +28,8 @@ final class PortScanner: @unchecked Sendable {
     private let queue = DispatchQueue(label: "jetline.ports", qos: .utility)
     private var timer: DispatchSourceTimer?
     private let lock = NSLock()
-    private var latest: [ListeningPort] = []
-    private var hasScanned = false
+    /// Nil until the first scan.
+    private var latest: [ListeningPort]?
     /// Socket inode → process name (Linux), kept across scans.
     private var processNames: [UInt64: String] = [:]
     private let interval: DispatchTimeInterval
@@ -37,11 +37,19 @@ final class PortScanner: @unchecked Sendable {
     /// Called on a background queue with the new list.
     var onChange: (@Sendable ([ListeningPort]) -> Void)?
 
-    init(interval: DispatchTimeInterval = .seconds(2)) {
+    /// Reading /proc is cheap; `lsof` (macOS) is a subprocess, so it runs
+    /// less often.
+    #if os(Linux)
+    static let defaultInterval: DispatchTimeInterval = .seconds(2)
+    #else
+    static let defaultInterval: DispatchTimeInterval = .seconds(5)
+    #endif
+
+    init(interval: DispatchTimeInterval = PortScanner.defaultInterval) {
         self.interval = interval
     }
 
-    var current: [ListeningPort] { lock.withLock { latest } }
+    var current: [ListeningPort] { lock.withLock { latest ?? [] } }
 
     func start() {
         queue.async { [self] in
@@ -70,11 +78,8 @@ final class PortScanner: @unchecked Sendable {
     private func tick() {
         let ports = scan()
         let changed: Bool = lock.withLock {
-            defer {
-                latest = ports
-                hasScanned = true
-            }
-            return !hasScanned || latest != ports
+            defer { latest = ports }
+            return latest != ports
         }
         if changed { onChange?(ports) }
     }
@@ -152,11 +157,12 @@ final class PortScanner: @unchecked Sendable {
                 ))
             }
         }
-        let unknown = Set(listeners.map(\.inode)).subtracting(processNames.keys).subtracting([0])
-        if !unknown.isEmpty { resolveProcesses(unknown) }
         let live = Set(listeners.map(\.inode))
+        let unknown = live.subtracting(processNames.keys).subtracting([0])
+        if !unknown.isEmpty { resolveProcesses(unknown) }
         processNames = processNames.filter { live.contains($0.key) }
-        for i in listeners.indices { listeners[i].process = processNames[listeners[i].inode] }
+        // "" marks an unreadable owner, looked up once; it reaches no one.
+        for i in listeners.indices { listeners[i].process = processNames[listeners[i].inode].flatMap { $0.isEmpty ? nil : $0 } }
         return merge(listeners, ephemeral: Self.ephemeralRange())
     }
 

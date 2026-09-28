@@ -44,7 +44,8 @@ public enum JetlineDaemon {
             exit(0)
         case "info":
             // Machine-readable, for the app's installer check.
-            print(#"{"version":"\#(JetlineVersion.current)","protocol":\#(Wire.protocolVersion),"features":["\#(API.tunnelsFeature)"]}"#)
+            let features = API.features.map { "\"\($0)\"" }.joined(separator: ",")
+            print(#"{"version":"\#(JetlineVersion.current)","protocol":\#(Wire.protocolVersion),"features":[\#(features)]}"#)
             exit(0)
         case "help", "--help", "-h":
             print(usage)

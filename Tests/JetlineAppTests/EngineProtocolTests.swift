@@ -6,19 +6,11 @@ import XCTest
 /// throwaway git repository. Runs on macOS and Linux.
 @MainActor
 final class EngineProtocolTests: XCTestCase {
-    nonisolated(unsafe) private static var dataDir: URL!
+    private static var dataDir: URL { TestSupport.dataDir }
 
     override class func setUp() {
         super.setUp()
-        // Before anything touches `Database.shared`: never the real ~/.jetline.
-        // realpath, not resolvingSymlinksInPath: the latter maps macOS's
-        // /private/var back to /var, and git reports the real path.
-        let tmp = realpath(FileManager.default.temporaryDirectory.path, nil).map { p in defer { free(p) }; return String(cString: p) }
-            ?? FileManager.default.temporaryDirectory.path
-        let dir = URL(fileURLWithPath: tmp).appendingPathComponent("jetline-tests-\(UUID().uuidString)")
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        setenv("JETLINE_DATA_DIR", dir.path, 1)
-        dataDir = dir
+        _ = TestSupport.dataDir
     }
 
     private var server: EngineServer!
@@ -27,13 +19,7 @@ final class EngineProtocolTests: XCTestCase {
     private var terminalBytes: [String: Data] = [:]
 
     override func setUp() async throws {
-        let engine = Engine()
-        server = EngineServer(engine: engine, engineVersion: "test")
-        let (a, b) = try XCTUnwrap(Sockets.pair())
-        server.accept(FramedConnection(readFD: a, writeFD: a, label: "test-server"))
-        client = EngineClient(connection: FramedConnection(readFD: b, writeFD: b, label: "test-client"))
-        client.onEvent = { [weak self] event in self?.events.append(event) }
-        client.start()
+        (server, client) = try TestSupport.engineAndClient { [weak self] event in self?.events.append(event) }
     }
 
     override func tearDown() async throws {
@@ -63,21 +49,6 @@ final class EngineProtocolTests: XCTestCase {
         return dir.path
     }
 
-    /// Poll `condition` on the main actor until it holds or `timeout` passes.
-    private func eventually(
-        _ what: String,
-        timeout: TimeInterval = 10,
-        _ condition: () -> Bool
-    ) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("timed out waiting for \(what)")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(50))
-        }
-    }
 
     private func latestStatus(_ workspaceId: String) -> WorkspaceStatus? {
         for event in events.reversed() {

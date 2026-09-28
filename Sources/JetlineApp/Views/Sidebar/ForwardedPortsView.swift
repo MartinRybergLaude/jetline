@@ -107,7 +107,7 @@ private struct ForwardedPortRow: View {
         case .off: return "off"
         case .forwarding:
             if !entry.isListening { return "not listening" }
-            return entry.process.flatMap { $0.isEmpty ? nil : $0 }
+            return entry.process
         }
     }
 
@@ -141,7 +141,7 @@ struct PortForwardingMenuItems: View {
             Button("Forward a Port…", action: onForwardPort)
                 .disabled(!usable)
             ForEach(usable ? ports.otherPorts : []) { port in
-                Button("Forward \(port.port)" + (port.process.flatMap { $0.isEmpty ? nil : " · \($0)" } ?? "")) {
+                Button("Forward \(port.port)" + (port.process.map { " · \($0)" } ?? "")) {
                     ports.forward(port.port)
                 }
             }

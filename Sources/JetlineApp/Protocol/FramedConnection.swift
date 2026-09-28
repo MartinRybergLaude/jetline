@@ -221,7 +221,7 @@ final class FramedConnection: @unchecked Sendable {
 }
 
 @inline(__always)
-private func Glibc_or_Darwin_close(_ fd: Int32) {
+func Glibc_or_Darwin_close(_ fd: Int32) {
     #if canImport(Darwin)
     _ = Darwin.close(fd)
     #else

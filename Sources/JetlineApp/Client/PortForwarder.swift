@@ -30,8 +30,6 @@ final class PortForwarder {
         var state: State
         /// Something is listening on it on the remote right now.
         var isListening: Bool
-        /// Forwarded by hand, rather than because it was detected.
-        var isManual: Bool
         var id: Int { port }
     }
 
@@ -45,7 +43,6 @@ final class PortForwarder {
     /// `ssh localhost`, say): its ports are already here, and forwarding
     /// them would bind the port it's trying to reach — a loop.
     private(set) var isSameMachine = false
-    private(set) var isLinked = false
 
     var forwardsAutomatically: Bool {
         get { prefs.automatic }
@@ -65,10 +62,6 @@ final class PortForwarder {
     @ObservationIgnored private var retryToken: UUID?
     @ObservationIgnored private var retryCount = 0
     @ObservationIgnored private var generation = 0
-
-    /// Which forwarder holds each port on this Mac, so a second remote with
-    /// the same port can say who has it.
-    private static var holders: [Int: PortForwarder] = [:]
 
     @ObservationIgnored private let allowsSameMachine: Bool
 
@@ -95,7 +88,7 @@ final class PortForwarder {
         }
         return ports.sorted().map { port in
             let state: State
-            if prefs.disabled.contains(port), !prefs.manual.contains(port) {
+            if prefs.disabled.contains(port) {
                 state = .off
             } else if let failure = failures[port] {
                 state = .failed(failure)
@@ -106,8 +99,7 @@ final class PortForwarder {
                 port: port,
                 process: listening[port]?.process,
                 state: state,
-                isListening: listening[port] != nil,
-                isManual: prefs.manual.contains(port)
+                isListening: listening[port] != nil
             )
         }
     }
@@ -146,37 +138,28 @@ final class PortForwarder {
         generation += 1
         isSameMachine = !allowsSameMachine && hello.hostName == Platform.hostName
             && hello.homeDirectory == Platform.homeDirectory.path
-        guard hello.features?.contains(API.tunnelsFeature) == true, !isSameMachine else {
-            isSupported = hello.features?.contains(API.tunnelsFeature) == true
-            isLinked = false
+        isSupported = hello.features?.contains(API.tunnelsFeature) == true
+        guard isSupported, !isSameMachine else {
             route.mux = nil
             remotePorts = []
             reconcile()
             return
         }
-        isSupported = true
-        isLinked = true
         route.mux = client.tunnels()
         let generation = self.generation
         initialWatch = Task { [weak self] in
             // The reply is never older than an event that came before it.
             guard let ports = try? await client.call(API.WatchPorts()) else { return }
             guard let self, self.generation == generation else { return }
-            self.apply(ports)
+            self.received(ports)
         }
     }
 
     /// The first `ports.watch` after connecting (tests wait for it).
     @ObservationIgnored private(set) var initialWatch: Task<Void, Never>?
 
-    /// A `.ports` event.
-    func received(_ ports: [ListeningPort]) {
-        apply(ports)
-    }
-
     func disconnected() {
         generation += 1
-        isLinked = false
         route.mux = nil
     }
 
@@ -190,7 +173,8 @@ final class PortForwarder {
         failures = [:]
     }
 
-    private func apply(_ ports: [ListeningPort]) {
+    /// A `.ports` event, or the reply to `ports.watch`.
+    func received(_ ports: [ListeningPort]) {
         guard ports != remotePorts else { return }
         remotePorts = ports
         reconcile()
@@ -200,11 +184,7 @@ final class PortForwarder {
 
     private var wanted: Set<Int> {
         guard isSupported, !isSameMachine else { return [] }
-        var ports = prefs.manual
-        if prefs.automatic {
-            ports.formUnion(remotePorts.filter { $0.suggested && !prefs.disabled.contains($0.port) }.map(\.port))
-        }
-        return ports
+        return Set(entries.filter { $0.state != .off }.map(\.port))
     }
 
     private func reconcile() {
@@ -216,7 +196,7 @@ final class PortForwarder {
     }
 
     private func bind(_ port: Int) {
-        if let holder = Self.holders[port], holder !== self {
+        if let holder = Self.holder(of: port), holder !== self {
             setFailure(port, "Forwarded from \(holder.hostName)")
             return
         }
@@ -227,10 +207,9 @@ final class PortForwarder {
                     mux.open(fd: fd, port: port)
                 } else {
                     // Link down: refuse rather than leave it hanging.
-                    TunnelMux.closeSocket(fd)
+                    Glibc_or_Darwin_close(fd)
                 }
             }
-            Self.holders[port] = self
             setFailure(port, nil)
         } catch {
             setFailure(port, error.message)
@@ -242,17 +221,22 @@ final class PortForwarder {
     }
 
     private func release(_ port: Int) {
-        listeners.removeValue(forKey: port)?.close()
-        guard Self.holders[port] === self else { return }
-        Self.holders[port] = nil
+        guard let listener = listeners.removeValue(forKey: port) else { return }
+        listener.close()
         // Another remote may have been waiting for it.
         for other in Self.registry.compactMap(\.value) where other !== self && other.failures[port] != nil {
             other.reconcile()
         }
     }
 
+    /// Every forwarder, so a second remote with the same port can say who
+    /// has it here, and retry when it's let go.
     private struct Weak { weak var value: PortForwarder? }
     private static var registry: [Weak] = []
+
+    private static func holder(of port: Int) -> PortForwarder? {
+        registry.lazy.compactMap(\.value).first { $0.listeners[port] != nil }
+    }
 
     /// Taken ports on this Mac free up without notice; try again now and then.
     private func scheduleRetryIfNeeded() {

@@ -22,6 +22,12 @@ import Glibc
 ///
 /// All state lives on one private queue. Frames come in through `receive`
 /// (from the connection's read queue, in order) and go out through `send`.
+///
+/// On Linux a dispatch source doesn't report readiness that was already
+/// there when it was resumed, or that a handler left unconsumed. So a
+/// stream never relies on that: resuming a source always polls once
+/// (`resumeReading`, `armWriting`), and a read that stops before `EAGAIN`
+/// comes back for the rest itself.
 final class TunnelMux: @unchecked Sendable {
     static let window = 1 << 20
     private static let readChunk = 64 * 1024
@@ -32,26 +38,20 @@ final class TunnelMux: @unchecked Sendable {
     private let queue: DispatchQueue
     private let label: String
     private let sendFrame: @Sendable (FrameKind, Data) -> Void
-    /// `JETLINE_TUNNEL_TRACE=1`: log every stream event to stderr.
-    private static let tracing = ProcessInfo.processInfo.environment["JETLINE_TUNNEL_TRACE"] == "1"
-
-    private func trace(_ message: @autoclosure () -> String) {
-        guard Self.tracing else { return }
-        FileHandle.standardError.write(Data("tunnel[\(label)] \(message())\n".utf8))
-    }
-
-    private func send(_ kind: FrameKind, _ payload: Data) {
-        if Self.tracing, kind != .tunnelData {
-            trace("send \(kind) \(payload.count)b \([UInt8](payload.prefix(9)))")
-        }
-        sendFrame(kind, payload)
-    }
     private var streams: [UInt32: Stream] = [:]
+    /// Engine side: streams whose connect is still in flight, holding what
+    /// the client sent meanwhile.
+    private var connecting: [UInt32: PendingStream] = [:]
     private var nextId: UInt32 = 1
     private var isClosed = false
-    /// Engine side: connect a stream the client opened. Called on the mux
-    /// queue; returns a connected socket, or nil to refuse.
+    /// Shared by every read: all of them run on `queue`.
+    private var readBuffer = [UInt8](repeating: 0, count: TunnelMux.readChunk)
+    /// Engine side: connect a stream the client opened. Called off the mux
+    /// queue (it may block); returns a connected socket, or nil to refuse.
     private let connect: (@Sendable (_ port: Int) -> Int32?)?
+
+    /// `JETLINE_TUNNEL_TRACE=1`: log every stream event to stderr.
+    private static let tracing = ProcessInfo.processInfo.environment["JETLINE_TUNNEL_TRACE"] == "1"
 
     /// Streams currently open, for tests and diagnostics.
     var openStreamCount: Int { queue.sync { streams.count } }
@@ -63,6 +63,16 @@ final class TunnelMux: @unchecked Sendable {
         self.sendFrame = send
     }
 
+    private func trace(_ message: @autoclosure () -> String) {
+        guard Self.tracing else { return }
+        FileHandle.standardError.write(Data("tunnel[\(label)] \(message())\n".utf8))
+    }
+
+    private func send(_ kind: FrameKind, _ payload: Data) {
+        if kind != .tunnelData { trace("send \(kind) \([UInt8](payload.prefix(9)))") }
+        sendFrame(kind, payload)
+    }
+
     // MARK: Opening
 
     /// Client side: carry `fd` (an accepted local connection) to `port` on
@@ -70,14 +80,13 @@ final class TunnelMux: @unchecked Sendable {
     func open(fd: Int32, port: Int) {
         queue.async { [self] in
             guard !isClosed else {
-                Self.closeSocket(fd)
+                Glibc_or_Darwin_close(fd)
                 return
             }
             let id = nextId
             nextId &+= 1
             var payload = Self.header(id)
-            var bePort = UInt16(port).bigEndian
-            withUnsafeBytes(of: &bePort) { payload.append(contentsOf: $0) }
+            payload.appendBigEndian(UInt16(port))
             send(.tunnelOpen, payload)
             adopt(fd, id: id)
         }
@@ -95,44 +104,39 @@ final class TunnelMux: @unchecked Sendable {
     // MARK: Frames in
 
     func receive(_ kind: FrameKind, _ payload: Data) {
-        guard payload.count >= 4 else { return }
-        let bytes = [UInt8](payload)
-        let id = UInt32(bytes[0]) << 24 | UInt32(bytes[1]) << 16 | UInt32(bytes[2]) << 8 | UInt32(bytes[3])
+        guard let id = payload.bigEndian(UInt32.self, at: 0) else { return }
+        // A slice: the body is queued without copying.
+        let body = payload.dropFirst(4)
         queue.async { [self] in
             guard !isClosed else { return }
-            if Self.tracing, kind != .tunnelData { trace("recv \(kind) \(bytes.prefix(9)) known=\(streams[id] != nil)") }
+            if kind != .tunnelData { trace("recv \(kind) \(id) \([UInt8](body.prefix(4))) known=\(streams[id] != nil)") }
             switch kind {
             case .tunnelOpen:
-                guard bytes.count >= 6 else { return }
-                let port = Int(bytes[4]) << 8 | Int(bytes[5])
-                guard port > 0, streams[id] == nil, let fd = connect?(port) else {
-                    send(.tunnelClose, Self.header(id) + [1])
-                    return
-                }
-                adopt(fd, id: id)
+                beginConnect(id, port: body.bigEndian(UInt16.self, at: 0).map(Int.init) ?? 0)
             case .tunnelData:
-                guard let stream = streams[id] else { return }
-                stream.outbox.append(Data(bytes[4...]))
-                flushWrites(stream)
-            case .tunnelClose:
-                guard let stream = streams[id] else { return }
-                if bytes.count >= 5, bytes[4] == 0 {
-                    stream.peerFinished = true
+                if let stream = streams[id] {
+                    stream.outbox.append(body)
                     flushWrites(stream)
                 } else {
-                    teardown(stream, reset: true)
+                    connecting[id]?.outbox.append(body)
+                }
+            case .tunnelClose:
+                let finished = body.first == 0
+                if let stream = streams[id] {
+                    if finished {
+                        stream.peerFinished = true
+                        flushWrites(stream)
+                    } else {
+                        teardown(stream, reset: true)
+                    }
+                } else if let pending = connecting[id] {
+                    if finished { pending.peerFinished = true } else { pending.cancelled = true }
                 }
             case .tunnelAck:
-                guard let stream = streams[id], bytes.count >= 8 else { return }
-                let count = Int(bytes[4]) << 24 | Int(bytes[5]) << 16 | Int(bytes[6]) << 8 | Int(bytes[7])
-                stream.unacked = max(0, stream.unacked - count)
+                guard let stream = streams[id], let count = body.bigEndian(UInt32.self, at: 0) else { return }
+                stream.unacked = max(0, stream.unacked - Int(count))
                 if stream.readPaused, !stream.localFinished, stream.unacked < Self.window {
-                    stream.readPaused = false
-                    stream.readSource.resume()
-                    // Linux's libdispatch doesn't fire a resumed source for
-                    // data that arrived while it was suspended; if the peer
-                    // is stalled on us, nothing new would ever come.
-                    readable(stream)
+                    resumeReading(stream)
                 }
             default:
                 return
@@ -140,7 +144,37 @@ final class TunnelMux: @unchecked Sendable {
         }
     }
 
+    /// Engine side. Connecting can block (a listener with a full backlog),
+    /// so it runs elsewhere; the stream's other traffic waits in `connecting`.
+    private func beginConnect(_ id: UInt32, port: Int) {
+        guard port > 0, streams[id] == nil, connecting[id] == nil, let connect else {
+            send(.tunnelClose, Self.header(id) + [1])
+            return
+        }
+        connecting[id] = PendingStream()
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            let fd = connect(port)
+            queue.async { [self] in
+                guard let pending = connecting.removeValue(forKey: id), !isClosed, !pending.cancelled, let fd else {
+                    if let fd { Glibc_or_Darwin_close(fd) }
+                    if !isClosed { send(.tunnelClose, Self.header(id) + [1]) }
+                    return
+                }
+                let stream = adopt(fd, id: id)
+                stream.outbox = pending.outbox
+                stream.peerFinished = pending.peerFinished
+                flushWrites(stream)
+            }
+        }
+    }
+
     // MARK: Streams
+
+    private final class PendingStream {
+        var outbox: [Data] = []
+        var peerFinished = false
+        var cancelled = false
+    }
 
     private final class Stream {
         let id: UInt32
@@ -170,7 +204,8 @@ final class TunnelMux: @unchecked Sendable {
         }
     }
 
-    private func adopt(_ fd: Int32, id: UInt32) {
+    @discardableResult
+    private func adopt(_ fd: Int32, id: UInt32) -> Stream {
         trace("adopt \(id) fd\(fd)")
         jl_tcp_prepare(fd)
         let stream = Stream(
@@ -189,24 +224,24 @@ final class TunnelMux: @unchecked Sendable {
             self.flushWrites(stream)
         }
         stream.readSource.resume()
+        return stream
     }
 
     private func readable(_ stream: Stream) {
         guard streams[stream.id] === stream, !stream.localFinished else { return }
-        var buffer = [UInt8](repeating: 0, count: Self.readChunk)
         // A few chunks per wakeup, so one busy stream doesn't hog the queue.
         for _ in 0..<4 {
             let room = Self.window - stream.unacked
             guard room > 0 else { break }
-            let n = read(stream.fd, &buffer, min(buffer.count, room))
+            let n = read(stream.fd, &readBuffer, min(readBuffer.count, room))
             if n > 0 {
-                trace("read \(stream.id) fd\(stream.fd) \(n) unacked=\(stream.unacked + n)")
+                trace("read \(stream.id) \(n) unacked=\(stream.unacked + n)")
                 stream.unacked += n
-                var payload = Self.header(stream.id)
-                payload.append(contentsOf: buffer[0..<n])
+                var payload = Self.header(stream.id, reserving: n)
+                payload.append(contentsOf: readBuffer[0..<n])
                 send(.tunnelData, payload)
             } else if n == 0 {
-                trace("eof \(stream.id) fd\(stream.fd)")
+                trace("eof \(stream.id)")
                 stream.localFinished = true
                 pauseReading(stream)
                 send(.tunnelClose, Self.header(stream.id) + [0])
@@ -218,22 +253,15 @@ final class TunnelMux: @unchecked Sendable {
                 return
             } else {
                 trace("read error \(stream.id) errno \(errno)")
-                send(.tunnelClose, Self.header(stream.id) + [1])
-                teardown(stream, reset: true)
+                reset(stream)
                 return
             }
         }
         if stream.unacked >= Self.window {
             pauseReading(stream)
         } else {
-            // Out of budget with data likely left. Come back for it rather
-            // than wait for the source: on Linux it fires on new data only,
-            // not on data still sitting there.
-            let id = stream.id
-            queue.async { [weak self] in
-                guard let self, let stream = self.streams[id] else { return }
-                self.readable(stream)
-            }
+            // Out of budget, not out of data: come back for the rest.
+            poll(stream) { $0.readable($1) }
         }
     }
 
@@ -243,6 +271,28 @@ final class TunnelMux: @unchecked Sendable {
         stream.readSource.suspend()
     }
 
+    private func resumeReading(_ stream: Stream) {
+        stream.readPaused = false
+        stream.readSource.resume()
+        poll(stream) { $0.readable($1) }
+    }
+
+    private func armWriting(_ stream: Stream) {
+        guard !stream.writeArmed else { return }
+        stream.writeArmed = true
+        stream.writeSource.resume()
+        poll(stream) { $0.flushWrites($1) }
+    }
+
+    /// Run `step` for `stream` once more, soon, if it's still open.
+    private func poll(_ stream: Stream, _ step: @escaping @Sendable (TunnelMux, Stream) -> Void) {
+        let id = stream.id
+        queue.async { [weak self] in
+            guard let self, let stream = self.streams[id] else { return }
+            step(self, stream)
+        }
+    }
+
     private func flushWrites(_ stream: Stream) {
         guard streams[stream.id] === stream else { return }
         while let chunk = stream.outbox.first {
@@ -250,27 +300,22 @@ final class TunnelMux: @unchecked Sendable {
                 jl_send(stream.fd, raw.baseAddress, UInt(raw.count))
             }
             if n > 0 {
-                trace("wrote \(stream.id) fd\(stream.fd) \(n)/\(chunk.count) queued=\(stream.outbox.count)")
+                trace("wrote \(stream.id) \(n)/\(chunk.count)")
                 stream.toAck += n
                 if n == chunk.count {
                     stream.outbox.removeFirst()
                 } else {
-                    stream.outbox[0] = chunk.subdata(in: (chunk.startIndex + n)..<chunk.endIndex)
+                    stream.outbox[0] = chunk.dropFirst(n)
                 }
                 if stream.toAck >= Self.ackBatch { acknowledge(stream) }
             } else if n < 0, errno == EINTR {
                 continue
             } else if n < 0, errno == EAGAIN || errno == EWOULDBLOCK {
-                trace("write blocked \(stream.id) armed=\(stream.writeArmed)")
-                if !stream.writeArmed {
-                    stream.writeArmed = true
-                    stream.writeSource.resume()
-                }
+                armWriting(stream)
                 return
             } else {
                 trace("write error \(stream.id) errno \(errno)")
-                send(.tunnelClose, Self.header(stream.id) + [1])
-                teardown(stream, reset: true)
+                reset(stream)
                 return
             }
         }
@@ -280,7 +325,6 @@ final class TunnelMux: @unchecked Sendable {
         }
         if stream.toAck > 0 { acknowledge(stream) }
         if stream.peerFinished, !stream.shutWrite {
-            trace("shutdown write \(stream.id) fd\(stream.fd)")
             stream.shutWrite = true
             _ = shutdown(stream.fd, Int32(SHUT_WR))
         }
@@ -289,8 +333,7 @@ final class TunnelMux: @unchecked Sendable {
 
     private func acknowledge(_ stream: Stream) {
         var payload = Self.header(stream.id)
-        var count = UInt32(stream.toAck).bigEndian
-        withUnsafeBytes(of: &count) { payload.append(contentsOf: $0) }
+        payload.appendBigEndian(UInt32(stream.toAck))
         stream.toAck = 0
         send(.tunnelAck, payload)
     }
@@ -299,15 +342,20 @@ final class TunnelMux: @unchecked Sendable {
         if stream.localFinished, stream.shutWrite { teardown(stream, reset: false) }
     }
 
+    /// Our socket failed: reset both ends.
+    private func reset(_ stream: Stream) {
+        send(.tunnelClose, Self.header(stream.id) + [1])
+        teardown(stream, reset: true)
+    }
+
     private func teardown(_ stream: Stream, reset: Bool) {
         guard streams[stream.id] === stream else { return }
-        trace("teardown \(stream.id) fd\(stream.fd) reset=\(reset)")
+        trace("teardown \(stream.id) reset=\(reset)")
         streams[stream.id] = nil
         if reset { jl_tcp_abort_on_close(stream.fd) }
         // Close only once both sources are cancelled — libdispatch may still
         // be watching the fd. A suspended source must be resumed to cancel.
         let group = DispatchGroup()
-        let fd = stream.fd
         for source in [stream.readSource as DispatchSourceProtocol, stream.writeSource] {
             group.enter()
             source.setCancelHandler { group.leave() }
@@ -315,23 +363,30 @@ final class TunnelMux: @unchecked Sendable {
         }
         if stream.readPaused { stream.readSource.resume() }
         if !stream.writeArmed { stream.writeSource.resume() }
-        group.notify(queue: queue) { [self] in
-            trace("closed fd\(fd)")
-            Self.closeSocket(fd)
-        }
+        let fd = stream.fd
+        group.notify(queue: queue) { Glibc_or_Darwin_close(fd) }
     }
 
-    private static func header(_ id: UInt32) -> Data {
-        var be = id.bigEndian
-        return withUnsafeBytes(of: &be) { Data($0) }
+    private static func header(_ id: UInt32, reserving extra: Int = 4) -> Data {
+        var data = Data(capacity: 4 + extra)
+        data.appendBigEndian(id)
+        return data
+    }
+}
+
+private extension Data {
+    mutating func appendBigEndian<T: FixedWidthInteger>(_ value: T) {
+        var be = value.bigEndian
+        Swift.withUnsafeBytes(of: &be) { append(contentsOf: $0) }
     }
 
-    static func closeSocket(_ fd: Int32) {
-        #if canImport(Darwin)
-        _ = Darwin.close(fd)
-        #else
-        _ = Glibc.close(fd)
-        #endif
+    /// The big-endian integer `offset` bytes into this (possibly sliced)
+    /// data, or nil if it's too short.
+    func bigEndian<T: FixedWidthInteger>(_: T.Type, at offset: Int) -> T? {
+        let size = MemoryLayout<T>.size
+        guard count >= offset + size else { return nil }
+        let start = startIndex + offset
+        return self[start..<(start + size)].reduce(T(0)) { $0 << 8 | T($1) }
     }
 }
 
@@ -353,7 +408,6 @@ final class TunnelRoute: @unchecked Sendable {
 /// browsers try either for "localhost" — handing every connection to
 /// `onAccept`.
 final class LoopbackListener: @unchecked Sendable {
-    let port: Int
     private let queue: DispatchQueue
     private var sources: [DispatchSourceRead] = []
 
@@ -372,7 +426,6 @@ final class LoopbackListener: @unchecked Sendable {
 
     /// Binds at once; throws `Failure`.
     init(port: Int, onAccept: @escaping @Sendable (Int32) -> Void) throws(Failure) {
-        self.port = port
         self.queue = DispatchQueue(label: "jetline.listen.\(port)")
         let v4 = try Self.bind(family: 4, port: port)
         var fds = [v4]
@@ -380,7 +433,7 @@ final class LoopbackListener: @unchecked Sendable {
             fds.append(try Self.bind(family: 6, port: port))
         } catch .inUse {
             // A local server on [::1] would take the browser's first try.
-            TunnelMux.closeSocket(v4)
+            Glibc_or_Darwin_close(v4)
             throw .inUse
         } catch {
             // No IPv6 loopback here; 127.0.0.1 is enough.
@@ -395,13 +448,13 @@ final class LoopbackListener: @unchecked Sendable {
                     onAccept(client)
                 }
             }
-            source.setCancelHandler { TunnelMux.closeSocket(fd) }
             source.resume()
             sources.append(source)
         }
     }
 
-    /// Returns once the socket is closed, so the port can usually be bound
+    /// Closes the sockets (their sources own them from `init` on) and
+    /// returns once they're closed, so the port can usually be bound
     /// again at once (forwarding switched back on, another remote taking
     /// it over). Usually: a subprocess being spawned at that instant holds
     /// a copy until its exec, a millisecond or two.
@@ -412,7 +465,7 @@ final class LoopbackListener: @unchecked Sendable {
             released.enter()
             let fd = Int32(source.handle)
             source.setCancelHandler {
-                TunnelMux.closeSocket(fd)
+                Glibc_or_Darwin_close(fd)
                 released.leave()
             }
             source.cancel()
@@ -433,7 +486,7 @@ final class LoopbackListener: @unchecked Sendable {
         // backlog never answers (that's a listener too).
         let probe = jl_tcp_connect(family == 6 ? "::1" : "127.0.0.1", Int32(port), 250)
         if probe >= 0 || -probe == ETIMEDOUT {
-            if probe >= 0 { TunnelMux.closeSocket(probe) }
+            if probe >= 0 { Glibc_or_Darwin_close(probe) }
             throw .inUse
         }
         let retry = jl_tcp_listen_loopback(family, Int32(port), 1)

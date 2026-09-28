@@ -27,6 +27,9 @@ enum API {
     }
 
     static let tunnelsFeature = "tunnels"
+    /// Everything this build's engine can do — what `hello` and
+    /// `jetlined info` report, and what the installer expects of a daemon.
+    static let features = [tunnelsFeature]
 
     /// Start reporting this machine's listening TCP ports (`.ports` events
     /// on every change) and return the current list.

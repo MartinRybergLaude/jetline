@@ -142,7 +142,6 @@ final class EngineServer {
     private func disconnect(_ id: Int) {
         guard let client = clients.removeValue(forKey: id) else { return }
         terminals.removeClient(id)
-        client.tunnels.close()
         if client.watchesPorts, !clients.values.contains(where: \.watchesPorts) { portScanner.stop() }
         for chatId in client.chats { releaseChat(chatId) }
         engine.setFocus(client: id, workspaceId: nil)
@@ -434,7 +433,7 @@ final class EngineServer {
                 homeDirectory: Platform.homeDirectory.path,
                 dataDirectory: Database.dataDirectory().path,
                 snapshot: snapshot,
-                features: [API.tunnelsFeature]
+                features: API.features
             )
         }
         on(API.WatchPorts.self) { [unowned self] _, clientId in

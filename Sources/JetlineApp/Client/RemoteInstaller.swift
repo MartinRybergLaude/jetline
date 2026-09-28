@@ -36,10 +36,12 @@ enum RemoteInstaller {
             return daemonVersion == JetlineVersion.current
         }
 
-        /// This app's version, with everything this app uses — a build of
-        /// the same version from before port forwarding counts as outdated.
+        /// This app's version, able to do everything this app's engine can —
+        /// a build of the same version that lacks a feature is outdated.
+        /// (A Mac's app daemon reports no features; its version stands.)
         var isCurrent: Bool {
-            daemonVersion == JetlineVersion.current && (daemonFeatures?.contains(API.tunnelsFeature) ?? (os != .linux))
+            daemonVersion == JetlineVersion.current
+                && (daemonFeatures.map { Set(API.features).isSubset(of: $0) } ?? (os != .linux))
         }
     }
 

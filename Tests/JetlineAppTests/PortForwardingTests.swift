@@ -14,11 +14,7 @@ final class PortForwardingTests: XCTestCase {
         // Like the daemon: a peer that hung up must be an error, not a
         // signal (Linux has no per-socket SO_NOSIGPIPE).
         signal(SIGPIPE, SIG_IGN)
-        if ProcessInfo.processInfo.environment["JETLINE_DATA_DIR"] == nil {
-            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("jetline-tests-\(UUID().uuidString)")
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            setenv("JETLINE_DATA_DIR", dir.path, 1)
-        }
+        _ = TestSupport.dataDir
     }
 
     private var server: EngineServer!
@@ -32,16 +28,11 @@ final class PortForwardingTests: XCTestCase {
 
     override func setUp() async throws {
         Self.farEnd = [:]
-        server = EngineServer(engine: Engine(), engineVersion: "test", tunnelConnect: { port in
+        (server, client) = try TestSupport.engineAndClient(tunnelConnect: { port in
             let target = PortForwardingTests.farEnd[port] ?? port
             let fd = jl_tcp_connect("127.0.0.1", Int32(target), 2000)
             return fd >= 0 ? fd : nil
-        })
-        let (a, b) = try XCTUnwrap(Sockets.pair())
-        server.accept(FramedConnection(readFD: a, writeFD: a, label: "test-server"))
-        client = EngineClient(connection: FramedConnection(readFD: b, writeFD: b, label: "test-client"))
-        client.onEvent = { [weak self] event in self?.events.append(event) }
-        client.start()
+        }) { [weak self] event in self?.events.append(event) }
     }
 
     override func tearDown() async throws {
@@ -53,22 +44,11 @@ final class PortForwardingTests: XCTestCase {
         try await client.call(API.Hello(protocolVersion: Wire.protocolVersion, clientName: "test"))
     }
 
-    private func eventually(_ what: String, timeout: TimeInterval = 10, _ condition: () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("timed out waiting for \(what)")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(20))
-        }
-    }
-
     // MARK: Tunnels
 
     func testForwardedConnectionCarriesBytesBothWaysAndHalfCloses() async throws {
         let hello = try await hello()
-        XCTAssertEqual(hello.features, [API.tunnelsFeature])
+        XCTAssertEqual(hello.features, API.features)
         let (listener, port) = try Self.listenAnyPort()
         defer { _ = close(listener) }
         // The "dev server": echo everything back, then close once the
