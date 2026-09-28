@@ -147,7 +147,7 @@ private struct PRHeaderRow: View {
             VStack(spacing: 12) {
                 header(pr)
                 if let stack = state.stackSummary(for: workspace) {
-                    StackCard(stack: stack)
+                    StackCard(stack: stack, merge: pr.stack.map { StackMerge(stack: $0, workspace: workspace, workspaceState: workspaceState) })
                 }
             }
         }
@@ -173,6 +173,8 @@ private struct PRHeaderRow: View {
 private struct StackCard: View {
     @EnvironmentObject private var state: AppState
     let stack: StackSummary
+    /// The GitHub stack, to merge in one go; `nil` for a local-only stack.
+    var merge: StackMerge?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -204,6 +206,9 @@ private struct StackCard: View {
                 .padding(.horizontal, 6)
                 .padding(.vertical, 4)
             }
+            if let merge, merge.stack.openEntries.count > 1 {
+                merge.padding(.top, 4)
+            }
         }
         .padding(12)
         .cardSurface()
@@ -216,6 +221,57 @@ private struct StackCard: View {
             NSWorkspace.shared.open(url)
         }
     }
+}
+
+/// Lands every open layer of a GitHub stack at once, when GitHub would
+/// merge each of them: merging the top layer takes all the ones below with
+/// it. Otherwise it names the lowest layer in the way.
+private struct StackMerge: View {
+    @EnvironmentObject private var state: AppState
+    let stack: PRStack
+    let workspace: Workspace
+    let workspaceState: WorkspaceState
+    @State private var isConfirming = false
+
+    var body: some View {
+        let verdict = stack.mergeAll
+        let count = stack.openEntries.count
+        VStack(alignment: .leading, spacing: 6) {
+            if let blocking = verdict.blocking {
+                Label("Stack can’t merge yet · #\(blocking.number): \(blocking.reason)", systemImage: "exclamationmark.circle")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                Button { isConfirming = true } label: {
+                    Label {
+                        Text(isMerging ? "Merging…" : "Merge stack · \(count) PRs")
+                    } icon: {
+                        if isMerging { ProgressView().controlSize(.small) } else { Image(systemName: "arrow.triangle.merge") }
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.glassProminent)
+                .tint(.readableGreen)
+                .disabled(isMerging || method == nil)
+                .help("Merge every open layer into \(stack.baseRefName)")
+            }
+        }
+        .confirmationDialog("Merge \(count) stacked PRs?", isPresented: $isConfirming, titleVisibility: .visible) {
+            if let method {
+                Button(method.displayName) {
+                    Task { await state.mergeStack(for: workspace, method: method) }
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            let numbers = stack.openEntries.map { "#\($0.number)" }.joined(separator: ", ")
+            Text("Merges \(numbers) into `\(stack.baseRefName)` immediately, together: all of them or none.")
+        }
+    }
+
+    private var isMerging: Bool { workspaceState.runningGitAction == .mergePR }
+    private var method: MergeMethod? { state.defaultMergeMethod(for: workspace) }
 }
 
 private struct StackLayerRow: View {

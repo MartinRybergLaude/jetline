@@ -800,6 +800,27 @@ final class Engine {
         prTracker.kick(workspaceId: workspace.id)
     }
 
+    /// Merge the whole GitHub stack `workspace`'s PR is in, by merging its
+    /// top open layer: GitHub lands every layer below with it, atomically.
+    func mergeStack(for workspace: Workspace, method: MergeMethod) async throws {
+        let ws = workspaceState(for: workspace.id)
+        guard case let .loaded(pr, _) = ws.pr, let stack = pr.stack, let top = stack.openEntries.last,
+              let identifier = repoMetadataByRepo[workspace.repositoryId], ws.runningGitAction == nil else { return }
+        ws.runningGitAction = .mergePR
+        defer { ws.runningGitAction = nil }
+        let numbers = stack.openEntries.map { "#\($0.number)" }.joined(separator: ", ")
+        activityLog.record(.gitAction, "Merging stack #\(stack.number) (\(numbers), \(method.rawValue))", repoId: workspace.repositoryId, workspaceId: workspace.id)
+        do {
+            try await GitHubRunner.mergeStacked(top.number, method: method, repo: identifier, cwd: workspace.worktreePath)
+        } catch {
+            activityLog.record(.error, "Stack merge failed for #\(stack.number): \(error.localizedDescription)", repoId: workspace.repositoryId, workspaceId: workspace.id)
+            throw WireError(error.localizedDescription)
+        }
+        activityLog.record(.gitAction, "Merged stack #\(stack.number)", repoId: workspace.repositoryId, workspaceId: workspace.id)
+        rememberMergeMethod(method, repoId: workspace.repositoryId)
+        prTracker.kick(repoId: workspace.repositoryId)
+    }
+
     /// Queue (or cancel) an auto-merge: GitHub lands the PR once every
     /// protection rule is satisfied.
     func setAutoMerge(for workspace: Workspace, enabling: Bool, method: MergeMethod?) async throws {

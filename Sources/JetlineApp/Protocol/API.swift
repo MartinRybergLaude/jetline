@@ -248,6 +248,14 @@ enum API {
         var method: MergeMethod
     }
 
+    /// Merge every open layer of the GitHub stack `workspaceId`'s PR is in.
+    struct MergeStack: RPC {
+        typealias Response = Empty
+        static let method = "git.mergeStack"
+        var workspaceId: String
+        var method: MergeMethod
+    }
+
     struct SetAutoMerge: RPC {
         typealias Response = Empty
         static let method = "git.autoMerge"

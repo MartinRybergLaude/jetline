@@ -1131,6 +1131,14 @@ final class AppState: ObservableObject {
         }
     }
 
+    func mergeStack(for workspace: Workspace, method: MergeMethod) async {
+        do {
+            _ = try await connection(forWorkspace: workspace.id).call(API.MergeStack(workspaceId: workspace.id, method: method))
+        } catch {
+            await presentError(error.localizedDescription)
+        }
+    }
+
     /// Queue an auto-merge: GitHub lands the PR once every protection rule
     /// is satisfied.
     func enableAutoMerge(for workspace: Workspace, method: MergeMethod) async {

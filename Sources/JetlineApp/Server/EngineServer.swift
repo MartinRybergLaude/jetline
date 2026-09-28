@@ -580,6 +580,10 @@ final class EngineServer {
             let ws = try self.workspace(req.workspaceId)
             return await engine.performFastPath(req.action, for: ws, terminalSize: req.terminalSize)
         }
+        on(API.MergeStack.self) { [unowned self] req, _ in
+            try await engine.mergeStack(for: try self.workspace(req.workspaceId), method: req.method)
+            return Empty()
+        }
         on(API.Merge.self) { [unowned self] req, _ in
             try await engine.performMerge(for: try self.workspace(req.workspaceId), method: req.method)
             return Empty()
