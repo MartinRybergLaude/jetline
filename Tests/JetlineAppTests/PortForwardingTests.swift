@@ -228,6 +228,179 @@ final class PortForwardingTests: XCTestCase {
         forwarder.stop()
     }
 
+    func testAnEngineWithoutTunnelsForwardsNothing() async throws {
+        var hello = try await hello()
+        hello.features = nil
+        let forwarder = Self.manualForwarder()
+        forwarder.connected(client, hello)
+        XCTAssertFalse(forwarder.isSupported)
+        let (probe, port) = try Self.listenAnyPort()
+        _ = close(probe)
+        forwarder.forward(port)
+        XCTAssertEqual(forwarder.forwardedPorts, [], "nothing to carry the connections")
+        forwarder.stop()
+    }
+
+    func testTheSameMachineListsNoEntries() async throws {
+        let hello = try await hello()
+        let forwarder = PortForwarder(hostId: "test", hostName: "devbox", persists: false)
+        forwarder.connected(client, hello)
+        forwarder.forward(40123)
+        XCTAssertTrue(forwarder.entries.isEmpty, "the sidebar shows nothing to forward")
+        XCTAssertEqual(forwarder.forwardedPorts, [])
+        forwarder.stop()
+    }
+
+    func testOnlySuggestedPortsAreForwardedAutomatically() async throws {
+        let forwarder = Self.manualForwarder()
+        let hello = try await hello()
+        forwarder.connected(client, hello)
+        await forwarder.initialWatch?.value
+        let (p1, suggested) = try Self.listenAnyPort()
+        let (p2, other) = try Self.listenAnyPort()
+        _ = close(p1)
+        _ = close(p2)
+        forwarder.received([
+            ListeningPort(port: suggested, addresses: ["127.0.0.1"], process: "vite", suggested: true),
+            ListeningPort(port: other, addresses: ["0.0.0.0"], process: "sshd", suggested: false),
+        ])
+        forwarder.forwardsAutomatically = true
+        await eventually("suggested one forwarded", timeout: 8) { forwarder.forwardedPorts == [suggested] }
+        XCTAssertEqual(forwarder.entries.map(\.port), [suggested])
+        XCTAssertEqual(forwarder.otherPorts.map(\.port), [other], "the rest is offered, not forwarded")
+
+        // Forwarding one by hand keeps it, even once it stops listening.
+        forwarder.forward(other)
+        await eventually("both", timeout: 8) { Set(forwarder.forwardedPorts) == [suggested, other] }
+        forwarder.received([ListeningPort(port: suggested, addresses: ["127.0.0.1"], process: "vite", suggested: true)])
+        XCTAssertEqual(Set(forwarder.forwardedPorts), [suggested, other])
+        XCTAssertEqual(forwarder.entries.first { $0.port == other }?.isListening, false)
+        XCTAssertEqual(forwarder.entries.first { $0.port == suggested }?.isListening, true)
+
+        // Turning automatic off keeps the manual one only.
+        forwarder.forwardsAutomatically = false
+        XCTAssertEqual(forwarder.forwardedPorts, [other])
+        forwarder.stop()
+        XCTAssertEqual(forwarder.forwardedPorts, [])
+    }
+
+    func testTwoRemotesWantingOnePortTakeTurns() async throws {
+        let hello = try await hello()
+        let (probe, port) = try Self.listenAnyPort()
+        _ = close(probe)
+        let first = PortForwarder(hostId: "a", hostName: "alpha", persists: false, allowsSameMachine: true)
+        let second = PortForwarder(hostId: "b", hostName: "beta", persists: false, allowsSameMachine: true)
+        for forwarder in [first, second] {
+            forwarder.forwardsAutomatically = false
+            forwarder.connected(client, hello)
+        }
+        first.forward(port)
+        await eventually("first has it", timeout: 8) { first.forwardedPorts == [port] }
+        second.forward(port)
+        XCTAssertEqual(second.entries.first?.state, .failed("Forwarded from alpha"))
+        XCTAssertEqual(second.forwardedPorts, [])
+
+        // Let go: the one waiting takes it over.
+        first.stopForwarding(port)
+        await eventually("second takes over", timeout: 8) { second.forwardedPorts == [port] }
+        XCTAssertEqual(second.entries.first?.state, .forwarding)
+        first.stop()
+        second.stop()
+    }
+
+    func testWhileTheLinkIsDownConnectionsAreRefusedButThePortIsKept() async throws {
+        let hello = try await hello()
+        let (probe, port) = try Self.listenAnyPort()
+        _ = close(probe)
+        let forwarder = Self.manualForwarder()
+        forwarder.connected(client, hello)
+        forwarder.forward(port)
+        await eventually("forwarding", timeout: 8) { forwarder.forwardedPorts == [port] }
+        forwarder.disconnected()
+        XCTAssertEqual(forwarder.forwardedPorts, [port], "still bound, so nothing else grabs it")
+        let fd = jl_tcp_connect("127.0.0.1", Int32(port), 2000)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        if fd >= 0 {
+            let reply = await TestIO.readToEnd(fd, silence: 5)
+            XCTAssertTrue(reply.isEmpty, "closed at once rather than left hanging")
+            _ = close(fd)
+        }
+        forwarder.stop()
+    }
+
+    // MARK: Listener and scanner
+
+    func testALoopbackListenerReportsATakenPortAndFreesItsOwn() async throws {
+        let (taken, port) = try Self.listenAnyPort()
+        XCTAssertThrowsError(try LoopbackListener(port: port) { _ in }) { error in
+            XCTAssertEqual(error as? LoopbackListener.Failure, .inUse)
+            XCTAssertEqual((error as? LoopbackListener.Failure)?.message, "In use on this Mac")
+        }
+        _ = close(taken)
+
+        let accepted = Locked(0)
+        let listener = try await Self.bindSoon(port) { fd in
+            accepted.mutate { $0 += 1 }
+            Glibc_or_Darwin_close(fd)
+        }
+        let fd = jl_tcp_connect("127.0.0.1", Int32(port), 2000)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        if fd >= 0 { _ = close(fd) }
+        await eventually("accepted") { accepted.value == 1 }
+        listener.close()
+        XCTAssertFalse(Self.accepts(port))
+        // Bindable again, TIME_WAIT from the accepted connection or not.
+        let again = try await Self.bindSoon(port) { fd in Glibc_or_Darwin_close(fd) }
+        again.close()
+    }
+
+    /// A closed listener can linger for a moment in a subprocess forked
+    /// just then (until its exec); other tests' engines spawn plenty.
+    private static func bindSoon(_ port: Int, onAccept: @escaping @Sendable (Int32) -> Void) async throws -> LoopbackListener {
+        let deadline = Date().addingTimeInterval(2)
+        while true {
+            do {
+                return try LoopbackListener(port: port, onAccept: onAccept)
+            } catch where Date() < deadline {
+                try await Task.sleep(for: .milliseconds(50))
+            }
+        }
+    }
+
+    func testConnectTargetsFollowWhereTheServerListens() throws {
+        let scanner = PortScanner()
+        // Unknown ports: loopback, both families.
+        XCTAssertEqual(scanner.connectTargets(for: 1), ["127.0.0.1", "::1"])
+
+        let v6 = jl_tcp_listen_loopback(6, 0, 0)
+        try XCTSkipIf(v6 < 0, "no IPv6 loopback")
+        defer { _ = close(v6) }
+        var addr = sockaddr_in6()
+        var len = socklen_t(MemoryLayout<sockaddr_in6>.size)
+        _ = withUnsafeMutablePointer(to: &addr) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(v6, $0, &len) } }
+        let port = Int(UInt16(bigEndian: addr.sin6_port))
+        let found = scanner.scanNow().first { $0.port == port }
+        XCTAssertEqual(found?.addresses, ["::1"])
+        XCTAssertEqual(scanner.connectTargets(for: port), ["::1", "127.0.0.1"], "where it listens first")
+    }
+
+    func testScannerReportsChangesOnlyWhenTheListChanges() async throws {
+        let scanner = PortScanner(interval: .milliseconds(100))
+        let reports = Locked<[[ListeningPort]]>([])
+        scanner.onChange = { ports in reports.mutate { $0.append(ports) } }
+        scanner.start()
+        defer { scanner.stop() }
+        await eventually("first scan", timeout: 10) { !reports.value.isEmpty }
+        let (listener, port) = try Self.listenAnyPort(inRange: 20000..<29000)
+        await eventually("new port reported", timeout: 15) { reports.value.last?.contains { $0.port == port } == true }
+        let count = reports.value.count
+        try await Task.sleep(for: .milliseconds(400))
+        // Other processes may come and go; this port's entry mustn't repeat.
+        XCTAssertLessThanOrEqual(reports.value.count - count, 2)
+        _ = close(listener)
+        await eventually("port gone", timeout: 15) { reports.value.last?.contains { $0.port == port } == false }
+    }
+
     // MARK: Helpers
 
 

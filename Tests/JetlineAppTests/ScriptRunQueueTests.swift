@@ -66,4 +66,66 @@ final class ScriptRunQueueTests: XCTestCase {
 
         XCTAssertTrue(controller.isRunning, "a cancelled run should be startable again")
     }
+
+    // MARK: Lifecycle, with real processes
+
+    private var cwd: String { TestSupport.dataDir.path }
+
+    func testABlankSetupScriptFinishesAtOnce() {
+        let setup = ScriptRun(kind: .setup, workspaceId: "ws", settings: { AppSettings() })
+        XCTAssertEqual(setup.phase, .running, "setup starts out running")
+        setup.start(script: "  \n ", cwd: cwd, env: [:])
+        XCTAssertEqual(setup.phase, .finished)
+        XCTAssertEqual(setup.exitStatus, 0)
+        XCTAssertNil(setup.terminal)
+        XCTAssertFalse(setup.isRunning)
+    }
+
+    func testSetupFinishesWithTheScriptsExitStatus() async {
+        let setup = ScriptRun(kind: .setup, workspaceId: "ws", settings: { AppSettings() })
+        setup.start(script: "echo installing; exit 4", cwd: cwd, env: [:])
+        XCTAssertEqual(setup.phase, .running)
+        XCTAssertNotNil(setup.terminal)
+        await eventually("setup finished", timeout: 15) { setup.phase == .finished }
+        XCTAssertEqual(setup.exitStatus, 4)
+        XCTAssertEqual(setup.info.terminalId, setup.terminal?.id, "the transcript stays viewable")
+    }
+
+    func testARunThatExitsGoesBackToIdleWithItsStatus() async {
+        let run = ScriptRun(kind: .run, workspaceId: "ws", settings: { AppSettings() })
+        run.start(script: "exit 3", cwd: cwd, env: [:])
+        XCTAssertEqual(run.phase, .starting)
+        await eventually("idle", timeout: 15) { run.phase == .idle }
+        XCTAssertEqual(run.exitStatus, 3)
+        XCTAssertFalse(run.isRunning)
+    }
+
+    func testALongRunBecomesRunningIgnoresASecondStartAndStops() async {
+        let run = ScriptRun(kind: .run, workspaceId: "ws", settings: { AppSettings() })
+        run.start(script: "echo $JL_TEST_VAR; sleep 30", cwd: cwd, env: ["JL_TEST_VAR": "from-env"])
+        let terminal = run.terminal
+        await eventually("running", timeout: 10) { run.phase == .running }
+        run.start(script: "echo second", cwd: cwd, env: [:])
+        XCTAssertTrue(run.terminal === terminal, "a second start doesn't replace a live run")
+        await eventually("env reached the script", timeout: 10) {
+            String(decoding: terminal?.buffer.read(from: nil).bytes ?? Data(), as: UTF8.self).contains("from-env")
+        }
+        await run.stopAndWait()
+        await eventually("idle", timeout: 10) { run.phase == .idle }
+        XCTAssertNotNil(run.exitStatus)
+    }
+
+    func testAQueuedRunStartsOnceItsClearanceResolves() async {
+        let run = ScriptRun(kind: .run, workspaceId: "ws", settings: { AppSettings() })
+        var cleared = false
+        run.start(script: "exit 0", cwd: cwd, env: [:]) {
+            try? await Task.sleep(for: .milliseconds(100))
+            cleared = true
+        }
+        XCTAssertEqual(run.phase, .queued)
+        await eventually("spawned after clearance", timeout: 10) { run.terminal != nil }
+        XCTAssertTrue(cleared)
+        await eventually("finished", timeout: 15) { run.phase == .idle }
+        XCTAssertEqual(run.exitStatus, 0)
+    }
 }
