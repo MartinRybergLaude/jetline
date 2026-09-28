@@ -25,7 +25,8 @@ struct SidebarView: View {
                         onOpenSettings: { showingRepoSettings = repo },
                         groupHeader: grouped && repo.id == repos.first?.id ? AnyView(hostHeader(host)) : nil
                     )
-                    // A remote whose link is down stays listed, dimmed.
+                    // A remote whose link is down stays listed, greyed out.
+                    .saturation(host.isLocal || host.isSynced ? 1 : 0)
                     .opacity(host.isLocal || host.isSynced ? 1 : 0.5)
                 }
                 .onMove { offsets, destination in
@@ -139,8 +140,8 @@ private struct CreationRequest: Identifiable {
 
 /// The title above one machine's repositories, drawn like a Finder sidebar
 /// section header: plain secondary text, separated by whitespace, with its
-/// controls fading in on hover. A remote's link shows beside its name: a
-/// green dot when up, a spinner while connecting, a warning when down.
+/// controls fading in on hover. A remote's link shows as a light beside its
+/// name: green when up, yellow while (re)connecting, red when it gave up.
 private struct HostGroupHeader: View {
     @EnvironmentObject private var state: AppState
     let host: EngineHost
@@ -261,34 +262,23 @@ private struct HostGroupHeader: View {
         Button("Remove \(host.name)…", role: .destructive) { confirmingRemoval = true }
     }
 
+    /// A status light, as in the Network settings pane.
     @ViewBuilder
     private var statusIndicator: some View {
+        if !host.isLocal {
+            Circle()
+                .fill(statusColor.gradient)
+                .frame(width: 6, height: 6)
+                .help(statusHelp)
+        }
+    }
+
+    private var statusColor: Color {
         switch host.connection.status {
-        case .connected:
-            if !host.isLocal {
-                Circle()
-                    .fill(.green.gradient)
-                    .frame(width: 6, height: 6)
-                    .help(statusHelp)
-            }
-        case .connecting, .reconnecting:
-            ProgressView()
-                .controlSize(.mini)
-                .scaleEffect(0.8)
-                .frame(width: 12, height: 12)
-                .help(statusHelp)
-        case .failed:
-            Image(systemName: "exclamationmark.triangle.fill")
-                .symbolRenderingMode(.multicolor)
-                .font(.system(size: 10))
-                .help(statusHelp)
-        case .idle:
-            if !host.isLocal {
-                Image(systemName: "bolt.horizontal.circle")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-                    .help(statusHelp)
-            }
+        case .connected: return .green
+        case .connecting, .reconnecting: return .yellow
+        case .failed: return .red
+        case .idle: return .gray
         }
     }
 
@@ -306,19 +296,27 @@ private struct HostGroupHeader: View {
         }
     }
 
+    /// A link down for this many tries is more than a blip: say why.
+    private static let persistentDropAttempts = 3
+
     private var needsSetup: Bool {
         guard !host.isLocal else { return false }
         switch host.connection.status {
-        case .failed, .reconnecting: return true
+        case .failed: return true
+        case let .reconnecting(attempt, _): return attempt >= Self.persistentDropAttempts
         default: return false
         }
     }
 
-    /// Only when something needs saying: a down link, or gh trouble there.
+    /// Only when something needs saying: a link that stays down, or gh
+    /// trouble there. A brief drop shows only in the light and the dimmed
+    /// group.
     private var detail: String? {
         switch host.connection.status {
-        case .connecting where !host.isLocal: return "Connecting…"
-        case let .reconnecting(_, error): return error.map { "Reconnecting — \($0)" } ?? "Reconnecting…"
+        case .connecting where !host.isLocal: return nil
+        case let .reconnecting(attempt, error):
+            guard attempt >= Self.persistentDropAttempts else { return nil }
+            return error.map { "Reconnecting — \($0)" } ?? "Reconnecting…"
         case let .failed(message): return message
         default: return host.prTrackerStatus.userMessage
         }
