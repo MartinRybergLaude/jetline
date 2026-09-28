@@ -242,9 +242,9 @@ extension Engine {
                 let target = try writableTarget(args, caller: caller)
                 let onto = try args.requiredString("onto")
                 let parent = onto == "default" ? nil : try readable(workspace(id: onto), caller: caller)
-                let warning = try await restackWorkspace(target, onto: parent.flatMap { isRepositoryBaseWorkspace($0) ? nil : $0 })
+                try await restackWorkspace(target, onto: parent.flatMap { isRepositoryBaseWorkspace($0) ? nil : $0 })
                 let base = workspaceById(target.id).map { repo.localName(forRemoteRef: $0.baseBranch) }
-                result = ["restacked": .string(target.id), "base": base.map(JSONValue.string) ?? .null, "warning": warning.map(JSONValue.string) ?? .null]
+                result = ["restacked": .string(target.id), "base": base.map(JSONValue.string) ?? .null]
             case "rebase_workspace":
                 let target = try writableTarget(args, caller: caller)
                 try await rebase(target).get()
@@ -425,22 +425,13 @@ extension Engine {
             guard let identifier = repoMetadataByRepo[repo.id] else {
                 throw WireError("Jetline hasn't reached GitHub for this repository yet.")
             }
-            guard let (pr, _) = try await GitHubRunner.batchFetchPRsByNumber(repo: identifier, numbers: [number], cwd: repo.path)[number] else {
+            guard let summary = try await GitHubRunner.fetchPRSummary(repo: identifier, number: number, cwd: repo.path) else {
                 throw WireError("No pull request #\(number) in \(identifier.owner)/\(identifier.name).")
             }
-            let summary = PRSummary(
-                number: pr.number,
-                title: pr.title,
-                url: pr.url,
-                authorLogin: pr.author.login,
-                headRefName: pr.headRefName,
-                headRepositoryOwner: identifier.owner,
-                baseRefName: pr.baseRefName,
-                isDraft: pr.isDraft,
-                updatedAt: Date(),
-                checkBucket: nil
-            )
-            (remoteRef, pullRequest, defaultName) = (nil, summary, pr.title)
+            if summary.isFork(of: identifier) {
+                throw WireError("PR #\(number) comes from a fork; Jetline only imports branches on \(identifier.owner)/\(identifier.name).")
+            }
+            (remoteRef, pullRequest, defaultName) = (nil, summary, summary.title)
         default:
             throw WireError("Give exactly one of branch or pull_request.")
         }

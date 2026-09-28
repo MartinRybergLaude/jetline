@@ -856,6 +856,47 @@ enum GitHubRunner {
         return nodes.compactMap { $0.toSummary() }
     }
 
+    /// One PR by number, in the picker's slim shape (so callers can tell a
+    /// fork). `nil` when the repo has no such PR.
+    static func fetchPRSummary(
+        repo: RepoIdentifier,
+        number: Int,
+        cwd: String
+    ) async throws -> PRSummary? {
+        let query = """
+        query($owner: String!, $name: String!, $number: Int!) {
+          repository(owner: $owner, name: $name) {
+            pullRequest(number: $number) {
+              number title url isDraft updatedAt
+              headRefName baseRefName
+              headRepositoryOwner { login }
+              author { login }
+              commits(last: 1) {
+                nodes {
+                  commit { statusCheckRollup { state } }
+                }
+              }
+            }
+          }
+        }
+        """
+        let stdout = try await runGH(
+            [
+                "api", "graphql",
+                "-F", "owner=\(repo.owner)",
+                "-F", "name=\(repo.name)",
+                "-F", "number=\(number)",
+                "-f", "query=\(query)"
+            ],
+            cwd: cwd
+        )
+        let decoded = try JSONDecoder().decode(GraphQLResponse<SinglePRRepo>.self, from: Data(stdout.utf8))
+        if let errors = decoded.errors, !errors.isEmpty {
+            throw Error.other(errors.map(\.message).joined(separator: "; "))
+        }
+        return decoded.data?.repository?.pullRequest?.toSummary()
+    }
+
     /// Not `private`: the conversation/mutation surface in
     /// `PRConversation.swift` runs through the same `gh` invocation so it
     /// inherits the identical env scrubbing and error mapping.
@@ -1175,6 +1216,11 @@ private struct OpenPRsRepo: Decodable {
         let nodes: [PRSummaryNode]
         let pageInfo: PageInfo?
     }
+}
+
+private struct SinglePRRepo: Decodable {
+    let repository: Repo?
+    struct Repo: Decodable { let pullRequest: PRSummaryNode? }
 }
 
 private struct PRSummaryNode: Decodable {

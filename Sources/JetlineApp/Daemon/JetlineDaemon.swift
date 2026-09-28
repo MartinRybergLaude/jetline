@@ -335,11 +335,10 @@ public enum JetlineDaemon {
     }
 
     /// What precedes a daemon command when running this binary: nothing
-    /// for `jetlined`, `daemon` for the macOS app binary (`jetline daemon …`).
-    static var commandPrefix: [String] {
-        let name = currentExecutable().map { URL(fileURLWithPath: $0).lastPathComponent } ?? ""
-        return name == "jetlined" ? [] : ["daemon"]
-    }
+    /// for `jetlined`; the macOS app binary sets `daemon` (`jetline daemon …`).
+    /// Set by the entry point rather than guessed from the executable's
+    /// name, which a renamed install would get wrong.
+    nonisolated(unsafe) public static var commandPrefix: [String] = []
 
     static func currentExecutable() -> String? {
         #if os(Linux)

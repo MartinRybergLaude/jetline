@@ -957,12 +957,13 @@ final class Engine {
         return .success(())
     }
 
-    /// Move `workspace` onto `parent` (`nil`: the default branch): rebase
-    /// its own commits there, push, re-base the workspace and retarget its
-    /// open PR. Refused for a loop, and for a PR in a GitHub stack, which
-    /// GitHub has to unstack first. Returns a warning when only the PR
-    /// retarget failed.
-    func restackWorkspace(_ workspace: Workspace, onto parent: Workspace?) async throws -> String? {
+    /// Move `workspace` onto `parent` (`nil`: the default branch): retarget
+    /// its open PR, rebase its own commits there, push and re-base the
+    /// workspace. The PR goes first so a PR poll can't pull the workspace
+    /// back to the old base, and a failed retarget leaves everything as it
+    /// was. Refused for a loop, and for a PR in a GitHub stack, which GitHub
+    /// has to unstack first.
+    func restackWorkspace(_ workspace: Workspace, onto parent: Workspace?) async throws {
         guard let repo = repository(id: workspace.repositoryId) else { throw WireError("Unknown repository.") }
         if let parent, WorkspaceStacks.isStacked(parent, onTopOf: workspace, in: workspacesByRepo[repo.id] ?? [], repo: repo) {
             throw WireError("Can't stack \(workspace.name) on itself or on a workspace above it.")
@@ -975,16 +976,25 @@ final class Engine {
             throw WireError("PR #\(pr.number) is in GitHub stack #\(stack.number). Unstack it on GitHub first.")
         }
         let newBase = parent?.branchName ?? repo.defaultBranch
-        try await rebase(workspace, onto: parent?.branchName ?? repo.remoteRef(newBase), upstream: baseRef(for: workspace)).get()
+        let upstream = baseRef(for: workspace)
+        if let pr {
+            try await retargetPR(pr.number, to: repo.localName(forRemoteRef: newBase), cwd: workspace.worktreePath)
+        }
+        do {
+            try await rebase(workspace, onto: parent?.branchName ?? repo.remoteRef(newBase), upstream: upstream).get()
+        } catch {
+            if let pr { try? await retargetPR(pr.number, to: pr.baseRefName, cwd: workspace.worktreePath) }
+            throw error
+        }
         updateWorkspaceBaseBranch(newBase, for: workspace.id)
         prTracker.kick(repoId: repo.id)
-        guard let pr else { return nil }
-        let base = repo.localName(forRemoteRef: newBase)
+    }
+
+    private func retargetPR(_ number: Int, to base: String, cwd: String) async throws {
         do {
-            _ = try await GitHubRunner.runGH(["pr", "edit", String(pr.number), "--base", base], cwd: workspace.worktreePath)
-            return nil
+            _ = try await GitHubRunner.runGH(["pr", "edit", String(number), "--base", base], cwd: cwd)
         } catch {
-            return "Couldn't retarget PR #\(pr.number) to \(base): \(error.localizedDescription)"
+            throw WireError("Couldn't retarget PR #\(number) to \(base): \(error.localizedDescription)")
         }
     }
 
