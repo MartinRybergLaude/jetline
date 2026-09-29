@@ -3,13 +3,13 @@
     <channel>
         <title>Jetline</title>
         <item>
-            <title>0.8.1</title>
-            <pubDate>Mon, 28 Sep 2026 21:13:57 +0000</pubDate>
-            <sparkle:version>238</sparkle:version>
-            <sparkle:shortVersionString>0.8.1</sparkle:shortVersionString>
+            <title>0.8.2</title>
+            <pubDate>Tue, 29 Sep 2026 10:57:18 +0000</pubDate>
+            <sparkle:version>242</sparkle:version>
+            <sparkle:shortVersionString>0.8.2</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/MartinRybergLaude/jetline/releases/download/v0.8.1/Jetline-0.8.1.dmg" length="11345267" type="application/octet-stream" sparkle:edSignature="+nBasO/dydyVSn4cAS80jOoBZC3oHORJPluUgCwUVEO+OQLpu6c4P4woQkusA+OEDZjklWba/G6ob9GSJfqtDA=="/>
+            <enclosure url="https://github.com/MartinRybergLaude/jetline/releases/download/v0.8.2/Jetline-0.8.2.dmg" length="11360929" type="application/octet-stream" sparkle:edSignature="1WplxAOhb1N3dAT+Y757xRtG29m27hcMYw9hnho1s55AL6Fh1MN6g5d0IKmzktCaXOPnjixyObCTLp1EtWQKDA=="/>
         </item>
     </channel>
 </rss>
