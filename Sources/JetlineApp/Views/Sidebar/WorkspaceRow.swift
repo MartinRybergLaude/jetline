@@ -19,6 +19,7 @@ struct WorkspaceRow: View {
             depth: depth,
             creator: workspace.createdByWorkspaceId.map { state.workspaceById($0)?.name ?? "a workspace since deleted" },
             onStackNew: onStackNew,
+            onRename: { state.renameWorkspace(workspace, to: $0) },
             onDelete: { Task { await state.deleteWorkspace(workspace) } },
             onClose: { state.closeWorkspace(workspace.id) }
         )
@@ -33,8 +34,12 @@ private struct WorkspaceRowContent: View {
     /// Name of the workspace whose agent created this one.
     let creator: String?
     let onStackNew: () -> Void
+    let onRename: (String) -> Void
     let onDelete: () -> Void
     let onClose: () -> Void
+
+    @State private var renaming = false
+    @State private var draftName = ""
 
     var body: some View {
         let isOpen = workspaceState.hasAgentTabs
@@ -80,6 +85,10 @@ private struct WorkspaceRowContent: View {
         .contentShape(Rectangle())
         .contextMenu {
             Button("New workspace stacked on this…") { onStackNew() }
+            Button("Rename…") {
+                draftName = workspace.name
+                renaming = true
+            }
             Divider()
             Button("Reveal worktree in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: workspace.worktreePath)])
@@ -89,6 +98,13 @@ private struct WorkspaceRowContent: View {
             }
             Divider()
             Button("Delete workspace", role: .destructive) { onDelete() }
+        }
+        .alert("Rename Workspace", isPresented: $renaming) {
+            TextField("Name", text: $draftName)
+            Button("Rename") { onRename(draftName) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The branch keeps its name.")
         }
     }
 

@@ -548,6 +548,11 @@ final class EngineServer {
         on(API.ActivateWorkspace.self) { req, _ in
             engine.activateWorkspace(req.workspaceId, terminalSize: req.terminalSize)
         }
+        on(API.RenameWorkspace.self) { req, _ in
+            guard let name = req.name.nonBlank else { throw WireError("A workspace needs a name.") }
+            engine.renameWorkspace(req.workspaceId, to: name)
+            return Empty()
+        }
         on(API.CloseWorkspace.self) { req, _ in engine.closeWorkspace(req.workspaceId); return Empty() }
         on(API.RefreshDiff.self) { [unowned self] req, _ in
             await engine.refreshDiff(for: try self.workspace(req.workspaceId))

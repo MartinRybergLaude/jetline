@@ -14,7 +14,7 @@ final class AgentToolsTests: XCTestCase {
         XCTAssertEqual(server["env"]?["JETLINE_ENGINE_SOCKET"]?.string, "/tmp/x.sock")
         XCTAssertEqual(
             args.last,
-            "--allowedTools=mcp__jetline__get_context,mcp__jetline__list_workspaces,mcp__jetline__get_workspace"
+            "--allowedTools=mcp__jetline__get_context,mcp__jetline__list_repositories,mcp__jetline__list_workspaces,mcp__jetline__get_workspace"
         )
     }
 
@@ -26,7 +26,7 @@ final class AgentToolsTests: XCTestCase {
     }
 
     func testOnlyReadsAreReadOnly() {
-        XCTAssertEqual(AgentTools.readOnlyToolNames, ["get_context", "list_workspaces", "get_workspace"])
+        XCTAssertEqual(AgentTools.readOnlyToolNames, ["get_context", "list_repositories", "list_workspaces", "get_workspace"])
         // No merge, delete or close tools.
         let names = AgentTools.catalog.map(\.name)
         XCTAssertFalse(names.contains { $0.contains("merge") || $0.contains("delete") || $0.contains("close") })

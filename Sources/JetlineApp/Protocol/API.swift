@@ -194,6 +194,14 @@ enum API {
         case missing
     }
 
+    /// The name shown in the sidebar. The branch keeps its name.
+    struct RenameWorkspace: RPC {
+        typealias Response = Empty
+        static let method = "workspace.rename"
+        var workspaceId: String
+        var name: String
+    }
+
     /// Stop everything running in a workspace. It stays in the sidebar.
     struct CloseWorkspace: RPC {
         typealias Response = Empty

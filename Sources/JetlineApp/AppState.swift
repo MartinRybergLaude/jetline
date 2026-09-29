@@ -1323,6 +1323,13 @@ final class AppState: ObservableObject {
         perform(API.RefreshPR(workspaceId: workspaceId), on: connection(forWorkspace: workspaceId))
     }
 
+    func renameWorkspace(_ workspace: Workspace, to name: String) {
+        guard let name = name.nonBlank, name != workspace.name else { return }
+        let connection = self.connection(forWorkspace: workspace.id)
+        guard requireConnection(connection) else { return }
+        perform(API.RenameWorkspace(workspaceId: workspace.id, name: name), on: connection)
+    }
+
     /// Close a workspace's live runtime — sessions, chats, run/setup —
     /// while keeping its sidebar entry and cached diff/PR state.
     func closeWorkspace(_ id: String) {

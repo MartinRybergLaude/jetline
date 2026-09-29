@@ -3,9 +3,10 @@ import Foundation
 /// The tools Jetline gives the agents it launches, served to them over MCP
 /// by `jetlined mcp` (see `AgentToolsServer`) and carried out here.
 ///
-/// Reads reach every workspace in the caller's repository. Writes reach
-/// only the caller's own workspace and the ones it created: another agent
-/// may be mid-task in any other worktree. Merging, deleting and closing
+/// Reads reach every workspace in every repository added to Jetline, and
+/// an agent may create workspaces in any of them (a frontend agent needing
+/// a backend branch, say). Writes reach only the caller's own workspace and
+/// the ones it created: another agent may be mid-task in any other worktree. Merging, deleting and closing
 /// aren't offered at all — those stay with the user.
 enum AgentTools {
     struct Tool: Sendable {
@@ -33,12 +34,23 @@ enum AgentTools {
             readOnly: true
         ),
         Tool(
-            name: "list_workspaces",
+            name: "list_repositories",
             description: """
-            Every Jetline workspace in this repository: id, branch, base, the workspace it's \
-            stacked on, pull request state, who created it, and whether you may change it.
+            Every repository added to Jetline: id, name, path, default branch, and which one \
+            you're in. Pass a repository to list_workspaces, create_workspace or import_branch \
+            to work in another one, e.g. a backend repository from a frontend workspace.
             """,
             inputSchema: schema([:]),
+            readOnly: true
+        ),
+        Tool(
+            name: "list_workspaces",
+            description: """
+            Every Jetline workspace in a repository (yours by default): id, branch, base, the \
+            workspace it's stacked on, pull request state, who created it, and whether you may \
+            change it.
+            """,
+            inputSchema: schema(["repository": repositoryProperty]),
             readOnly: true
         ),
         Tool(
@@ -53,11 +65,13 @@ enum AgentTools {
             Create a Jetline workspace: a branch with its own worktree in the user's sidebar, \
             set up by the repository's setup script. Nothing runs in it. stack_on "current" \
             starts it from your branch's tip as it is now (commit first) and targets its PR at \
-            your branch; without stack_on it starts from the default branch.
+            your branch; without stack_on it starts from the default branch. Give repository \
+            to create it in another repository; stack_on must then be a workspace there.
             """,
             inputSchema: schema([
-                "name": .object(["type": "string", "description": "Short human name, e.g. \"settings screen\". The branch name is derived from it."]),
-                "stack_on": .object(["type": "string", "description": "\"current\" for your workspace, or a workspace id. Omit to start from the default branch."]),
+                "name": .object(["type": "string", "description": "Very short kebab-case name, one to three words, e.g. \"settings-screen\". The branch name is derived from it."]),
+                "repository": repositoryProperty,
+                "stack_on": .object(["type": "string", "description": "\"current\" for your workspace, or a workspace id in the same repository. Omit to start from the default branch."]),
                 "note": .object(["type": "string", "description": "What the workspace is for, for whoever picks it up."])
             ], required: ["name"]),
             readOnly: false
@@ -66,16 +80,17 @@ enum AgentTools {
             name: "import_branch",
             description: "Open an existing remote branch or pull request as a new workspace. Give exactly one of branch or pull_request.",
             inputSchema: schema([
+                "repository": repositoryProperty,
                 "branch": .object(["type": "string", "description": "Remote branch name, without the remote prefix."]),
                 "pull_request": .object(["type": "integer", "description": "Pull request number."]),
-                "name": .object(["type": "string", "description": "Workspace name. Defaults to the branch or PR title."]),
+                "name": .object(["type": "string", "description": "Very short kebab-case name, one to three words. Defaults to the branch or PR title."]),
                 "note": .object(["type": "string", "description": "What the workspace is for."])
             ]),
             readOnly: false
         ),
         Tool(
             name: "rename_workspace",
-            description: "Rename a workspace as shown in the sidebar. The branch keeps its name.",
+            description: "Rename a workspace as shown in the sidebar. Use a very short kebab-case name, one to three words. The branch keeps its name.",
             inputSchema: schema([
                 "workspace_id": workspaceIdProperty,
                 "name": .object(["type": "string"])
@@ -123,6 +138,11 @@ enum AgentTools {
     ]
 
     static var readOnlyToolNames: [String] { catalog.filter(\.readOnly).map(\.name) }
+
+    private static let repositoryProperty: JSONValue = .object([
+        "type": "string",
+        "description": "A repository id or name from list_repositories. Defaults to your own repository."
+    ])
 
     private static let workspaceIdProperty: JSONValue = .object([
         "type": "string",
@@ -221,14 +241,18 @@ extension Engine {
             switch tool {
             case "get_context":
                 result = context(for: caller, repo: repo)
+            case "list_repositories":
+                result = ["repositories": .array(repositories.map { .object(summary(of: $0, caller: caller)) })]
             case "list_workspaces":
-                result = ["workspaces": .array(repoWorkspaces(repo).map { .object(summary(of: $0, caller: caller, repo: repo)) })]
+                let listed = try targetRepository(args, caller: caller)
+                result = ["workspaces": .array(repoWorkspaces(listed).map { .object(summary(of: $0, caller: caller, repo: listed)) })]
             case "get_workspace":
-                result = detail(of: try readable(target(args, caller: caller), caller: caller), caller: caller, repo: repo)
+                let target = try target(args, caller: caller)
+                result = detail(of: target, caller: caller, repo: try repository(of: target))
             case "create_workspace":
-                result = try await toolCreateWorkspace(args, caller: caller, repo: repo)
+                result = try await toolCreateWorkspace(args, caller: caller, repo: targetRepository(args, caller: caller))
             case "import_branch":
-                result = try await toolImportBranch(args, caller: caller, repo: repo)
+                result = try await toolImportBranch(args, caller: caller, repo: targetRepository(args, caller: caller))
             case "rename_workspace":
                 let target = try writableTarget(args, caller: caller)
                 let name = try args.requiredString("name")
@@ -241,9 +265,10 @@ extension Engine {
             case "restack_workspace":
                 let target = try writableTarget(args, caller: caller)
                 let onto = try args.requiredString("onto")
-                let parent = onto == "default" ? nil : try readable(workspace(id: onto), caller: caller)
+                let targetRepo = try repository(of: target)
+                let parent = onto == "default" ? nil : try workspace(id: onto, in: targetRepo)
                 try await restackWorkspace(target, onto: parent.flatMap { isRepositoryBaseWorkspace($0) ? nil : $0 })
-                let base = workspaceById(target.id).map { repo.localName(forRemoteRef: $0.baseBranch) }
+                let base = workspaceById(target.id).map { targetRepo.localName(forRemoteRef: $0.baseBranch) }
                 result = ["restacked": .string(target.id), "base": base.map(JSONValue.string) ?? .null]
             case "rebase_workspace":
                 let target = try writableTarget(args, caller: caller)
@@ -284,16 +309,35 @@ extension Engine {
         return ws
     }
 
-    private func readable(_ target: Workspace, caller: Workspace) throws -> Workspace {
-        guard target.repositoryId == caller.repositoryId else {
-            throw WireError("That workspace is in another repository.")
+    private func workspace(id: String, in repo: Repository) throws -> Workspace {
+        let ws = try workspace(id: id)
+        guard ws.repositoryId == repo.id else {
+            throw WireError("Workspace \(id) isn't in \(repo.name). list_workspaces with that repository shows its ids.")
         }
-        return target
+        return ws
+    }
+
+    private func repository(of ws: Workspace) throws -> Repository {
+        guard let repo = repository(id: ws.repositoryId) else { throw WireError("Unknown repository.") }
+        return repo
+    }
+
+    /// `repository` (an id or a name), else the caller's own.
+    private func targetRepository(_ args: AgentToolArguments, caller: Workspace) throws -> Repository {
+        guard let key = args.string("repository") else { return try repository(of: caller) }
+        if let repo = repository(id: key) { return repo }
+        let named = repositories.filter { $0.name.caseInsensitiveCompare(key) == .orderedSame }
+        guard named.count == 1, let repo = named.first else {
+            throw WireError(named.isEmpty
+                ? "No repository \(key) in Jetline. list_repositories shows them."
+                : "More than one repository is named \(key); give its id from list_repositories.")
+        }
+        return repo
     }
 
     /// The target of a write: the caller's own workspace, or one it created.
     private func writableTarget(_ args: AgentToolArguments, caller: Workspace) throws -> Workspace {
-        let target = try readable(target(args, caller: caller), caller: caller)
+        let target = try target(args, caller: caller)
         guard canChange(target, caller: caller) else {
             throw WireError("You may only change your own workspace and the ones you created, and not the repository's own checkout. \(target.name) isn't one of those.")
         }
@@ -309,6 +353,7 @@ extension Engine {
     private func context(for caller: Workspace, repo: Repository) -> [String: JSONValue] {
         var out = detail(of: caller, caller: caller, repo: repo)
         out["repository"] = [
+            "id": .string(repo.id),
             "name": .string(repo.name),
             "default_branch": .string(repo.localName(forRemoteRef: repo.defaultBranch)),
             "remote": .string(repo.remoteOrigin)
@@ -332,6 +377,16 @@ extension Engine {
         return out
     }
 
+    private func summary(of repo: Repository, caller: Workspace) -> [String: JSONValue] {
+        [
+            "id": .string(repo.id),
+            "name": .string(repo.name),
+            "path": .string(repo.path),
+            "default_branch": .string(repo.localName(forRemoteRef: repo.defaultBranch)),
+            "is_yours": .bool(repo.id == caller.repositoryId)
+        ]
+    }
+
     private func loadedPR(_ ws: Workspace) -> PullRequest? {
         if case let .loaded(pr, _) = workspaceState(for: ws.id).pr { return pr }
         return nil
@@ -340,6 +395,7 @@ extension Engine {
     private func summary(of ws: Workspace, caller: Workspace, repo: Repository) -> [String: JSONValue] {
         var out: [String: JSONValue] = [
             "id": .string(ws.id),
+            "repository": .string(repo.id),
             "name": .string(ws.name),
             "branch": .string(ws.branchName),
             "base": .string(repo.localName(forRemoteRef: ws.baseBranch)),
@@ -400,8 +456,12 @@ extension Engine {
         let baseId: String?
         switch args.string("stack_on") {
         case nil: baseId = nil
-        case "current": baseId = isRepositoryBaseWorkspace(caller) ? nil : caller.id
-        case let id?: baseId = try readable(workspace(id: id), caller: caller).id
+        case "current":
+            guard caller.repositoryId == repo.id else {
+                throw WireError("stack_on \"current\" needs the new workspace in your own repository.")
+            }
+            baseId = isRepositoryBaseWorkspace(caller) ? nil : caller.id
+        case let id?: baseId = try workspace(id: id, in: repo).id
         }
         let result = try await createWorkspace(
             in: repo,
