@@ -2,6 +2,20 @@
 import SwiftUI
 import AppKit
 
+/// Horizontal rhythm shared by repository headers and workspace rows, so
+/// every icon sits in one column and every label starts at one edge, as in
+/// the Music and Finder sidebars.
+enum SidebarMetrics {
+    /// From the row's content origin to the disclosure chevron; machine
+    /// titles start here too.
+    static let leading: CGFloat = 5
+    static let disclosureColumn: CGFloat = 10
+    /// From the row's content origin to the icon column.
+    static let iconLeading: CGFloat = 18
+    static let iconColumn: CGFloat = 24
+    static let labelGap: CGFloat = 6
+}
+
 struct WorkspaceRow: View {
     @EnvironmentObject private var state: AppState
     let workspace: Workspace
@@ -45,13 +59,16 @@ private struct WorkspaceRowContent: View {
         let isOpen = workspaceState.hasAgentTabs
         HStack(spacing: 0) {
             if depth > 0 {
-                // Capped so a tall stack doesn't walk the name off the row.
-                Spacer().frame(width: CGFloat(min(depth, 3) - 1) * Self.indent)
+                // Each level steps one icon column in, so the elbow drops
+                // from the center of the parent's icon. Capped so a tall
+                // stack doesn't walk the name off the row.
+                Spacer().frame(width: CGFloat(min(depth, 3) - 1) * SidebarMetrics.iconColumn)
                 StackElbow()
-                    .frame(width: Self.indent, height: 13)
+                    .frame(width: SidebarMetrics.iconColumn, height: 16)
             }
-            PRStatusIcon(snapshot: workspaceState.pr, size: 13)
-            Spacer().frame(width: 10)
+            PRStatusIcon(snapshot: workspaceState.pr, size: 16)
+                .frame(width: SidebarMetrics.iconColumn)
+            Spacer().frame(width: SidebarMetrics.labelGap)
             Text(workspace.name)
                 .font(.body)
                 .foregroundStyle(nameColor(isOpen: isOpen))
@@ -67,13 +84,10 @@ private struct WorkspaceRowContent: View {
             Spacer(minLength: 0)
             ChatActivityIndicator(chats: workspaceState.chats)
         }
-        // 27.5 centers the 13pt PR icon on the repo favicon in the section
-        // header above: the header's icon center sits at 4 (leading) + 12
-        // (chevron) + 3 (gap) + 4 (label padding) + 11 (icon-slot center)
-        // = 34pt from the shared content origin, and 27.5 + 6.5 = 34.
-        .padding(.leading, 27.5)
+        // Same icon column and label edge as the repository header above.
+        .padding(.leading, SidebarMetrics.iconLeading)
         .padding(.trailing, 8)
-        .padding(.vertical, 4)
+        .padding(.vertical, 5)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
             if isSelected {
@@ -108,8 +122,6 @@ private struct WorkspaceRowContent: View {
         }
     }
 
-    private static let indent: CGFloat = 14
-
     private func creatorHelp(_ creator: String) -> String {
         let line = "Created by the agent in \(creator)"
         return workspace.note.map { "\(line): \($0)" } ?? line
@@ -126,10 +138,10 @@ private struct StackElbow: View {
     var body: some View {
         Canvas { context, size in
             var path = Path()
-            let x = size.width * 0.35
-            path.move(to: CGPoint(x: x, y: -3))
+            let x = size.width / 2
+            path.move(to: CGPoint(x: x, y: -6))
             path.addLine(to: CGPoint(x: x, y: size.height / 2))
-            path.addLine(to: CGPoint(x: size.width - 2, y: size.height / 2))
+            path.addLine(to: CGPoint(x: size.width - 3, y: size.height / 2))
             context.stroke(path, with: .color(.secondary.opacity(0.5)), lineWidth: 1)
         }
         .accessibilityHidden(true)

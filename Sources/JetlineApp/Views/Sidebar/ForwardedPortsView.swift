@@ -19,6 +19,7 @@ struct ForwardedPortsView: View {
                     .buttonStyle(.link)
                     .font(.caption2)
             }
+            .padding(.leading, ForwardedPortRow.iconInset + SidebarMetrics.iconColumn + SidebarMetrics.labelGap)
         } else if !entries.isEmpty {
             VStack(alignment: .leading, spacing: 1) {
                 ForEach(entries) { entry in
@@ -35,37 +36,45 @@ private struct ForwardedPortRow: View {
     @State private var hovering = false
 
     private var url: URL { URL(string: "http://localhost:\(entry.port)")! }
+    /// The header this sits in starts at the chevron column.
+    static let iconInset = SidebarMetrics.iconLeading - SidebarMetrics.leading
 
     var body: some View {
         Button {
             if entry.state == .forwarding { NSWorkspace.shared.open(url) }
         } label: {
-            HStack(spacing: 6) {
+            // Drawn like a workspace row: glyph in the icon column, address
+            // on the label edge, hover pill as wide as the rows' pills.
+            HStack(spacing: SidebarMetrics.labelGap) {
                 icon
-                    .font(.system(size: 9, weight: .semibold))
-                    .frame(width: 12)
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(width: SidebarMetrics.iconColumn)
                 Text(verbatim: "localhost:\(entry.port)")
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.system(size: 12).monospacedDigit())
                     .foregroundStyle(entry.state == .forwarding ? .primary : .secondary)
+                    .lineLimit(1)
                 if let note {
                     Text(note)
-                        .font(.system(size: 10))
+                        .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
                 Spacer(minLength: 0)
                 if hovering, entry.state == .forwarding {
-                    Image(systemName: "arrow.up.right.square")
-                        .font(.system(size: 10))
+                    Image(systemName: "arrow.up.right")
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.secondary)
                 }
             }
-            .padding(.vertical, 2)
-            .padding(.horizontal, 4)
+            .padding(.leading, Self.iconInset)
+            .padding(.vertical, 4)
             .background(
-                RoundedRectangle(cornerRadius: 4)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(Color.primary.opacity(hovering && entry.state == .forwarding ? 0.06 : 0))
+                    // Out to the row pills' edges, past the header's insets.
+                    .padding(.leading, -SidebarMetrics.leading)
+                    .padding(.trailing, -8)
             )
             .contentShape(Rectangle())
         }

@@ -7,6 +7,9 @@ struct SidebarView: View {
     @State private var showingRepoSettings: Repository?
     @State private var collapsedHosts: Set<String> = []
 
+    /// Machine titles line up with the repositories' chevrons.
+    static let hostTitleInset = SidebarMetrics.leading
+
     var body: some View {
         List {
             ForEach(state.hosts) { host in
@@ -14,9 +17,11 @@ struct SidebarView: View {
                 let grouped = state.hosts.count > 1
                 let repos = isCollapsed(host) ? [] : host.repositories
                 if grouped, repos.isEmpty {
-                    hostHeader(host)
-                        .listRowSeparator(.hidden)
-                        .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 10))
+                    // A section of its own rather than a row, so the title
+                    // lands exactly where it does over a first repository.
+                    Section {} header: {
+                        hostHeader(host).hostHeaderPlacement()
+                    }
                 }
                 ForEach(repos) { repo in
                     RepositorySection(
@@ -31,10 +36,6 @@ struct SidebarView: View {
                 }
                 .onMove { offsets, destination in
                     state.moveRepositorySections(in: host, from: offsets, to: destination)
-                }
-
-                if !isCollapsed(host), host.repositories.isEmpty, host.isSynced || host.isLocal {
-                    emptyHint(for: host)
                 }
             }
         }
@@ -83,20 +84,6 @@ struct SidebarView: View {
         }
     }
 
-    private func emptyHint(for host: EngineHost) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(state.hosts.count > 1 ? "No repositories here yet" : "No repositories yet")
-                .font(.headline)
-            Text(host.isLocal
-                 ? "Add a local git repo and start a workspace."
-                 : "Add a git repo on \(host.name) and start a workspace.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.vertical, state.hosts.count > 1 ? 6 : 16)
-        .listRowSeparator(.hidden)
-    }
-
     /// Floats over the list rather than sitting in a bar: the button carries
     /// its own glass, so the sidebar material reads straight through to the
     /// window edge. `safeAreaInset` still reserves the height, so the last
@@ -127,6 +114,17 @@ struct SidebarView: View {
             // Level with the chat composer's pill row across the window.
             .padding(.bottom, 12)
         }
+    }
+}
+
+extension View {
+    /// Where a machine's title sits in a sidebar section header: its text
+    /// over the repositories' chevrons, its controls over the gear. The header
+    /// slot sits 6pt right of the row slots, hence the offset.
+    func hostHeaderPlacement() -> some View {
+        padding(.leading, SidebarView.hostTitleInset)
+            .padding(.trailing, 8)
+            .offset(x: -6)
     }
 }
 
@@ -205,20 +203,6 @@ private struct HostGroupHeader: View {
                 }
             }
 
-            if let detail {
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text(detail)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .textSelection(.enabled)
-                    if needsSetup {
-                        // Most first-time failures are a missing or outdated engine.
-                        Button("Set Up…") { state.pendingRemoteSetup = RemoteSetupRequest(hostId: host.id) }
-                            .buttonStyle(.link)
-                    }
-                }
-                .font(.caption)
-            }
             if isExpanded, let ports = host.ports {
                 ForwardedPortsView(ports: ports) {
                     state.pendingRemoteSetup = RemoteSetupRequest(hostId: host.id)
@@ -290,35 +274,9 @@ private struct HostGroupHeader: View {
             }
             return "Connected"
         case .connecting: return "Connecting…"
-        case let .reconnecting(attempt, _): return "Reconnecting (attempt \(attempt))…"
+        case let .reconnecting(attempt, error): return "Reconnecting (attempt \(attempt))…" + (error.map { " \($0)" } ?? "")
         case let .failed(message): return message
         case .idle: return "Not connected"
-        }
-    }
-
-    /// A link down for this many tries is more than a blip: say why.
-    private static let persistentDropAttempts = 3
-
-    private var needsSetup: Bool {
-        guard !host.isLocal else { return false }
-        switch host.connection.status {
-        case .failed: return true
-        case let .reconnecting(attempt, _): return attempt >= Self.persistentDropAttempts
-        default: return false
-        }
-    }
-
-    /// Only when something needs saying: a link that stays down, or gh
-    /// trouble there. A brief drop shows only in the light and the dimmed
-    /// group.
-    private var detail: String? {
-        switch host.connection.status {
-        case .connecting where !host.isLocal: return nil
-        case let .reconnecting(attempt, error):
-            guard attempt >= Self.persistentDropAttempts else { return nil }
-            return error.map { "Reconnecting — \($0)" } ?? "Reconnecting…"
-        case let .failed(message): return message
-        default: return host.prTrackerStatus.userMessage
         }
     }
 }

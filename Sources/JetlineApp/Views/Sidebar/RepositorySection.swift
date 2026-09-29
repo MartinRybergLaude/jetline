@@ -16,6 +16,7 @@ struct RepositorySection: View {
     var groupHeader: AnyView? = nil
 
     @State private var expanded: Bool = true
+    @State private var hovering = false
     @State private var rowHeight: CGFloat = 30
     @GestureState private var rowDrag: RowDrag?
 
@@ -84,11 +85,7 @@ struct RepositorySection: View {
         } header: {
             VStack(alignment: .leading, spacing: 6) {
                 if let groupHeader {
-                    // Title lines up with the chevron, controls with the gear.
-                    groupHeader
-                        .padding(.leading, 5)
-                        .padding(.trailing, 8)
-                        .offset(x: -6)
+                    groupHeader.hostHeaderPlacement()
                 }
                 repositoryHeader
             }
@@ -96,59 +93,51 @@ struct RepositorySection: View {
     }
 
     private var repositoryHeader: some View {
-        HStack(spacing: 8) {
-            // Small dedicated chevron button. The expand/collapse used
-            // to be a Button (or tap gesture) wrapping the entire row,
-            // which captured mouseDown and prevented `.onMove` from
-            // arming the row drag. Keeping the tap target tiny — just
-            // the chevron — means the icon + name area is plain
-            // non-interactive content, which `.onMove` is free to
-            // drag. The plus/gear buttons at the trailing edge are
-            // also Buttons but stay narrow for the same reason.
+        HStack(spacing: 0) {
+            // Only the chevron toggles, and the icon + name area stays a
+            // plain Button with no drag-capturing wrapper around the whole
+            // row, so `.onMove` can still arm on it; the trailing controls
+            // stay narrow for the same reason.
             Button {
                 withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
             } label: {
-                Group {
-                    if hasWorkspaces {
-                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Color.clear
-                    }
-                }
-                .frame(width: 12, alignment: .center)
-                .contentShape(Rectangle())
+                // Small and near-black, as Music draws its disclosure arrows.
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(Color.primary.opacity(0.7))
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+                    .opacity(hasWorkspaces ? 1 : 0)
+                    .frame(width: SidebarMetrics.disclosureColumn)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(!hasWorkspaces)
-            // Pull the repo label to 3pt from the chevron; the stack's
-            // 8pt spacing is right for the trailing buttons but too
-            // airy here.
-            .padding(.trailing, -5)
+            .help(expanded ? "Hide workspaces" : "Show workspaces")
+            .padding(.leading, SidebarMetrics.leading)
             Button {
                 state.selectRepositoryHead(repo)
             } label: {
-                HStack(spacing: 8) {
+                HStack(spacing: SidebarMetrics.labelGap) {
                     Group {
                         if state.isLocal(repoId: repo.id), let favicon = iconLoader.icon(for: repo.path) {
                             Image(nsImage: favicon)
                                 .resizable()
                                 .interpolation(.high)
                                 .aspectRatio(contentMode: .fit)
-                                .frame(width: 15, height: 15)
+                                .frame(width: 20, height: 20)
                         } else {
                             Image(systemName: "folder")
-                                .font(.system(size: 14, weight: .regular))
+                                .font(.system(size: 17, weight: .regular))
                                 .foregroundStyle(.primary)
                         }
                     }
-                    .frame(width: 22, alignment: .center)
+                    .frame(width: SidebarMetrics.iconColumn, alignment: .center)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(repo.name)
                             .font(.body)
                             .textCase(nil)
                             .foregroundStyle(isBaseSelected ? Color.accentColor.opacity(0.9) : Color.primary)
+                            .lineLimit(1)
                         Text(repo.defaultBranch)
                             .font(.caption2)
                             .textCase(nil)
@@ -157,31 +146,31 @@ struct RepositorySection: View {
                     }
                     Spacer(minLength: 0)
                 }
-                .padding(.horizontal, 4)
-                .padding(.vertical, 1)
+                .padding(.leading, SidebarMetrics.iconLeading - SidebarMetrics.leading - SidebarMetrics.disclosureColumn)
+                .padding(.vertical, 3)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("Open \(repo.defaultBranch) in \(repo.name)")
-            Spacer(minLength: 0)
-            Button { onNewWorkspace(nil) } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 13, weight: .regular))
-                    .foregroundStyle(.secondary)
+            // Controls fade in on hover, as in the machine header above.
+            HStack(spacing: 10) {
+                Button { onNewWorkspace(nil) } label: {
+                    Image(systemName: "plus")
+                }
+                .help("New workspace")
+                Button(action: onOpenSettings) {
+                    Image(systemName: "gearshape")
+                }
+                .help("Repository settings")
             }
+            .font(.system(size: 13, weight: .regular))
+            .opacity(hovering ? 1 : 0)
             .buttonStyle(.plain)
-            .help("New workspace")
-            Button(action: onOpenSettings) {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 13, weight: .regular))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Repository settings")
+            .foregroundStyle(.secondary)
             .padding(.trailing, 8)
         }
-        .padding(.leading, 4)
-        .padding(.vertical, 1)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
         .background {
             if isBaseSelected {
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
