@@ -124,10 +124,10 @@ struct RepositorySection: View {
                                 .resizable()
                                 .interpolation(.high)
                                 .aspectRatio(contentMode: .fit)
-                                .frame(width: 20, height: 20)
+                                .frame(width: 18, height: 18)
                         } else {
                             Image(systemName: "folder")
-                                .font(.system(size: 17, weight: .regular))
+                                .font(.system(size: 15, weight: .regular))
                                 .foregroundStyle(.primary)
                         }
                     }

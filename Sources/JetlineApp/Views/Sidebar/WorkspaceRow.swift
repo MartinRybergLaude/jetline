@@ -64,9 +64,9 @@ private struct WorkspaceRowContent: View {
                 // stack doesn't walk the name off the row.
                 Spacer().frame(width: CGFloat(min(depth, 3) - 1) * SidebarMetrics.iconColumn)
                 StackElbow()
-                    .frame(width: SidebarMetrics.iconColumn, height: 16)
+                    .frame(width: SidebarMetrics.iconColumn, height: 14)
             }
-            PRStatusIcon(snapshot: workspaceState.pr, size: 16)
+            PRStatusIcon(snapshot: workspaceState.pr, size: 14)
                 .frame(width: SidebarMetrics.iconColumn)
             Spacer().frame(width: SidebarMetrics.labelGap)
             Text(workspace.name)
