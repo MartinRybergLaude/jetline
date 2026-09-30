@@ -95,6 +95,19 @@ actor ClaudeProvider: AgentProvider {
         try await spawn(resume: false)
     }
 
+    /// The interactive CLI turns Claude in Chrome on when the user has
+    /// enabled it by default (`/chrome`), but stream-json sessions only get
+    /// it with an explicit `--chrome`.
+    static func chromeEnabledByDefault() -> Bool {
+        let dir = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"]
+            .map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser
+        guard let data = try? Data(contentsOf: dir.appendingPathComponent(".claude.json")),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+        return json["claudeInChromeDefaultEnabled"] as? Bool ?? false
+    }
+
     static func isMissingSession(_ error: AgentError) -> Bool {
         guard case let .launchFailed(message) = error else { return false }
         return message.lowercased().contains("no conversation found")
@@ -124,6 +137,7 @@ actor ClaudeProvider: AgentProvider {
             // claude.ai over Remote Control show up here too.
             "--replay-user-messages"
         ]
+        if Self.chromeEnabledByDefault() { args.append("--chrome") }
         if let tools = config.tools { args += tools.args(for: .claude) }
         if let model = config.model { args += ["--model", model] }
         if let effort = config.effort { args += ["--effort", effort] }
