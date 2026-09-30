@@ -231,19 +231,23 @@ final class JetlineAppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         mainWindow?.saveFrame()
         let state = AppState.shared
-        guard state.hasOpenTabs else { return .terminateNow }
+        guard let warning = state.quitWarning else { return stopAgentsThenTerminate(sender) }
         let alert = NSAlert()
         alert.messageText = "Quit Jetline?"
-        alert.informativeText = "You have active conversations. Quitting will end those sessions."
+        alert.informativeText = warning
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Quit")
         let cancel = alert.addButton(withTitle: "Cancel")
         cancel.keyEquivalent = "\u{1b}"
         guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
-        // Chat agents run in their own process sessions and wouldn't get
-        // the hangup terminal tabs do. Stop them before exiting.
+        return stopAgentsThenTerminate(sender)
+    }
+
+    /// Chat agents run in their own process sessions and wouldn't get the
+    /// hangup terminal tabs do. Stop them before exiting, idle ones too.
+    private func stopAgentsThenTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         Task { @MainActor in
-            await state.shutdownAgents()
+            await AppState.shared.shutdownAgents()
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater

@@ -1207,8 +1207,27 @@ final class AppState: ObservableObject {
 
     /// Drives the quit-confirmation dialog. Only a local engine loses its
     /// runs when the app quits.
-    var hasOpenTabs: Bool {
-        localHost.connection.inProcessEngine?.allWorkspaceStates.contains { $0.hasAgentTabs } ?? false
+    /// What quitting would cut short, or nil if nothing. Idle chats don't
+    /// count: they come back from the database and resume on the next
+    /// message. Terminals and scripts die with the local engine and aren't
+    /// restored.
+    var quitWarning: String? {
+        guard let engine = localHost.connection.inProcessEngine else { return nil }
+        let states = engine.allWorkspaceStates
+        let chats = states.flatMap(\.chats).filter { $0.activity == .working || $0.activity == .needsInput }.count
+        let terminals = states.flatMap(\.terminals).filter(\.isRunning).count
+        let scripts = states.flatMap { [$0.setup, $0.run].compactMap { $0 } }
+            .filter { [.queued, .starting, .running].contains($0.phase) }.count
+        func count(_ n: Int, _ noun: String) -> String? {
+            n == 0 ? nil : "\(n) \(noun)\(n == 1 ? "" : "s")"
+        }
+        let parts = [
+            count(chats, "chat") .map { "\($0) mid-response or waiting for you" },
+            count(terminals, "terminal"),
+            count(scripts, "running script")
+        ].compactMap { $0 }
+        guard !parts.isEmpty else { return nil }
+        return "Quitting will stop \(parts.joined(separator: ", ")). Idle chats come back when you reopen Jetline."
     }
 
     /// Close one session tab, handing the strip over to its neighbour when it
