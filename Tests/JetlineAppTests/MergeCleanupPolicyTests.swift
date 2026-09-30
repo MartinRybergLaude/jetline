@@ -88,20 +88,74 @@ final class MergeCleanupPolicyTests: XCTestCase {
         try await git(commit, in: clone)
         try await git(["push", "-q", "origin", "HEAD"], in: clone)
 
-        let pushedAndClean = await MergeCleanupPolicy.hasNoLocalWork(worktreePath: clone)
-        XCTAssertTrue(pushedAndClean)
+        let pushedAndClean = await MergeCleanupPolicy.localWork(worktreePath: clone)
+        XCTAssertNil(pushedAndClean)
 
         try "two\n".write(toFile: clone + "/a.txt", atomically: true, encoding: .utf8)
-        let dirty = await MergeCleanupPolicy.hasNoLocalWork(worktreePath: clone)
-        XCTAssertFalse(dirty)
+        let dirty = await MergeCleanupPolicy.localWork(worktreePath: clone)
+        XCTAssertEqual(dirty, .uncommitted)
 
         try await git(["add", "."], in: clone)
         try await git(commit, in: clone)
-        let unpushed = await MergeCleanupPolicy.hasNoLocalWork(worktreePath: clone)
-        XCTAssertFalse(unpushed)
+        let unpushed = await MergeCleanupPolicy.localWork(worktreePath: clone)
+        XCTAssertEqual(unpushed, .unmergedCommits(1))
 
-        let missing = await MergeCleanupPolicy.hasNoLocalWork(worktreePath: root.appendingPathComponent("nope").path)
-        XCTAssertFalse(missing)
+        let missing = await MergeCleanupPolicy.localWork(worktreePath: root.appendingPathComponent("nope").path)
+        XCTAssertEqual(missing, .unknown)
+    }
+
+    /// GitHub's "Update branch" with rebase rewrites the pushed commits, so
+    /// the local ones end up on no remote while the merged PR carries the
+    /// same changes.
+    func testRebasedOnRemoteCountsAsMerged() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("jetline-merge-\(UUID().uuidString.prefix(8))")
+            .resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let remote = root.appendingPathComponent("remote.git").path
+        let clone = root.appendingPathComponent("clone").path
+        let other = root.appendingPathComponent("other").path
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try await git(["init", "-q", "--bare", "-b", "main", remote], in: root.path)
+        try await git(["clone", "-q", remote, clone], in: root.path)
+        let commit = ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm"]
+        try "base\n".write(toFile: clone + "/a.txt", atomically: true, encoding: .utf8)
+        try await git(["add", "."], in: clone)
+        try await git(commit + ["base"], in: clone)
+        try await git(["push", "-q", "origin", "HEAD:main"], in: clone)
+        try await git(["checkout", "-qb", "feature"], in: clone)
+        try "feature\n".write(toFile: clone + "/b.txt", atomically: true, encoding: .utf8)
+        try await git(["add", "."], in: clone)
+        try await git(commit + ["feature"], in: clone)
+        try await git(["push", "-q", "origin", "feature"], in: clone)
+
+        // Elsewhere: main moves on, the branch is rebased onto it and
+        // force-pushed, then deleted after the merge.
+        try await git(["clone", "-q", remote, other], in: root.path)
+        try "main\n".write(toFile: other + "/c.txt", atomically: true, encoding: .utf8)
+        try await git(["add", "."], in: other)
+        try await git(commit + ["main moves"], in: other)
+        try await git(["push", "-q", "origin", "HEAD:main"], in: other)
+        try await git(["fetch", "-q", "origin", "feature"], in: other)
+        try await git(["checkout", "-qb", "feature", "FETCH_HEAD"], in: other)
+        try await git(["-c", "user.email=t@t", "-c", "user.name=t", "rebase", "-q", "main"], in: other)
+        let rebasedHead = try await GitRunner.run(["rev-parse", "HEAD"], cwd: other).stdout
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        try await git(["push", "-q", "origin", "HEAD:main"], in: other)
+        try await git(["push", "-q", "origin", "--delete", "feature"], in: other)
+        try await git(["fetch", "-q", "--prune", "origin"], in: clone)
+
+        let withoutPR = await MergeCleanupPolicy.localWork(worktreePath: clone)
+        XCTAssertEqual(withoutPR, .unmergedCommits(1))
+        let withPR = await MergeCleanupPolicy.localWork(worktreePath: clone, mergedHead: rebasedHead)
+        XCTAssertNil(withPR)
+
+        // A commit made after the merge still keeps the workspace.
+        try "later\n".write(toFile: clone + "/b.txt", atomically: true, encoding: .utf8)
+        try await git(["add", "."], in: clone)
+        try await git(commit + ["later"], in: clone)
+        let later = await MergeCleanupPolicy.localWork(worktreePath: clone, mergedHead: rebasedHead)
+        XCTAssertEqual(later, .unmergedCommits(1))
     }
 
     private func git(_ args: [String], in cwd: String) async throws {

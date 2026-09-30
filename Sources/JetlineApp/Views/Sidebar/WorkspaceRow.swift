@@ -82,6 +82,13 @@ private struct WorkspaceRowContent: View {
                     .help(creatorHelp(creator))
             }
             Spacer(minLength: 0)
+            if let reason = workspaceState.keptAfterMerge {
+                Text("Kept")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.trailing, 4)
+                    .help("PR merged. Workspace kept: \(reason).")
+            }
             ChatActivityIndicator(chats: workspaceState.chats)
         }
         // Same icon column and label edge as the repository header above.
@@ -206,7 +213,7 @@ struct PRStatusIcon: View {
         .frame(width: size, height: size)
     }
 
-    private enum Kind { case open, draft, closed, noPR, pending }
+    private enum Kind { case open, draft, closed, merged, noPR, pending }
 
     private var stateKind: Kind? {
         switch snapshot {
@@ -222,8 +229,7 @@ struct PRStatusIcon: View {
             switch pr.state.uppercased() {
             case "OPEN":   return .open
             case "CLOSED": return .closed
-            // Merged falls through to nil — workspace is expected to be
-            // auto-deleted shortly after a merge is detected.
+            case "MERGED": return .merged
             default:       return nil
             }
         }
@@ -234,6 +240,7 @@ struct PRStatusIcon: View {
         case .open:    return .readableGreen
         case .draft:   return .secondary
         case .closed:  return .red
+        case .merged:  return .purple
         case .noPR:    return .secondary
         case .pending: return .secondary.opacity(0.5)
         }
@@ -246,7 +253,7 @@ struct PRStatusIcon: View {
     /// not "CI is green": a passing build on an unreviewed PR still has
     /// work left, so it gets no badge rather than a misleading tick.
     private var checkBadge: Badge? {
-        guard case let .loaded(pr, checks) = snapshot else { return nil }
+        guard case let .loaded(pr, checks) = snapshot, pr.state.uppercased() != "MERGED" else { return nil }
         var fail = 0, active = 0
         for run in checks {
             switch run.bucket {
@@ -271,7 +278,13 @@ struct PRStatusIcon: View {
             .noPR: "PRStateNone",
             .pending: "PRStateNone"
         ]
-        return names.compactMapValues { Bundle.jetlineResources.templateImage($0) }
+        var images = names.compactMapValues { Bundle.jetlineResources.templateImage($0) }
+        // No Octicon asset for merged; the SF Symbol matches the PR panel.
+        if let merged = NSImage(systemSymbolName: "arrow.triangle.merge", accessibilityDescription: "Merged") {
+            merged.isTemplate = true
+            images[.merged] = merged
+        }
+        return images
     }()
 }
 #endif

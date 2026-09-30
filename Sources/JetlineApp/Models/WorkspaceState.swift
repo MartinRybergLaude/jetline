@@ -49,6 +49,8 @@ final class WorkspaceState {
     /// True while a user-initiated PR refresh is awaiting the next poll.
     /// Drives the inspector's spinner.
     var isRefreshingPR: Bool = false
+    /// Why the engine kept this workspace after its PR merged.
+    var keptAfterMerge: String?
     var sessions: [PTYSession] = []
     /// Full-file diff tabs opened from the inspector's changes panel. They
     /// share the tab strip with the sessions but live apart from them —

@@ -7,15 +7,75 @@ enum MergeCleanupPolicy {
         return mergedAt >= workspace.createdAt
     }
 
+    /// What would be lost by deleting a worktree whose PR merged.
+    enum LocalWork: Equatable, Sendable {
+        case uncommitted
+        /// Commits that are on no remote and whose changes the merged PR
+        /// doesn't carry either.
+        case unmergedCommits(Int)
+        /// A git command failed, so nothing could be ruled out.
+        case unknown
+
+        var summary: String {
+            switch self {
+            case .uncommitted: return "it has uncommitted changes"
+            case let .unmergedCommits(n): return "it has \(n) commit\(n == 1 ? "" : "s") that aren't in the merged PR"
+            case .unknown: return "Jetline couldn't check it for local work"
+            }
+        }
+    }
+
     /// Deleting force-removes the worktree and its branch, so it only
-    /// happens when nothing there would be lost: a clean tree and every
-    /// commit on some remote. Any git failure counts as "keep it".
-    static func hasNoLocalWork(worktreePath: String) async -> Bool {
+    /// happens when nothing there would be lost: a clean tree, and every
+    /// commit either on some remote or carried by the merged PR. The PR
+    /// check matters when the branch was rewritten on GitHub (Update branch
+    /// with rebase): the local commits then exist on no remote, but the PR
+    /// has the same changes under new hashes. Any git failure counts as
+    /// `.unknown`, which keeps the workspace.
+    static func localWork(
+        worktreePath: String,
+        mergedHead: String? = nil,
+        prNumber: Int? = nil,
+        remote: String = "origin"
+    ) async -> LocalWork? {
         guard let status = try? await GitRunner.run(["status", "--porcelain"], cwd: worktreePath),
-              status.success, status.stdout.nonBlank == nil,
-              let unpushed = try? await GitRunner.run(["rev-list", "--count", "HEAD", "--not", "--remotes"], cwd: worktreePath),
-              unpushed.success else { return false }
-        return unpushed.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "0"
+              status.success else { return .unknown }
+        if status.stdout.nonBlank != nil { return .uncommitted }
+
+        var head: String?
+        if let mergedHead, await hasCommit(mergedHead, prNumber: prNumber, remote: remote, cwd: worktreePath) {
+            head = mergedHead
+        }
+        guard let unpushed = try? await GitRunner.run(
+            ["rev-list", "HEAD", "--not", "--remotes"] + (head.map { [$0] } ?? []),
+            cwd: worktreePath
+        ), unpushed.success else { return .unknown }
+        let local = Set(unpushed.stdout.split(whereSeparator: \.isNewline).map(String.init))
+        if local.isEmpty { return nil }
+        guard let head else { return .unmergedCommits(local.count) }
+
+        // `-` marks a commit whose patch the PR head already has. Merge
+        // commits never get one, so they count as unmerged.
+        guard let cherry = try? await GitRunner.run(["cherry", head, "HEAD"], cwd: worktreePath),
+              cherry.success else { return .unknown }
+        let carried = Set(cherry.stdout.split(whereSeparator: \.isNewline).compactMap { line in
+            line.hasPrefix("- ") ? String(line.dropFirst(2)) : nil
+        })
+        let missing = local.subtracting(carried).count
+        return missing == 0 ? nil : .unmergedCommits(missing)
+    }
+
+    /// The PR head is usually local already, via the branch's
+    /// remote-tracking ref. If the fetch pruned that, GitHub still serves
+    /// it as `refs/pull/<n>/head`.
+    private static func hasCommit(_ oid: String, prNumber: Int?, remote: String, cwd: String) async -> Bool {
+        func present() async -> Bool {
+            (try? await GitRunner.run(["cat-file", "-e", "\(oid)^{commit}"], cwd: cwd))?.success == true
+        }
+        if await present() { return true }
+        guard let prNumber else { return false }
+        _ = try? await GitRunner.run(["fetch", "--quiet", remote, "refs/pull/\(prNumber)/head"], cwd: cwd)
+        return await present()
     }
 }
 
@@ -640,11 +700,18 @@ final class PRTracker {
               MergeCleanupPolicy.shouldDelete(workspace: workspace, pr: pr),
               !autoDeleted.contains(workspace.id) else { return }
         autoDeleted.insert(workspace.id)
+        let remote = state.repositories.first(where: { $0.id == workspace.repositoryId })?.remoteOrigin ?? "origin"
         Task {
-            guard await MergeCleanupPolicy.hasNoLocalWork(worktreePath: workspace.worktreePath) else {
+            if let work = await MergeCleanupPolicy.localWork(
+                worktreePath: workspace.worktreePath,
+                mergedHead: pr.headRefOid,
+                prNumber: pr.number,
+                remote: remote
+            ) {
+                state.workspaceState(for: workspace.id).keptAfterMerge = work.summary
                 state.activityLog.record(
                     .lifecycle,
-                    "Kept workspace \(workspace.name) after its PR merged: it has uncommitted or unpushed work",
+                    "Kept workspace \(workspace.name) after its PR merged: \(work.summary)",
                     repoId: workspace.repositoryId,
                     workspaceId: workspace.id
                 )

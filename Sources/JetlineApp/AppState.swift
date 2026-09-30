@@ -418,6 +418,7 @@ final class AppState: ObservableObject {
         if ws.runningGitAction != status.runningGitAction { ws.runningGitAction = status.runningGitAction }
         if ws.isTogglingAutoMerge != status.isTogglingAutoMerge { ws.isTogglingAutoMerge = status.isTogglingAutoMerge }
         if ws.isRefreshingPR != status.isRefreshingPR { ws.isRefreshingPR = status.isRefreshingPR }
+        if ws.keptAfterMerge != status.keptAfterMerge { ws.keptAfterMerge = status.keptAfterMerge }
         let hadTabs = ws.hasAgentTabs
 
         // A tab closed here stays closed; once the engine stops listing it,

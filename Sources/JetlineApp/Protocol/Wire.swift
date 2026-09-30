@@ -125,6 +125,9 @@ struct WorkspaceStatus: Codable, Sendable, Equatable {
     var run: ScriptRunInfo?
     /// Whether the engine holds a live runtime (watcher, sessions) for it.
     var isOpen: Bool
+    /// Why the workspace wasn't auto-deleted after its PR merged. Optional
+    /// so either side decodes the other's older status.
+    var keptAfterMerge: String? = nil
 }
 
 struct TerminalInfo: Codable, Sendable, Equatable, Identifiable {

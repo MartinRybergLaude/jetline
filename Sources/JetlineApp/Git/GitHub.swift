@@ -14,6 +14,9 @@ struct PullRequest: Codable, Sendable, Hashable {
     var state: String
     var isDraft: Bool
     var headRefName: String
+    /// Head commit. For a merged PR, what was merged — even when the
+    /// local branch holds the same changes under other hashes.
+    var headRefOid: String?
     var baseRefName: String
     var author: Author
     var createdAt: Date?
@@ -84,6 +87,7 @@ struct PullRequest: Codable, Sendable, Hashable {
         state: String,
         isDraft: Bool,
         headRefName: String,
+        headRefOid: String? = nil,
         baseRefName: String,
         author: Author,
         createdAt: Date? = nil,
@@ -103,6 +107,7 @@ struct PullRequest: Codable, Sendable, Hashable {
         self.state = state
         self.isDraft = isDraft
         self.headRefName = headRefName
+        self.headRefOid = headRefOid
         self.baseRefName = baseRefName
         self.author = author
         self.createdAt = createdAt
@@ -118,7 +123,7 @@ struct PullRequest: Codable, Sendable, Hashable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case number, title, url, state, isDraft, headRefName, baseRefName, author
+        case number, title, url, state, isDraft, headRefName, headRefOid, baseRefName, author
         case createdAt, mergedAt
         case mergeable, mergeStateStatus, unresolvedThreadCount, issueCommentCount
         case reviewDecision, autoMergeEnabled, autoMergeMethod, stack
@@ -137,6 +142,7 @@ struct PullRequest: Codable, Sendable, Hashable {
         state = try c.decode(String.self, forKey: .state)
         isDraft = try c.decode(Bool.self, forKey: .isDraft)
         headRefName = try c.decode(String.self, forKey: .headRefName)
+        headRefOid = try c.decodeIfPresent(String.self, forKey: .headRefOid)
         baseRefName = try c.decode(String.self, forKey: .baseRefName)
         author = try c.decode(Author.self, forKey: .author)
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt)
@@ -466,7 +472,7 @@ enum GitHubRunner {
     private static func pullRequestFragment(includeStack: Bool) -> String {
         """
         fragment PR on PullRequest {
-          number title url state isDraft headRefName baseRefName createdAt mergedAt
+          number title url state isDraft headRefName headRefOid baseRefName createdAt mergedAt
         \(includeStack ? stackFields : "")
           mergeable mergeStateStatus reviewDecision
           autoMergeRequest { mergeMethod }
@@ -1010,6 +1016,7 @@ private struct PRNode: Decodable {
     let state: String
     let isDraft: Bool
     let headRefName: String
+    let headRefOid: String?
     let baseRefName: String
     let createdAt: String?
     let mergedAt: String?
@@ -1099,6 +1106,7 @@ private struct PRNode: Decodable {
             state: state,
             isDraft: isDraft,
             headRefName: headRefName,
+            headRefOid: headRefOid,
             baseRefName: baseRefName,
             author: PullRequest.Author(login: author?.login ?? "unknown"),
             createdAt: GitHubTimestamp.date(createdAt),

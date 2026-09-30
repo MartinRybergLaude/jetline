@@ -35,6 +35,8 @@ final class EngineWorkspace {
     var run: ScriptRun?
     /// The runtime is up: activated and not closed since.
     var isOpen: Bool = false
+    /// Set when auto-delete after the PR merged found local work.
+    var keptAfterMerge: String?
 
     init(id: String) {
         self.id = id
@@ -57,7 +59,8 @@ final class EngineWorkspace {
             chats: chats.map(\.summary),
             setup: setup?.info,
             run: run?.info,
-            isOpen: isOpen
+            isOpen: isOpen,
+            keptAfterMerge: keptAfterMerge
         )
     }
 }
