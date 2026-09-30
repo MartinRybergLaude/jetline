@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jetline</title>
+<meta name="description" content="A macOS app for running Claude Code, Codex and Vibe in git worktrees, with the diff, pull request and CI alongside.">
+<meta name="theme-color" content="#081537">
+<link rel="icon" type="image/png" href="assets/icon.png">
+<link rel="apple-touch-icon" href="assets/icon.png">
+<link rel="preload" href="assets/fonts/DraftingMono-ExtraLight.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/DraftingMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="hero">
+  <div class="intro">
+    <h1>Jetline</h1>
+  </div>
+
+  <!-- The jets cut out of the photo, flying in front of the title. -->
+  <div class="jets" aria-hidden="true"></div>
+
+</header>
+
+<main>
+
+<section class="foreword">
+  <h2>Foreword</h2>
+  <p>Most of the work is waiting. An agent reads, edits and runs the tests; you read what it did and decide what happens next. Jetline is built around that rhythm.</p>
+  <p>Every task gets its own branch and its own working copy, so several agents can work at once without touching each other’s files. You move between them, and each keeps its chat, its diff, its pull request and its checks beside it.</p>
+  <p>The agents run as they are. Jetline doesn’t replace Claude Code, Codex or Vibe. It gives them somewhere to work and keeps git out of your way, and when a task is done it’s a pull request like any other.</p>
+</section>
+
+<section id="install">
+  <h2>Install</h2>
+
+  <div class="install">
+    <dl class="credits">
+      <div><dt>Format</dt><dd>Signed, notarized DMG</dd></div>
+      <div><dt>Updates</dt><dd>Sparkle</dd></div>
+      <div><dt>Requires</dt><dd>macOS 14, git, gh</dd></div>
+      <div><dt>Agents</dt><dd>claude, codex or vibe</dd></div>
+      <div><dt>Build</dt><dd>Xcode CLT, Swift 5.10+</dd></div>
+      <div><dt>License</dt><dd>EUPL-1.2</dd></div>
+    </dl>
+    <div>
+<pre class="code">$ git clone https://github.com/MartinRybergLaude/jetline
+$ cd jetline
+$ make run</pre>
+      <a class="btn" href="https://github.com/MartinRybergLaude/jetline/releases/latest">Download for macOS</a>
+    </div>
+  </div>
+</section>
+
+<section id="features">
+  <h2>Features</h2>
+
+  <figure class="shot">
+    <figcaption>One worktree per task, each with its own agent chat</figcaption>
+    <img src="assets/shots/chat.webp" width="1920" height="1200" alt="Jetline with a Claude Code chat in the checkout-address-form workspace" loading="lazy">
+  </figure>
+
+  <figure class="shot">
+    <figcaption>Stacked pull requests, checks and review</figcaption>
+    <img src="assets/shots/pr.webp" width="1920" height="1200" alt="The pull request panel showing a three-layer stack and CI checks" loading="lazy">
+  </figure>
+
+  <figure class="shot">
+    <figcaption>A live diff of every change</figcaption>
+    <img src="assets/shots/diff.webp" width="1920" height="1200" alt="A full diff of server.go next to the changed files" loading="lazy">
+  </figure>
+
+  <figure class="shot">
+    <figcaption>Review comments next to the agent that answers them</figcaption>
+    <img src="assets/shots/review.webp" width="1920" height="1200" alt="A pull request with changes requested and an inline review thread" loading="lazy">
+  </figure>
+</section>
+
+</main>
+
+<footer>
+  <span>Jetline</span>
+  <span>
+    <a href="https://github.com/MartinRybergLaude/jetline">GitHub</a>
+    <a href="https://github.com/MartinRybergLaude/jetline/releases">Releases</a>
+    <a href="https://github.com/MartinRybergLaude/jetline/blob/main/LICENSE">EUPL-1.2</a>
+  </span>
+</footer>
+
+<script>
+  // Fill the column with the title in whatever font the browser ended up
+  // using (Drafting* Mono, or a fallback if it didn't load).
+  document.fonts.ready.then(() => {
+    const h = document.querySelector("h1");
+    const r = document.createRange();
+    r.selectNodeContents(h);
+    h.style.fontSize = "100px";
+    h.style.fontSize = 10000 / r.getBoundingClientRect().width + "cqi";
+  });
+</script>
+
+</body>
+</html>

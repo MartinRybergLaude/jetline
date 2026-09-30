@@ -1,0 +1,48 @@
+name: Site
+
+# Pages serves the gh-pages branch, which also carries the Sparkle appcast
+# (scripts/publish-appcast.sh). Copy site/ over it without touching
+# appcast.xml.
+
+on:
+  push:
+    branches: [main]
+    paths: ['site/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gh-pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src
+
+      - uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: pages
+
+      - name: Copy site into gh-pages
+        run: rsync -a --delete --exclude .git --exclude appcast.xml src/site/ pages/
+
+      - name: Commit and push
+        working-directory: pages
+        run: |
+          git add -A
+          if git diff --cached --quiet; then
+            echo "site unchanged"
+            exit 0
+          fi
+          git -c user.name="github-actions" -c user.email="actions@github.com" \
+              commit -m "Publish site ${GITHUB_SHA::7}"
+          # The release workflow may have pushed a new appcast meanwhile.
+          git pull --rebase origin gh-pages
+          git push origin gh-pages
