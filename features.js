@@ -9,7 +9,6 @@
 
   const reel = document.createElement("div");
   reel.className = "reel";
-  reel.style.setProperty("--count", shots.length);
   const stage = document.createElement("div");
   stage.className = "reel-stage";
   const text = document.createElement("div");
@@ -26,6 +25,8 @@
   shots.forEach((s, i) => { s.style.zIndex = i; s.querySelector("img").loading = "eager"; });
 
   const texts = shots.map((s) => s.querySelector("figcaption").textContent.trim());
+  const steps = texts.length;
+  reel.style.setProperty("--count", steps);
   caption.textContent = texts[0];
 
   const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -76,8 +77,8 @@
   function update() {
     queued = false;
     const travel = reel.offsetHeight - innerHeight;
-    const pos = clamp(-reel.getBoundingClientRect().top / travel) * (shots.length - 1);
-    const now = Math.min(shots.length - 1, Math.floor(pos + 0.5));
+    const pos = clamp(-reel.getBoundingClientRect().top / travel) * (steps - 1);
+    const now = Math.min(steps - 1, Math.floor(pos + 0.5));
     if (now === active) return;
     if (active < 0) caption.textContent = texts[now];
     else scramble(texts[now]);
