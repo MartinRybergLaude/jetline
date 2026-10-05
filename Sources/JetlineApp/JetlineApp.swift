@@ -218,9 +218,10 @@ final class JetlineAppDelegate: NSObject, NSApplicationDelegate {
         coordinator.start()
     }
 
-    /// Dock click with the main window closed.
+    /// Dock click: brings the main window back even when another window
+    /// (Settings, a diagram) is still open.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { mainWindow?.showMainWindow() }
+        mainWindow?.showMainWindow()
         return false
     }
 

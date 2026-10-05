@@ -122,6 +122,11 @@ final class MainWindowCoordinator: NSObject, NSWindowDelegate {
     private var groupObservations: [NSKeyValueObservation] = []
     private weak var observedGroup: NSWindowTabGroup?
     private var snapBackTimer: Timer?
+    /// The red traffic light hid the window. Ordering tab windows out
+    /// splits the tab group into one group per window, so syncing and
+    /// reconciling stand down until `showMainWindow` puts the group back.
+    private var isHidden = false
+    private var tabBarWasVisible = true
     private var frameSaveScheduled = false
 
     /// Captured from the first root view — the coordinator has no SwiftUI
@@ -228,8 +233,23 @@ final class MainWindowCoordinator: NSObject, NSWindowDelegate {
 
     /// Dock click / Window menu with the main window closed.
     func showMainWindow() {
-        let window = selectedSlot?.window ?? slots.first?.window
-        window?.makeKeyAndOrderFront(nil)
+        guard let target = selectedSlot ?? slots.first else { return }
+        if isHidden {
+            var previous = slots[0].window!
+            for slot in slots.dropFirst() {
+                previous.addTabbedWindow(slot.window, ordered: .above)
+                previous = slot.window
+            }
+            target.window.tabGroup?.selectedWindow = target.window
+        }
+        target.window.makeKeyAndOrderFront(nil)
+        if isHidden {
+            if tabBarWasVisible, target.window.tabGroup?.isTabBarVisible == false {
+                target.window.toggleTabBar(nil)
+            }
+            isHidden = false
+            sync()
+        }
     }
 
     func saveFrame() {
@@ -355,6 +375,12 @@ final class MainWindowCoordinator: NSObject, NSWindowDelegate {
         window.titleVisibility = .hidden
         window.collectionBehavior.insert(.fullScreenPrimary)
         window.delegate = self
+        // The red traffic light closes the whole window, not the tab: the
+        // tab bar's close buttons and ⌘W still go through `windowShouldClose`.
+        if let close = window.standardWindowButton(.closeButton) {
+            close.target = self
+            close.action = #selector(hideMainWindow)
+        }
         window.slot = slot
         window.onNewTab = { [weak self] in self?.newTabFromTabBar() }
         window.onMouseInteractionEnded = { [weak self] in self?.reconcileGroup() }
@@ -430,7 +456,7 @@ final class MainWindowCoordinator: NSObject, NSWindowDelegate {
     }
 
     private func sync() {
-        guard !isSyncing else { return }
+        guard !isSyncing, !isHidden else { return }
         isSyncing = true
         defer { isSyncing = false }
 
@@ -531,7 +557,7 @@ final class MainWindowCoordinator: NSObject, NSWindowDelegate {
     }
 
     private func groupSelectionChanged() {
-        guard !isSyncing,
+        guard !isSyncing, !isHidden,
               let window = observedGroup?.selectedWindow,
               let slot = slot(for: window),
               !slot.isSelected else { return }
@@ -544,7 +570,7 @@ final class MainWindowCoordinator: NSObject, NSWindowDelegate {
     /// Pick up what the user did to the group directly: a tab torn off, or
     /// the strip reordered.
     private func reconcileGroup() {
-        guard !isSyncing, let group = observedGroup else { return }
+        guard !isSyncing, !isHidden, let group = observedGroup else { return }
         let inGroup = group.windows.compactMap { slot(for: $0) }
         // Torn off (dragged out of the bar, or "Move Tab to New Window"):
         // put it back once the drag ends. Jetline has one window per app;
@@ -613,19 +639,28 @@ final class MainWindowCoordinator: NSObject, NSWindowDelegate {
 
     // MARK: - NSWindowDelegate
 
-    /// A tab's close button, the red traffic light and File → Close all land
-    /// here. Close the tab through `AppState` and let the sync remove the
-    /// window; with nothing to close (welcome screen), just hide the window.
+    /// A tab's close button and File → Close land here. Close the tab
+    /// through `AppState` and let the sync remove the window; with nothing
+    /// to close (welcome screen), just hide the window.
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if closingWindows.contains(ObjectIdentifier(sender)) { return true }
         guard let slot = slot(for: sender) else { return true }
         if let tab = slot.tab, let wsId = slot.workspaceId {
             state.closeTab(tab, in: wsId)
         } else {
-            saveFrame()
-            for s in slots { s.window.orderOut(nil) }
+            hideMainWindow()
         }
         return false
+    }
+
+    /// Hides every tab window, keeping tabs and their sessions alive; the
+    /// Dock icon brings it back via `showMainWindow`.
+    @objc func hideMainWindow() {
+        guard !isHidden else { return }
+        saveFrame()
+        tabBarWasVisible = selectedSlot?.window.tabGroup?.isTabBarVisible ?? true
+        isHidden = true
+        for s in slots { s.window.orderOut(nil) }
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
