@@ -44,7 +44,7 @@ final class MarkdownParserTests: XCTestCase {
 
     func testTildeFenceAndMissingCloser() {
         let blocks = MarkdownParser.parse("~~~\nplain\n")
-        XCTAssertEqual(blocks, [.code(language: nil, text: "plain")])
+        XCTAssertEqual(blocks, [.code(language: nil, text: "plain", closed: false)])
     }
 
     /// The fence's own indentation is stripped so a code block nested in a

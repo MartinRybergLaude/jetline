@@ -51,6 +51,7 @@ enum MarkdownParser {
             // Fences come first: a ``` block can contain anything, including
             // text that would otherwise read as a heading or a list.
             if let block = takeFence(lines, &i) { out.append(block); continue }
+            if let block = takeMath(lines, &i, trimmed: trimmed) { out.append(block); continue }
             if let block = takeDetails(lines, &i, trimmed: trimmed) { out.append(block); continue }
             if let block = takeHeading(&i, trimmed: trimmed) { out.append(block); continue }
             if let block = takeRule(&i, trimmed: trimmed) { out.append(block); continue }
@@ -75,6 +76,7 @@ enum MarkdownParser {
         if trimmed.lowercased().hasPrefix("<details") { return true }
         if headingLevel(trimmed) != nil { return true }
         if isRule(trimmed) { return true }
+        if mathDelimiter(trimmed) != nil { return true }
         return false
     }
 
@@ -98,11 +100,13 @@ enum MarkdownParser {
         guard let (char, run, info) = fenceInfo(lines[i]) else { return nil }
         let indent = indentWidth(lines[i])
         var body: [String] = []
+        var closed = false
         i += 1
         while i < lines.count {
             if let (closeChar, closeRun, closeInfo) = fenceInfo(lines[i]),
                closeChar == char, closeRun >= run, closeInfo.isEmpty {
                 i += 1
+                closed = true
                 break
             }
             body.append(dedent(lines[i], by: indent))
@@ -114,7 +118,41 @@ enum MarkdownParser {
             body.removeLast()
         }
         let language = info.split(separator: " ").first.map { $0.lowercased() }
-        return .code(language: language, text: body.joined(separator: "\n"))
+        return .code(language: language, text: body.joined(separator: "\n"), closed: closed)
+    }
+
+    // MARK: - Display math
+
+    /// `$$` or `\[` opening a line, through the line that ends with the
+    /// matching closer. Unclosed, it isn't math (yet): the lines fall through
+    /// to a paragraph, which is what a half-streamed formula should look like.
+    private static let mathDelimiters = [(open: "$$", close: "$$"), (open: "\\[", close: "\\]")]
+
+    private static func mathDelimiter(_ trimmed: String) -> (open: String, close: String)? {
+        mathDelimiters.first { trimmed.hasPrefix($0.open) }
+    }
+
+    private static func takeMath(_ lines: [String], _ i: inout Int, trimmed: String) -> MarkdownBlock? {
+        guard let (open, close) = mathDelimiter(trimmed) else { return nil }
+        var body: [String] = []
+        var end = i
+        var line = String(trimmed.dropFirst(open.count))
+        while true {
+            if line.hasSuffix(close) {
+                body.append(String(line.dropLast(close.count)))
+                break
+            }
+            // `$$a$$ and more` is inline math in a paragraph, not a block.
+            guard !line.contains(close) else { return nil }
+            body.append(line)
+            end += 1
+            guard end < lines.count, !isBlank(lines[end]) else { return nil }
+            line = lines[end].trimmingCharacters(in: .whitespaces)
+        }
+        let tex = body.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !tex.isEmpty else { return nil }
+        i = end + 1
+        return .math(tex)
     }
 
     // MARK: - Headings

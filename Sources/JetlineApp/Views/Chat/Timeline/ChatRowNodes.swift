@@ -9,6 +9,8 @@ protocol ChatRowHost: AnyObject {
     var markdownStyle: MarkdownStyle { get }
     func isExpanded(_ key: String, default value: Bool) -> Bool
     func toggle(_ key: String, default value: Bool, row: String)
+    /// Rebuild `row`: content it shows arrived late (a rendered diagram).
+    func refresh(row: String)
     func value(for key: String) -> String?
     func setValue(_ value: String?, for key: String, row: String)
     func confirmRevert(turn: String)
@@ -67,7 +69,8 @@ enum ChatRowNodes {
             style: style ?? host.markdownStyle,
             breakout: breakout,
             isExpanded: { [weak host] key in host?.isExpanded(key, default: false) ?? false },
-            toggle: { [weak host] key in host?.toggle(key, default: false, row: row) }
+            toggle: { [weak host] key in host?.toggle(key, default: false, row: row) },
+            refresh: { [weak host] in host?.refresh(row: row) }
         )
     }
 
@@ -394,25 +397,7 @@ enum ChatRowNodes {
     /// A unified diff snippet, lines tinted edge to edge like the diff tab.
     static func inlineDiff(_ diff: String, maxLines: Int = 400) -> ChatNode {
         let lines = diff.split(separator: "\n", omittingEmptySubsequences: false).prefix(maxLines)
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.firstLineHeadIndent = 8
-        paragraph.headIndent = 8
-        let text = NSMutableAttributedString()
-        let font = mono(14)
-        for (index, line) in lines.enumerated() {
-            let raw = String(line)
-            let kind = DiffLineTint.kind(ofRawLine: raw)
-            var attributes: [NSAttributedString.Key: Any] = [
-                .font: font,
-                .foregroundColor: kind == nil ? NSColor.secondaryLabelColor : NSColor.labelColor,
-                .paragraphStyle: paragraph,
-            ]
-            if let tint = kind.map(DiffLineTint.backgroundColor) ?? DiffLineTint.headerBackgroundColor {
-                attributes[.chatLineTint] = tint
-            }
-            let terminator = index < lines.count - 1 ? "\n" : ""
-            text.append(NSAttributedString(string: (raw.isEmpty ? " " : raw) + terminator, attributes: attributes))
-        }
+        let text = DiffLineTint.attributed(lines, font: mono(14), indent: 8)
         return BoxNode(
             HScrollNode(TextNode(text, wraps: false, trailingPad: 8), fillViewport: true),
             padding: NSEdgeInsets(v: 4),

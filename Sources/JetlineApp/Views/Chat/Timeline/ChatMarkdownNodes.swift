@@ -66,16 +66,17 @@ enum ChatFonts {
     }
 }
 
+/// An `NSCache` value: the cache holds objects only.
+final class CacheBox<Value> {
+    let value: Value
+    init(_ value: Value) { self.value = value }
+}
+
 /// Memoizes inline markdown → styled `NSAttributedString`.
 @MainActor
 enum ChatInline {
-    private final class Box {
-        let value: NSAttributedString
-        init(_ value: NSAttributedString) { self.value = value }
-    }
-
-    private static let cache: NSCache<NSString, Box> = {
-        let cache = NSCache<NSString, Box>()
+    private static let cache: NSCache<NSString, CacheBox<NSAttributedString>> = {
+        let cache = NSCache<NSString, CacheBox<NSAttributedString>>()
         cache.countLimit = 4000
         cache.totalCostLimit = 8 << 20
         return cache
@@ -91,12 +92,13 @@ enum ChatInline {
         let key = "\(size)|\(style.codeSize)|\(style.fontFamily ?? "")|\(style.monoFamily ?? "")|\(weight?.rawValue ?? 0)|\(secondary ? 1 : 0)|\(source)" as NSString
         if let hit = cache.object(forKey: key) { return hit.value }
         let value = render(source, style: style, size: size, weight: weight, secondary: secondary)
-        cache.setObject(Box(value), forKey: key, cost: source.utf8.count)
+        cache.setObject(CacheBox(value), forKey: key, cost: source.utf8.count)
         return value
     }
 
     private static func render(_ source: String, style: MarkdownStyle, size: CGFloat, weight: NSFont.Weight?, secondary: Bool) -> NSAttributedString {
-        let parsed = MarkdownInline.parse(source)
+        let math = MarkdownMath.extract(source)
+        let parsed = MarkdownInline.parse(math?.source ?? source)
         let out = NSMutableAttributedString()
         let color: NSColor = secondary ? .secondaryLabelColor : .labelColor
         for run in parsed.runs {
@@ -119,9 +121,123 @@ enum ChatInline {
             if let link = run.link {
                 attributes[.link] = link
             }
-            out.append(NSAttributedString(string: text, attributes: attributes))
+            if let spans = math?.spans {
+                appendMath(text, spans: spans, attributes: attributes, to: out, size: size, codeFont: ChatFonts.code(size: style.codeSize, style: style), secondary: secondary)
+            } else {
+                out.append(NSAttributedString(string: text, attributes: attributes))
+            }
         }
         return out
+    }
+
+    /// `text` with each math placeholder swapped for its typeset formula.
+    private static func appendMath(
+        _ text: String,
+        spans: [MarkdownMath.Span],
+        attributes: [NSAttributedString.Key: Any],
+        to out: NSMutableAttributedString,
+        size: CGFloat,
+        codeFont: @autoclosure () -> NSFont,
+        secondary: Bool
+    ) {
+        var rest = Substring(text)
+        while let open = rest.firstIndex(of: MarkdownMath.open) {
+            if open > rest.startIndex {
+                out.append(NSAttributedString(string: String(rest[..<open]), attributes: attributes))
+            }
+            let after = rest.index(after: open)
+            guard let close = rest[after...].firstIndex(of: MarkdownMath.close),
+                  let index = Int(rest[after..<close]), spans.indices.contains(index) else {
+                rest = rest[after...]
+                continue
+            }
+            out.append(ChatMath.inline(
+                spans[index],
+                textSize: size,
+                secondary: secondary,
+                attributes: attributes,
+                codeFont: codeFont()
+            ))
+            rest = rest[rest.index(after: close)...]
+        }
+        if !rest.isEmpty {
+            out.append(NSAttributedString(string: String(rest), attributes: attributes))
+        }
+    }
+}
+
+/// What a fence's info string asks for.
+enum ChatFence {
+    case plain, diff, mermaid, math
+    case highlighted(SyntaxLanguage)
+
+    init(_ language: String?) {
+        switch language {
+        case nil: self = .plain
+        case "mermaid"?: self = .mermaid
+        case "math"?: self = .math
+        case "diff"?, "patch"?, "udiff"?: self = .diff
+        case let name?: self = SyntaxLanguage.forFence(name).map(ChatFence.highlighted) ?? .plain
+        }
+    }
+
+    /// The header label: the tag as written, except the ones that only say
+    /// "don't highlight this".
+    static func label(_ language: String?) -> String {
+        guard let language, !["text", "txt", "plain", "plaintext", "none", "ascii"].contains(language) else { return "" }
+        return language
+    }
+}
+
+/// Memoizes highlighted code blocks: a streaming reply rebuilds its nodes
+/// on every chunk, and relexing a long block each time adds up. Blocks still
+/// streaming in aren't stored: each version is seen once.
+@MainActor
+enum ChatCode {
+    private static let cache: NSCache<NSString, CacheBox<NSAttributedString>> = {
+        let cache = NSCache<NSString, CacheBox<NSAttributedString>>()
+        cache.countLimit = 500
+        cache.totalCostLimit = 8 << 20
+        return cache
+    }()
+
+    private static func cached(_ key: String, cost: Int, store: Bool, _ build: () -> NSAttributedString) -> NSAttributedString {
+        if let hit = cache.object(forKey: key as NSString) { return hit.value }
+        let value = build()
+        if store { cache.setObject(CacheBox(value), forKey: key as NSString, cost: cost) }
+        return value
+    }
+
+    static func highlighted(_ code: String, language: SyntaxLanguage, font: NSFont, store: Bool) -> NSAttributedString {
+        cached("\(language.name)|\(font.fontName)|\(font.pointSize)|\(code)", cost: code.utf8.count, store: store) {
+            let highlighter = SyntaxHighlighter(language: language)
+            var state = SyntaxHighlighter.State.normal
+            let out = NSMutableAttributedString(string: code, attributes: plain(font))
+            var offset = 0
+            out.beginEditing()
+            for line in code.split(separator: "\n", omittingEmptySubsequences: false) {
+                for segment in highlighter.tokenize(String(line), state: &state) {
+                    let length = segment.text.utf16.count
+                    if let kind = segment.kind {
+                        out.addAttribute(.foregroundColor, value: SyntaxTheme.color(kind), range: NSRange(location: offset, length: length))
+                    }
+                    offset += length
+                }
+                offset += 1
+            }
+            out.endEditing()
+            return out
+        }
+    }
+
+    static func diff(_ code: String, font: NSFont, indent: CGFloat, store: Bool) -> NSAttributedString {
+        cached("diff|\(font.fontName)|\(font.pointSize)|\(indent)|\(code)", cost: code.utf8.count, store: store) {
+            DiffLineTint.attributed(code.split(separator: "\n", omittingEmptySubsequences: false), font: font, indent: indent)
+        }
+    }
+
+    static func plain(_ font: NSFont) -> [NSAttributedString.Key: Any] {
+        [.font: font, .foregroundColor: NSColor.labelColor]
     }
 }
 
@@ -133,6 +249,9 @@ enum ChatMarkdown {
         var breakout: Bool
         var isExpanded: (String) -> Bool
         var toggle: (String) -> Void
+        /// Content that arrived after the build (a rendered diagram):
+        /// rebuild the document.
+        var refresh: () -> Void = {}
     }
 
     private final class Blocks {
@@ -180,6 +299,7 @@ enum ChatMarkdown {
         private var run: NSMutableAttributedString?
         private var runGap: CGFloat = 0
         private var detailsCount = 0
+        private var diagramCount = 0
 
         init(options: Options, key: String) {
             self.options = options
@@ -255,8 +375,11 @@ enum ChatMarkdown {
                     let size = style.headingSize(level)
                     paragraph(inline(text, context, size: size, weight: .semibold), context, gap: gap + (level <= 2 ? 2 : 0))
 
-                case let .code(language, text):
-                    self.block(codeNode(language: language, code: text), gap: gap, context)
+                case let .code(language, text, closed):
+                    self.block(codeBlock(language: language, code: text, closed: closed, context), gap: gap, context)
+
+                case let .math(tex):
+                    self.block(mathNode(tex, context), gap: gap, context)
 
                 case let .quote(inner):
                     var quoted = context
@@ -334,22 +457,104 @@ enum ChatMarkdown {
             return NSAttributedString(string: "•", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor])
         }
 
-        private func codeNode(language: String?, code: String) -> ChatNode {
+        private mutating func codeBlock(language: String?, code: String, closed: Bool, _ context: Context) -> ChatNode {
+            switch ChatFence(language) {
+            case .mermaid:
+                return mermaidNode(code, closed: closed)
+            case .math where closed:
+                return mathNode(code, context)
+            default:
+                return codeNode(language: language, code: code, closed: closed)
+            }
+        }
+
+        /// Fenced code: syntax-highlighted when the language is known, tinted
+        /// line by line when it's a diff.
+        private func codeNode(language: String?, code: String, closed: Bool = true, note: String? = nil, action: (String, () -> Void)? = nil) -> ChatNode {
             var parts: [ChatNode] = []
-            if let language, !language.isEmpty {
+            if let header = codeHeader(language: language, note: note, action: action) {
+                parts.append(header)
+            }
+            let font = ChatFonts.code(size: style.codeSize, style: style)
+            switch ChatFence(language) {
+            case .diff:
+                // Tints run edge to edge, so the padding lives in the text.
+                let text = ChatCode.diff(code, font: font, indent: 8, store: closed)
                 parts.append(BoxNode(
-                    LabelNode(language, font: MonoFont.ns(size: 9, weight: .medium, family: style.monoFamily), color: .secondaryLabelColor),
-                    padding: NSEdgeInsets(top: 5, left: 8, bottom: 0, right: 8)
+                    HScrollNode(TextNode(text, wraps: false, trailingPad: 8), fillViewport: true),
+                    padding: NSEdgeInsets(top: parts.isEmpty ? 6 : 3, left: 0, bottom: 6, right: 0)
+                ))
+            case let .highlighted(syntax):
+                parts.append(scrollingCode(ChatCode.highlighted(code, language: syntax, font: font, store: closed)))
+            default:
+                parts.append(scrollingCode(NSAttributedString(string: code, attributes: ChatCode.plain(font))))
+            }
+            return codeFrame(parts)
+        }
+
+        /// Scrolls rather than wraps: a wrapped code line loses its
+        /// indentation cues.
+        private func scrollingCode(_ text: NSAttributedString) -> ChatNode {
+            HScrollNode(BoxNode(TextNode(text, wraps: false), padding: NSEdgeInsets(h: 8, v: 6), hug: true))
+        }
+
+        private func codeFrame(_ parts: [ChatNode]) -> ChatNode {
+            BoxNode(VStackNode(parts), fill: .secondary(0.10), border: .secondary(0.18), borderWidth: 0.5, radius: 5)
+        }
+
+        /// The language label, an optional note after it, and an optional
+        /// action at the trailing edge. Nil when there's none of the three.
+        private func codeHeader(language: String?, note: String?, action: (String, () -> Void)?) -> ChatNode? {
+            var label = ChatFence.label(language)
+            if let note { label += label.isEmpty ? note : " · \(note)" }
+            guard !label.isEmpty || action != nil else { return nil }
+            var items: [ChatNode] = [CaptionNode(label, font: MonoFont.ns(size: 9, weight: .medium, family: style.monoFamily))]
+            if let (title, perform) = action {
+                items.append(ClickNode(
+                    LabelNode(title, font: .systemFont(ofSize: 10, weight: .medium), color: .linkColor),
+                    pointingCursor: true,
+                    action: perform
                 ))
             }
-            let text = NSAttributedString(string: code, attributes: [
-                .font: ChatFonts.code(size: style.codeSize, style: style),
-                .foregroundColor: NSColor.labelColor,
-            ])
-            // Scrolls rather than wraps: a wrapped code line loses its
-            // indentation cues.
-            parts.append(HScrollNode(BoxNode(TextNode(text, wraps: false), padding: NSEdgeInsets(h: 8, v: 6), hug: true)))
-            return BoxNode(VStackNode(parts), fill: .secondary(0.10), border: .secondary(0.18), borderWidth: 0.5, radius: 5)
+            return BoxNode(
+                HStackNode(items, spacing: 8, flexible: [0]),
+                padding: NSEdgeInsets(top: 5, left: 8, bottom: 0, right: 8)
+            )
+        }
+
+        /// A mermaid fence as its diagram, once rendered. Until then, and
+        /// when it won't render, the source.
+        private mutating func mermaidNode(_ code: String, closed: Bool) -> ChatNode {
+            let id = "\(key).m\(diagramCount)"
+            diagramCount += 1
+            // A fence still streaming in isn't a whole diagram yet.
+            guard closed, !code.isEmpty else { return codeNode(language: "mermaid", code: code, closed: closed) }
+            let toggle = options.toggle
+            if options.isExpanded(id) {
+                return codeNode(language: "mermaid", code: code, action: ("Show diagram", { toggle(id) }))
+            }
+            let renderer = MermaidRenderer.shared
+            switch renderer.anyResult(code) {
+            case let .diagram(_, natural)?:
+                let header = codeHeader(language: "mermaid", note: nil, action: ("Show source", { toggle(id) }))!
+                return codeFrame([header, BoxNode(MermaidNode(source: code, natural: natural), padding: NSEdgeInsets(h: 12, v: 10))])
+            case let .failed(message)?:
+                let firstLine = message.split(separator: "\n").first.map(String.init) ?? message
+                return codeNode(language: "mermaid", code: code, note: "couldn't render: \(firstLine)")
+            case nil:
+                renderer.request(code, dark: NSApp.effectiveAppearance.isDark, owner: id, done: options.refresh)
+                return codeNode(language: "mermaid", code: code, note: "rendering…")
+            }
+        }
+
+        /// Display math, centered, scrolling sideways when it's too wide.
+        /// TeX that won't typeset shows as its source.
+        private func mathNode(_ tex: String, _ context: Context) -> ChatNode {
+            let size = ChatMath.fontSize(forText: style.bodySize)
+            guard let math = ChatMath.typeset(tex, size: size, display: true) else {
+                return codeNode(language: "math", code: tex)
+            }
+            return HScrollNode(MathBlockNode(math: math, secondary: context.secondary), fillViewport: true)
         }
 
         private func detailsNode(summary: String, blocks: [MarkdownBlock], id: String) -> ChatNode {

@@ -24,6 +24,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
         .package(path: "Vendor/libghostty-spm"),
+        .package(path: "Vendor/SwiftMath"),
         .package(url: "https://github.com/sparkle-project/Sparkle.git", from: "2.6.4")
     ],
     targets: [
@@ -37,7 +38,8 @@ let package = Package(
                 "CJetlineSys",
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "GhosttyTerminal", package: "libghostty-spm", condition: .when(platforms: [.macOS])),
-                .product(name: "Sparkle", package: "Sparkle", condition: .when(platforms: [.macOS]))
+                .product(name: "Sparkle", package: "Sparkle", condition: .when(platforms: [.macOS])),
+                .product(name: "SwiftMath", package: "SwiftMath", condition: .when(platforms: [.macOS]))
             ],
             path: "Sources/JetlineApp",
             resources: [.process("Resources")]

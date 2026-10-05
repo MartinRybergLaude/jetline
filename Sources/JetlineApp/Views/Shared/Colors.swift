@@ -26,10 +26,14 @@ extension Color {
     static let inspectorCardStroke = Color(nsColor: .inspectorCardStroke)
 }
 
+extension NSAppearance {
+    var isDark: Bool { bestMatch(from: [.aqua, .darkAqua]) == .darkAqua }
+}
+
 extension NSColor {
     /// AppKit side of `Color.readableGreen`, for views drawn outside SwiftUI.
     static let readableGreen = NSColor(name: "readableGreen") { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        appearance.isDark
             ? .systemGreen
             : NSColor(srgbRed: 0.102, green: 0.498, blue: 0.216, alpha: 1)
     }
@@ -37,13 +41,13 @@ extension NSColor {
     /// A card raised off the inspector column's grey: lighter than it in
     /// both appearances, the way grouped content sits on a sidebar.
     static let inspectorCard = NSColor(name: "inspectorCard") { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        appearance.isDark
             ? NSColor(white: 1, alpha: 0.07)
             : NSColor(white: 1, alpha: 0.8)
     }
 
     static let inspectorCardStroke = NSColor(name: "inspectorCardStroke") { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        appearance.isDark
             ? NSColor(white: 1, alpha: 0.08)
             : NSColor(white: 0, alpha: 0.07)
     }

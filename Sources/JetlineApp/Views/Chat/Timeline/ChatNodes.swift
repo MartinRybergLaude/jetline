@@ -253,6 +253,29 @@ final class ChatTextView: NSTextView {
         updateContainer()
     }
 
+    /// Formulas copy as their TeX; as attachments they'd paste as U+FFFC
+    /// into anything plain.
+    override func writeSelection(to pboard: NSPasteboard, types: [NSPasteboard.PasteboardType]) -> Bool {
+        guard let storage = textStorage else { return super.writeSelection(to: pboard, types: types) }
+        let string = storage.string as NSString
+        var text = ""
+        var hasMath = false
+        for range in selectedRanges.map(\.rangeValue) where range.length > 0 {
+            if !text.isEmpty { text += "\n" }
+            storage.enumerateAttribute(.attachment, in: range) { value, run, _ in
+                if let cell = (value as? NSTextAttachment)?.attachmentCell as? MathAttachmentCell {
+                    text += "$\(cell.tex)$"
+                    hasMath = true
+                } else {
+                    text += string.substring(with: run)
+                }
+            }
+        }
+        guard hasMath else { return super.writeSelection(to: pboard, types: types) }
+        pboard.clearContents()
+        return pboard.setString(text.replacingOccurrences(of: "\u{2028}", with: "\n"), forType: .string)
+    }
+
     private func updateContainer() {
         let width = wraps ? bounds.width : ChatNode.unbounded
         if textContainer?.size.width != width {
@@ -436,6 +459,70 @@ final class LetterChipView: NSView {
         // (Unflipped, so the ink rect's y runs up from the baseline.)
         let origin = NSPoint(x: bounds.midX - ink.midX, y: bounds.midY - ink.midY)
         text.draw(with: NSRect(origin: origin, size: bounds.size), options: [])
+    }
+}
+
+/// A small one-line caption, drawn rather than hosted in a text field. At
+/// caption sizes a field's cell can place the line above its frame and
+/// clip the tops of the glyphs; this sizes to the font's full ascent and
+/// descent and draws at that baseline.
+final class CaptionNode: ChatNode {
+    let text: String
+    let font: NSFont
+    let color: NSColor
+    private let natural: CGSize
+
+    init(_ text: String, font: NSFont, color: NSColor = .secondaryLabelColor) {
+        self.text = text
+        self.font = font
+        self.color = color
+        natural = CGSize(
+            width: ceil((text as NSString).size(withAttributes: [.font: font]).width),
+            height: ceil(font.ascender - font.descender)
+        )
+    }
+
+    override func measure(_ width: CGFloat) -> CGSize {
+        CGSize(width: min(width, natural.width), height: natural.height)
+    }
+
+    override var viewType: NSView.Type { ChatCaptionView.self }
+    override func makeView() -> NSView { ChatCaptionView() }
+    override func configure(_ view: NSView, size: CGSize) {
+        guard let view = view as? ChatCaptionView else { return }
+        view.show(text: text, font: font, color: color)
+    }
+}
+
+final class ChatCaptionView: NSView {
+    private var text = ""
+    private var font = NSFont.systemFont(ofSize: 9)
+    private var color = NSColor.secondaryLabelColor
+    private var string = NSAttributedString()
+
+    override var isFlipped: Bool { true }
+
+    func show(text: String, font: NSFont, color: NSColor) {
+        guard text != self.text || font != self.font || color != self.color else { return }
+        self.text = text
+        self.font = font
+        self.color = color
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+        string = NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color, .paragraphStyle: paragraph])
+        toolTip = text
+        needsDisplay = true
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        // Flipped: y is the baseline, measured down from the top.
+        let baseline = ((bounds.height - (font.ascender - font.descender)) / 2 + font.ascender).rounded()
+        string.draw(with: NSRect(x: 0, y: baseline, width: bounds.width, height: 0), options: [.truncatesLastVisibleLine])
     }
 }
 

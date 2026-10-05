@@ -451,6 +451,10 @@ final class ChatTimelineController: NSObject, NSTableViewDataSource, NSTableView
         rowUIChanged(row)
     }
 
+    func refresh(row: String) {
+        rowUIChanged(row)
+    }
+
     func value(for key: String) -> String? {
         values[key]
     }

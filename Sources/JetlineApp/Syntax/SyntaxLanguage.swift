@@ -39,7 +39,11 @@ struct SyntaxLanguage: Sendable {
             // Dotfiles like .zshrc / .bashrc / .env
             return name.hasSuffix("rc") || name == ".env" ? .shell : nil
         }
-        switch (name as NSString).pathExtension.lowercased() {
+        return forExtension((name as NSString).pathExtension)
+    }
+
+    static func forExtension(_ ext: String) -> SyntaxLanguage? {
+        switch ext.lowercased() {
         case "swift": return .swift
         case "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs": return .javascript
         case "svelte", "vue": return .javascript
@@ -60,6 +64,25 @@ struct SyntaxLanguage: Sendable {
         case "sql": return .sql
         case "php": return .php
         default: return nil
+        }
+    }
+
+    /// The language for a markdown fence's info string (`swift`, `ts`,
+    /// `shell`, …): a name or an extension. Nil for anything unrecognized.
+    static func forFence(_ name: String) -> SyntaxLanguage? {
+        switch name.lowercased() {
+        case "typescript", "javascript", "node": return .javascript
+        case "python", "python3", "py3": return .python
+        case "golang": return .go
+        case "rust": return .rust
+        case "kotlin": return .kotlin
+        case "objc", "objective-c", "objectivec", "c++", "cpp": return .c
+        case "c#", "csharp": return .csharp
+        case "ruby": return .ruby
+        case "shell", "console", "shellscript", "sh-session", "make", "makefile": return .shell
+        case "dockerfile", "docker": return .dockerfile
+        case "postgresql", "postgres", "mysql", "sqlite", "psql": return .sql
+        case let other: return forExtension(other)
         }
     }
 }

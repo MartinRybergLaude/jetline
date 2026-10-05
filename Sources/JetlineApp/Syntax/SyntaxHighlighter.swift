@@ -225,7 +225,7 @@ enum SyntaxTheme {
             )
         }
         return NSColor(name: NSColor.Name(name)) { appearance in
-            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? rgb(dark) : rgb(light)
+            appearance.isDark ? rgb(dark) : rgb(light)
         }
     }
 

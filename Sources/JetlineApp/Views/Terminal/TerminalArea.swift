@@ -405,7 +405,7 @@ private final class TerminalDropContainer: NSView {
     override var wantsUpdateLayer: Bool { true }
 
     override func updateLayer() {
-        let isDark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        let isDark = effectiveAppearance.isDark
         layer?.backgroundColor =
             (isDark ? GhosttyEmulator.darkBackground : GhosttyEmulator.lightBackground).cgColor
     }

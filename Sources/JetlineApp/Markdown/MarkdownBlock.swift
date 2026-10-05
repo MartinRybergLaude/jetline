@@ -14,7 +14,12 @@ enum MarkdownBlock: Hashable, Sendable {
     case paragraph(String)
     case heading(level: Int, text: String)
     /// Fenced code. `language` is the fence info string, lowercased, or nil.
-    case code(language: String?, text: String)
+    /// `closed` is false while a streaming reply hasn't written the closing
+    /// fence yet.
+    case code(language: String?, text: String, closed: Bool = true)
+    /// Display math: `$$…$$` or `\[…\]` on lines of their own. TeX source,
+    /// delimiters stripped.
+    case math(String)
     case quote([MarkdownBlock])
     case list(MarkdownList)
     case table(MarkdownTable)

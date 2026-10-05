@@ -526,12 +526,12 @@ enum PillTint {
 
 private extension NSColor {
     static let pillRed = NSColor(name: "pillRed") { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        appearance.isDark
             ? NSColor(srgbRed: 1, green: 0.5, blue: 0.47, alpha: 1)
             : NSColor(srgbRed: 0.72, green: 0.1, blue: 0.1, alpha: 1)
     }
     static let pillYellow = NSColor(name: "pillYellow") { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        appearance.isDark
             ? NSColor(srgbRed: 1, green: 0.82, blue: 0.35, alpha: 1)
             : NSColor(srgbRed: 0.55, green: 0.38, blue: 0, alpha: 1)
     }

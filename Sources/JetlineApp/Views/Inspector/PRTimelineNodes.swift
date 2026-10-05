@@ -17,6 +17,8 @@ struct PRThreadUIState: Equatable {
 protocol PRTimelineHost: AnyObject {
     func isExpanded(_ key: String, default value: Bool) -> Bool
     func toggle(_ key: String, default value: Bool, row: String)
+    /// Rebuild `row`: content it shows arrived late (a rendered diagram).
+    func refresh(row: String)
     func threadState(_ id: String) -> PRThreadUIState
     func updateThread(_ id: String, _ change: (inout PRThreadUIState) -> Void)
     func replyTextChanged(thread id: String, text: String)
@@ -88,7 +90,8 @@ enum PRTimelineNodes {
             style: style,
             breakout: false,
             isExpanded: { [weak host] key in host?.isExpanded(key, default: false) ?? false },
-            toggle: { [weak host] key in host?.toggle(key, default: false, row: row) }
+            toggle: { [weak host] key in host?.toggle(key, default: false, row: row) },
+            refresh: { [weak host] in host?.refresh(row: row) }
         ), key: key)
     }
 
@@ -243,25 +246,7 @@ enum PRTimelineNodes {
         let hidden = max(0, lines.count - tail)
         let shown = showAll ? lines : Array(lines.suffix(tail))
 
-        let text = NSMutableAttributedString()
-        let lineFont = mono(11.5)
-        for (index, line) in shown.enumerated() {
-            let kind = DiffLineTint.kind(ofRawLine: line)
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.firstLineHeadIndent = 6
-            paragraph.headIndent = 6
-            paragraph.paragraphSpacingBefore = 1
-            paragraph.paragraphSpacing = 1
-            var attributes: [NSAttributedString.Key: Any] = [
-                .font: lineFont,
-                .foregroundColor: kind == nil ? NSColor.secondaryLabelColor : NSColor.labelColor,
-                .paragraphStyle: paragraph,
-            ]
-            if let tint = kind.map(DiffLineTint.backgroundColor) ?? DiffLineTint.headerBackgroundColor {
-                attributes[.chatLineTint] = tint
-            }
-            text.append(NSAttributedString(string: (line.isEmpty ? " " : line) + (index < shown.count - 1 ? "\n" : ""), attributes: attributes))
-        }
+        let text = DiffLineTint.attributed(shown, font: mono(11.5), indent: 6, lineSpacing: 1)
 
         var parts: [ChatNode] = []
         if hidden > 0 && !showAll {

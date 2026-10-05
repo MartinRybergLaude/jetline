@@ -538,6 +538,10 @@ final class PRTimelineController: NSObject, NSTableViewDataSource, NSTableViewDe
         rowUIChanged(row)
     }
 
+    func refresh(row: String) {
+        rowUIChanged(row)
+    }
+
     func threadState(_ id: String) -> PRThreadUIState {
         threads[id] ?? PRThreadUIState()
     }
