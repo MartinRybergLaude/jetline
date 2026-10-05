@@ -431,5 +431,5 @@ enum JetlineVersion {
     }
 
     /// Kept in step with `BundleResources/Info.plist` by `scripts/bump-version.sh`.
-    static let embedded = "0.8.5"
+    static let embedded = "0.9.0"
 }
