@@ -71,6 +71,8 @@ final class AppState: ObservableObject {
     @Published var repoPendingWorkspaceCreation: Repository?
     /// The connect-a-machine sheet, for a new remote or to set one up.
     @Published var pendingRemoteSetup: RemoteSetupRequest?
+    /// The ⌘K workspace switcher is up. `MainWindowCoordinator` presents it.
+    @Published var showingQuickOpen = false
     /// Surfaces that currently want the ⌘⇧ navigation key equivalents
     /// released back to the text system.
     @Published private(set) var navShortcutSuppressors: Set<String> = []
@@ -605,17 +607,74 @@ final class AppState: ObservableObject {
     }
 
     /// Move a stack (a workspace and everything stacked on it) into `gap`
-    /// of the sidebar's stack-grouped order.
+    /// of the sidebar's stack-grouped order. With grouping off, just the
+    /// workspace moves. `gap` counts the rows the sidebar shows, so hidden
+    /// workspaces are left where they are.
     func moveWorkspaceStack(in repoId: String, moving workspaceId: String, toGap gap: Int) {
         guard let host = host(forRepo: repoId),
               let repo = host.repositories.first(where: { $0.id == repoId }),
               let list = host.workspacesByRepo[repoId] else { return }
-        let orderedIds = WorkspaceStacks.reorder(list, moving: workspaceId, toGap: gap, repo: repo)
+        let visible = settings.hideClosedWorkspaces
+            ? Set(list.filter { isShownInSidebar($0.id) }.map(\.id))
+            : nil
+        let orderedIds = WorkspaceStacks.reorder(
+            list, moving: workspaceId, toGap: gap, repo: repo, grouped: settings.groupStackedWorkspaces, visible: visible
+        )
         guard orderedIds != list.map(\.id) else { return }
         let byId = Dictionary(uniqueKeysWithValues: list.map { ($0.id, $0) })
         host.workspacesByRepo[repoId] = orderedIds.compactMap { byId[$0] }
         rebuildAggregates()
         perform(API.ReorderWorkspaces(repoId: repoId, orderedIds: orderedIds), on: host.connection)
+    }
+
+    /// What ⌘K can open: every repository's checkout and workspaces on the
+    /// machines that are connected, hidden ones included, in
+    /// `QuickOpen.ordered` order.
+    func quickOpenItems() -> [QuickOpenItem] {
+        let namesHosts = hosts.count > 1
+        let items = hosts.filter { $0.isLocal || $0.isSynced }.flatMap { host in
+            host.repositories.flatMap { repo in
+                quickOpenItems(for: repo, in: host, hostName: namesHosts ? host.name : nil)
+            }
+        }
+        return QuickOpen.ordered(items, history: selectionHistory, selectedId: selectedWorkspaceId)
+    }
+
+    private func quickOpenItems(for repo: Repository, in host: EngineHost, hostName: String?) -> [QuickOpenItem] {
+        let headId = repositoryBaseWorkspaceId(for: repo)
+        let head = QuickOpenItem(
+            id: headId,
+            kind: .repositoryHead,
+            name: repo.name,
+            branch: repo.defaultBranch,
+            repositoryName: repo.name,
+            hostName: hostName,
+            isOpen: workspaceStates[headId]?.hasAgentTabs ?? false,
+            lastActiveAt: repo.lastOpenedAt ?? repo.createdAt
+        )
+        let workspaces = (host.workspacesByRepo[repo.id] ?? []).map { ws in
+            QuickOpenItem(
+                id: ws.id,
+                kind: .workspace,
+                name: ws.name,
+                branch: ws.branchName,
+                repositoryName: repo.name,
+                hostName: hostName,
+                isOpen: workspaceStates[ws.id]?.hasAgentTabs ?? false,
+                lastActiveAt: ws.lastActiveAt
+            )
+        }
+        return [head] + workspaces
+    }
+
+    /// Whether the sidebar lists the workspace among its repository's rows
+    /// rather than folding it into the hidden ones: always, unless the user
+    /// hides workspaces without open tabs. The selected one stays listed
+    /// while its first tab is still on the way.
+    func isShownInSidebar(_ workspaceId: String) -> Bool {
+        !settings.hideClosedWorkspaces
+            || selectedWorkspaceId == workspaceId
+            || workspaceState(for: workspaceId).hasAgentTabs
     }
 
     /// Git refs for the repo settings sheet.

@@ -13,13 +13,14 @@ action bar that fast-paths the common things and hands the rest to an agent.
 - Sidebar with repos & workspaces, drag-reorder of repo sections and workspace rows (hold to lift, drag, release; within one repo), per-repo settings ✅
 - Embedded terminal hosting `claude` / `codex` / `vibe` / shell ✅ (libghostty-backed)
 - Multiple session tabs per workspace, ⌘N new workspace, ⌘1…⌘9 tabs, ⌘⇧←/→ (or ⌘⇧H/L) terminals, ⌘⇧↑/↓ (or ⌘⇧J/K) workspaces, native macOS window tabs (drag-reorder, tab overview) ✅ — the ⌘⇧ shortcuts yield to standard text selection while repo or app settings are being edited
+- ⌘K switcher: fuzzy-find any repository checkout or workspace (hidden ones included) across machines and open it; one without tabs starts its default tab ✅
 - Close a workspace from its sidebar row (✕ on hover) or by closing its last tab — ends its sessions and drops it from ⌘⇧↑/↓ cycling ✅
 - Inspector: changes (combined / PR / local) opening full-file diff tabs, PR + checks + conversation, run output ✅
 - FSEvents watcher → live diff refresh + PR poll kick ✅
 - Git action bar: commit / create PR / pull / rebase / fix CI / fix comments / review / merge ✅
 - Fast-path rebase + pull (no agent token spend on the no-conflict case) ✅
 - Per-repo branch naming controls, setup / run / archive scripts, exclusive run ✅
-- Settings: agents, binary paths, prompt overrides (global + per-repo), theme, terminal font ✅
+- Settings: agents, binary paths, prompt overrides (global + per-repo), theme, terminal font, stack grouping, delete on merge, reopen sessions on launch, hide closed workspaces ✅
 - Remote machines: repos on Linux boxes (`jetlined`, over ssh) sit in the sidebar next to this Mac's, one group per machine, all live at once ✅
 - File editor, Conductor import ❌ explicitly out of scope
 
@@ -207,6 +208,8 @@ Sources/JetlineApp/
 │   ├── Workspace.swift           ─ worktree + agent kind
 │   ├── WorkspaceState.swift      ─ per-workspace mutable state (not @Published)
 │   ├── AppSettings.swift
+│   ├── SessionRestore.swift      ─ tabs recorded at quit, reopened on launch
+│   ├── QuickOpen.swift           ─ ⌘K switcher items, recency order, fuzzy ranking
 │   ├── GitAction.swift           ─ commit/createPR/pull/rebase/fixCI/fixComments/review/mergePR
 │   ├── GitActionPrompts.swift    ─ default templates + render
 │   ├── GitActionState.swift      ─ in-flight action tracking
@@ -244,6 +247,7 @@ Sources/JetlineApp/
     ├── Shell/TabWindows.swift    ─ native window tabs (one NSWindow per tab), menu-first hotkeys
     ├── Shell/TabToolbar.swift    ─ AppKit toolbar per tab window: title, git, open in, run
     ├── Sidebar/                  ─ repos, workspaces, new/import sheets, repo settings
+    ├── QuickOpen/                ─ ⌘K switcher: floating panel over the main window
     ├── Terminal/TerminalArea     ─ one tab's content (terminal, chat or diff)
     ├── Terminal/NewTabPage       ─ what the tab bar's + opens: pick a chat, terminal or closed chat
     ├── Inspector/                ─ Changes / PR / Run tabs (segmented accessory, Xcode-style)
@@ -281,11 +285,22 @@ checkout (`repo.path`) in the same terminal/inspector view as a workspace,
 with its own in-memory terminal tabs. These base-repo tabs are not persisted
 as workspace rows and are not included in PR polling.
 
-Merged PRs auto-archive their workspace and, by default, delete the local
-worktree/branch; this can be disabled in Settings. Reusing a branch name
+Merged PRs, by default, delete their workspace (worktree and branch) unless
+that would lose uncommitted or unpushed work; Settings → General → "Delete
+workspaces when their PR merges" turns this off. Reusing a branch name
 after an old PR merged is guarded by the PR merge timestamp, and branch
 creation/import offers an explicit override if that branch is still checked
 out in another worktree.
+
+Workspaces based on another workspace's branch are grouped under it in the
+sidebar and their PRs linked into a GitHub stack; "Group stacked workspaces"
+turns both off for a flat list. With "Reopen sessions on launch" on, the
+chats and terminal tabs running at the last quit (recorded in
+`session_restore_tabs`) start again on launch, the first Claude Code tab of
+a workspace with `--continue` when it has a conversation to continue.
+"Hide workspaces without open tabs" lists only open workspaces under each
+repository and folds the rest into an "N hidden" row that unfolds to open
+one.
 
 Per-workspace mutable state (diff snapshots, PR snapshot, sessions, branch
 position, run/setup controllers) lives on `WorkspaceState` instances looked

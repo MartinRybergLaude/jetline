@@ -128,6 +128,11 @@ final class MainWindowCoordinator: NSObject, NSWindowDelegate {
     private var isHidden = false
     private var tabBarWasVisible = true
     private var frameSaveScheduled = false
+    private lazy var quickOpen = QuickOpenController(state: state) { [weak self] in
+        guard let self else { return nil }
+        self.showMainWindow()
+        return self.selectedSlot?.window
+    }
 
     /// Captured from the first root view — the coordinator has no SwiftUI
     /// environment of its own to open scene windows (onboarding) with.
@@ -181,6 +186,13 @@ final class MainWindowCoordinator: NSObject, NSWindowDelegate {
         .receive(on: DispatchQueue.main)
         .sink { Self.refreshMenuCommands() }
         .store(in: &cancellables)
+        state.$showingQuickOpen
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] showing in
+                if showing { self?.quickOpen.show() } else { self?.quickOpen.dismiss() }
+            }
+            .store(in: &cancellables)
         state.$inspectorVisible
             .removeDuplicates()
             .receive(on: DispatchQueue.main)

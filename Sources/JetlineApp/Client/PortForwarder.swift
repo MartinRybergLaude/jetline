@@ -249,7 +249,8 @@ final class PortForwarder {
         guard retryToken == nil else { return }
         // Soon at first — a port just released can linger for a moment —
         // then at a relaxed pace.
-        let delay: DispatchTimeInterval = [.milliseconds(500), .seconds(1), .seconds(2)].dropFirst(retryCount).first ?? .seconds(5)
+        let delays: [DispatchTimeInterval] = [.milliseconds(500), .seconds(1), .seconds(2)]
+        let delay = delays.dropFirst(retryCount).first ?? .seconds(5)
         retryCount += 1
         let token = UUID()
         retryToken = token
