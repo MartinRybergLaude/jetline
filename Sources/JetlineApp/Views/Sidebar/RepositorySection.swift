@@ -29,9 +29,10 @@ struct RepositorySection: View {
     }
 
     private var workspaces: [Workspace] { state.workspacesByRepo[repo.id] ?? [] }
-    /// Rows as shown: each stack's layers under the workspace they sit on.
+    /// Rows as shown: each stack's layers under the workspace they sit on,
+    /// or the plain list when stack grouping is off.
     private var rows: [(workspace: Workspace, depth: Int)] {
-        WorkspaceStacks.sidebarOrder(workspaces, repo: repo)
+        WorkspaceStacks.sidebarOrder(workspaces, repo: repo, grouped: state.settings.groupStackedWorkspaces)
     }
     private var hasWorkspaces: Bool { !workspaces.isEmpty }
     private var baseWorkspaceId: String { state.repositoryBaseWorkspaceId(for: repo) }

@@ -40,6 +40,17 @@ private struct GeneralSettingsView: View {
                     Text(kind.displayName).tag(kind)
                 }
             }
+            Section {
+                Toggle("Group stacked workspaces", isOn: state.settingsBinding(\.groupStackedWorkspaces))
+                Toggle("Delete workspaces when their PR merges", isOn: state.settingsBinding(\.deleteWorkspaceOnMerge))
+                Toggle("Reopen sessions on launch", isOn: state.settingsBinding(\.restoreSessionsOnLaunch))
+            } header: {
+                Text("Workspaces")
+            } footer: {
+                Text("Grouping shows a workspace based on another's branch under it in the sidebar and links their PRs into a GitHub stack. Merged workspaces are kept anyway when deleting them would lose local work. Reopening restarts the chats and terminal tabs that were running at the last quit; Claude Code continues its last conversation.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .scrollIndicators(.visible)

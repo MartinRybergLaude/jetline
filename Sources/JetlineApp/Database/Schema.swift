@@ -388,5 +388,22 @@ enum Schema {
                 t.add(column: "note", .text)
             }
         }
+
+        // Workspace behaviour toggles, and the tabs that were running at the
+        // last quit for "reopen sessions on launch".
+        migrator.registerMigration("v28_workspace_settings") { db in
+            try db.alter(table: "app_settings") { t in
+                t.add(column: "groupStackedWorkspaces", .boolean).notNull().defaults(to: true)
+                t.add(column: "deleteWorkspaceOnMerge", .boolean).notNull().defaults(to: true)
+                t.add(column: "restoreSessionsOnLaunch", .boolean).notNull().defaults(to: false)
+            }
+            try db.create(table: "session_restore_tabs") { t in
+                t.column("workspaceId", .text).notNull()
+                t.column("displayOrder", .integer).notNull()
+                t.column("kind", .text).notNull()
+                t.column("agent", .text).notNull()
+                t.primaryKey(["workspaceId", "displayOrder"])
+            }
+        }
     }
 }

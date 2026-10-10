@@ -19,7 +19,7 @@ action bar that fast-paths the common things and hands the rest to an agent.
 - Git action bar: commit / create PR / pull / rebase / fix CI / fix comments / review / merge ✅
 - Fast-path rebase + pull (no agent token spend on the no-conflict case) ✅
 - Per-repo branch naming controls, setup / run / archive scripts, exclusive run ✅
-- Settings: agents, binary paths, prompt overrides (global + per-repo), theme, terminal font ✅
+- Settings: agents, binary paths, prompt overrides (global + per-repo), theme, terminal font, stack grouping, delete on merge, reopen sessions on launch ✅
 - Remote machines: repos on Linux boxes (`jetlined`, over ssh) sit in the sidebar next to this Mac's, one group per machine, all live at once ✅
 - File editor, Conductor import ❌ explicitly out of scope
 
@@ -207,6 +207,7 @@ Sources/JetlineApp/
 │   ├── Workspace.swift           ─ worktree + agent kind
 │   ├── WorkspaceState.swift      ─ per-workspace mutable state (not @Published)
 │   ├── AppSettings.swift
+│   ├── SessionRestore.swift      ─ tabs recorded at quit, reopened on launch
 │   ├── GitAction.swift           ─ commit/createPR/pull/rebase/fixCI/fixComments/review/mergePR
 │   ├── GitActionPrompts.swift    ─ default templates + render
 │   ├── GitActionState.swift      ─ in-flight action tracking
@@ -281,11 +282,19 @@ checkout (`repo.path`) in the same terminal/inspector view as a workspace,
 with its own in-memory terminal tabs. These base-repo tabs are not persisted
 as workspace rows and are not included in PR polling.
 
-Merged PRs auto-archive their workspace and, by default, delete the local
-worktree/branch; this can be disabled in Settings. Reusing a branch name
+Merged PRs, by default, delete their workspace (worktree and branch) unless
+that would lose uncommitted or unpushed work; Settings → General → "Delete
+workspaces when their PR merges" turns this off. Reusing a branch name
 after an old PR merged is guarded by the PR merge timestamp, and branch
 creation/import offers an explicit override if that branch is still checked
 out in another worktree.
+
+Workspaces based on another workspace's branch are grouped under it in the
+sidebar and their PRs linked into a GitHub stack; "Group stacked workspaces"
+turns both off for a flat list. With "Reopen sessions on launch" on, the
+chats and terminal tabs running at the last quit (recorded in
+`session_restore_tabs`) start again on launch, the first Claude Code tab of
+a workspace with `--continue` when it has a conversation to continue.
 
 Per-workspace mutable state (diff snapshots, PR snapshot, sessions, branch
 position, run/setup controllers) lives on `WorkspaceState` instances looked

@@ -52,6 +52,16 @@ struct AppSettings: Codable, Equatable, Sendable, FetchableRecord, PersistableRe
     /// an item to clear it for redisplay.
     var hasCompletedOnboarding: Bool = false
 
+    /// Show a workspace stacked on another under it in the sidebar, and link
+    /// stacked PRs into a GitHub stack. Off: a flat list and no linking;
+    /// stack-aware rebasing still follows the base branches.
+    var groupStackedWorkspaces: Bool = true
+    /// Delete a workspace (worktree and branch) once its PR merges, unless
+    /// that would lose local work.
+    var deleteWorkspaceOnMerge: Bool = true
+    /// On launch, bring back the tabs that were running when Jetline quit.
+    var restoreSessionsOnLaunch: Bool = false
+
     /// User overrides for the prompt sent to the agent for each action.
     /// Empty/nil falls back to `GitActionPrompts.defaults`.
     var commitPrompt: String?

@@ -42,8 +42,10 @@ enum WorkspaceStacks {
     /// order, each followed by the ones stacked on it (depth-first). Depth 0
     /// is a root. A cycle (two branches based on each other) can't come from
     /// Jetline, but a hand-edited base could make one; its members are shown
-    /// as roots rather than dropped.
-    static func sidebarOrder(_ workspaces: [Workspace], repo: Repository) -> [(workspace: Workspace, depth: Int)] {
+    /// as roots rather than dropped. `grouped: false` (the user turned stack
+    /// grouping off) is the plain list order, every row a root.
+    static func sidebarOrder(_ workspaces: [Workspace], repo: Repository, grouped: Bool = true) -> [(workspace: Workspace, depth: Int)] {
+        guard grouped else { return workspaces.map { ($0, 0) } }
         let branches = Set(workspaces.map(\.branchName))
         var childrenByBase: [String: [Workspace]] = [:]
         var roots: [Workspace] = []
@@ -71,9 +73,10 @@ enum WorkspaceStacks {
     /// The full list order after moving the stack rooted at `movedId` into
     /// sidebar gap `gap` (`onMove`'s "insert before" convention; the
     /// sidebar only offers gaps between stacks), each stack kept whole.
-    static func reorder(_ workspaces: [Workspace], moving movedId: String, toGap gap: Int, repo: Repository) -> [String] {
+    /// Ungrouped, every workspace is its own stack.
+    static func reorder(_ workspaces: [Workspace], moving movedId: String, toGap gap: Int, repo: Repository, grouped: Bool = true) -> [String] {
         var groups: [[String]] = []
-        for (ws, depth) in sidebarOrder(workspaces, repo: repo) {
+        for (ws, depth) in sidebarOrder(workspaces, repo: repo, grouped: grouped) {
             if depth == 0 || groups.isEmpty { groups.append([ws.id]) } else { groups[groups.count - 1].append(ws.id) }
         }
         guard let from = groups.firstIndex(where: { $0.first == movedId }) else { return workspaces.map(\.id) }

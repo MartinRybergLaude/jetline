@@ -605,12 +605,15 @@ final class AppState: ObservableObject {
     }
 
     /// Move a stack (a workspace and everything stacked on it) into `gap`
-    /// of the sidebar's stack-grouped order.
+    /// of the sidebar's stack-grouped order. With grouping off, just the
+    /// workspace moves.
     func moveWorkspaceStack(in repoId: String, moving workspaceId: String, toGap gap: Int) {
         guard let host = host(forRepo: repoId),
               let repo = host.repositories.first(where: { $0.id == repoId }),
               let list = host.workspacesByRepo[repoId] else { return }
-        let orderedIds = WorkspaceStacks.reorder(list, moving: workspaceId, toGap: gap, repo: repo)
+        let orderedIds = WorkspaceStacks.reorder(
+            list, moving: workspaceId, toGap: gap, repo: repo, grouped: settings.groupStackedWorkspaces
+        )
         guard orderedIds != list.map(\.id) else { return }
         let byId = Dictionary(uniqueKeysWithValues: list.map { ($0.id, $0) })
         host.workspacesByRepo[repoId] = orderedIds.compactMap { byId[$0] }
