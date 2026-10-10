@@ -71,6 +71,8 @@ final class AppState: ObservableObject {
     @Published var repoPendingWorkspaceCreation: Repository?
     /// The connect-a-machine sheet, for a new remote or to set one up.
     @Published var pendingRemoteSetup: RemoteSetupRequest?
+    /// The ⌘K workspace switcher is up. `MainWindowCoordinator` presents it.
+    @Published var showingQuickOpen = false
     /// Surfaces that currently want the ⌘⇧ navigation key equivalents
     /// released back to the text system.
     @Published private(set) var navShortcutSuppressors: Set<String> = []
@@ -623,6 +625,46 @@ final class AppState: ObservableObject {
         host.workspacesByRepo[repoId] = orderedIds.compactMap { byId[$0] }
         rebuildAggregates()
         perform(API.ReorderWorkspaces(repoId: repoId, orderedIds: orderedIds), on: host.connection)
+    }
+
+    /// What ⌘K can open: every repository's checkout and workspaces on the
+    /// machines that are connected, hidden ones included, in
+    /// `QuickOpen.ordered` order.
+    func quickOpenItems() -> [QuickOpenItem] {
+        let namesHosts = hosts.count > 1
+        let items = hosts.filter { $0.isLocal || $0.isSynced }.flatMap { host in
+            host.repositories.flatMap { repo in
+                quickOpenItems(for: repo, in: host, hostName: namesHosts ? host.name : nil)
+            }
+        }
+        return QuickOpen.ordered(items, history: selectionHistory, selectedId: selectedWorkspaceId)
+    }
+
+    private func quickOpenItems(for repo: Repository, in host: EngineHost, hostName: String?) -> [QuickOpenItem] {
+        let headId = repositoryBaseWorkspaceId(for: repo)
+        let head = QuickOpenItem(
+            id: headId,
+            kind: .repositoryHead,
+            name: repo.name,
+            branch: repo.defaultBranch,
+            repositoryName: repo.name,
+            hostName: hostName,
+            isOpen: workspaceStates[headId]?.hasAgentTabs ?? false,
+            lastActiveAt: repo.lastOpenedAt ?? repo.createdAt
+        )
+        let workspaces = (host.workspacesByRepo[repo.id] ?? []).map { ws in
+            QuickOpenItem(
+                id: ws.id,
+                kind: .workspace,
+                name: ws.name,
+                branch: ws.branchName,
+                repositoryName: repo.name,
+                hostName: hostName,
+                isOpen: workspaceStates[ws.id]?.hasAgentTabs ?? false,
+                lastActiveAt: ws.lastActiveAt
+            )
+        }
+        return [head] + workspaces
     }
 
     /// Whether the sidebar lists the workspace among its repository's rows

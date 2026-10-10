@@ -13,6 +13,7 @@ action bar that fast-paths the common things and hands the rest to an agent.
 - Sidebar with repos & workspaces, drag-reorder of repo sections and workspace rows (hold to lift, drag, release; within one repo), per-repo settings ✅
 - Embedded terminal hosting `claude` / `codex` / `vibe` / shell ✅ (libghostty-backed)
 - Multiple session tabs per workspace, ⌘N new workspace, ⌘1…⌘9 tabs, ⌘⇧←/→ (or ⌘⇧H/L) terminals, ⌘⇧↑/↓ (or ⌘⇧J/K) workspaces, native macOS window tabs (drag-reorder, tab overview) ✅ — the ⌘⇧ shortcuts yield to standard text selection while repo or app settings are being edited
+- ⌘K switcher: fuzzy-find any repository checkout or workspace (hidden ones included) across machines and open it; one without tabs starts its default tab ✅
 - Close a workspace from its sidebar row (✕ on hover) or by closing its last tab — ends its sessions and drops it from ⌘⇧↑/↓ cycling ✅
 - Inspector: changes (combined / PR / local) opening full-file diff tabs, PR + checks + conversation, run output ✅
 - FSEvents watcher → live diff refresh + PR poll kick ✅
@@ -208,6 +209,7 @@ Sources/JetlineApp/
 │   ├── WorkspaceState.swift      ─ per-workspace mutable state (not @Published)
 │   ├── AppSettings.swift
 │   ├── SessionRestore.swift      ─ tabs recorded at quit, reopened on launch
+│   ├── QuickOpen.swift           ─ ⌘K switcher items, recency order, fuzzy ranking
 │   ├── GitAction.swift           ─ commit/createPR/pull/rebase/fixCI/fixComments/review/mergePR
 │   ├── GitActionPrompts.swift    ─ default templates + render
 │   ├── GitActionState.swift      ─ in-flight action tracking
@@ -245,6 +247,7 @@ Sources/JetlineApp/
     ├── Shell/TabWindows.swift    ─ native window tabs (one NSWindow per tab), menu-first hotkeys
     ├── Shell/TabToolbar.swift    ─ AppKit toolbar per tab window: title, git, open in, run
     ├── Sidebar/                  ─ repos, workspaces, new/import sheets, repo settings
+    ├── QuickOpen/                ─ ⌘K switcher: floating panel over the main window
     ├── Terminal/TerminalArea     ─ one tab's content (terminal, chat or diff)
     ├── Terminal/NewTabPage       ─ what the tab bar's + opens: pick a chat, terminal or closed chat
     ├── Inspector/                ─ Changes / PR / Run tabs (segmented accessory, Xcode-style)
