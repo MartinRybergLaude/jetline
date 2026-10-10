@@ -606,19 +606,33 @@ final class AppState: ObservableObject {
 
     /// Move a stack (a workspace and everything stacked on it) into `gap`
     /// of the sidebar's stack-grouped order. With grouping off, just the
-    /// workspace moves.
+    /// workspace moves. `gap` counts the rows the sidebar shows, so hidden
+    /// workspaces are left where they are.
     func moveWorkspaceStack(in repoId: String, moving workspaceId: String, toGap gap: Int) {
         guard let host = host(forRepo: repoId),
               let repo = host.repositories.first(where: { $0.id == repoId }),
               let list = host.workspacesByRepo[repoId] else { return }
+        let visible = settings.hideClosedWorkspaces
+            ? Set(list.filter { isShownInSidebar($0.id) }.map(\.id))
+            : nil
         let orderedIds = WorkspaceStacks.reorder(
-            list, moving: workspaceId, toGap: gap, repo: repo, grouped: settings.groupStackedWorkspaces
+            list, moving: workspaceId, toGap: gap, repo: repo, grouped: settings.groupStackedWorkspaces, visible: visible
         )
         guard orderedIds != list.map(\.id) else { return }
         let byId = Dictionary(uniqueKeysWithValues: list.map { ($0.id, $0) })
         host.workspacesByRepo[repoId] = orderedIds.compactMap { byId[$0] }
         rebuildAggregates()
         perform(API.ReorderWorkspaces(repoId: repoId, orderedIds: orderedIds), on: host.connection)
+    }
+
+    /// Whether the sidebar lists the workspace among its repository's rows
+    /// rather than folding it into the hidden ones: always, unless the user
+    /// hides workspaces without open tabs. The selected one stays listed
+    /// while its first tab is still on the way.
+    func isShownInSidebar(_ workspaceId: String) -> Bool {
+        !settings.hideClosedWorkspaces
+            || selectedWorkspaceId == workspaceId
+            || workspaceState(for: workspaceId).hasAgentTabs
     }
 
     /// Git refs for the repo settings sheet.

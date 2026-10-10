@@ -59,6 +59,18 @@ final class WorkspaceStacksTests: XCTestCase {
         XCTAssertEqual(ids, ["d", "b", "c", "a"])
     }
 
+    func testReorderAmongVisibleKeepsHiddenInPlace() {
+        // b is hidden, so c shows as a root: sidebar d, a, c. Moving c to the
+        // top shuffles only the shown rows; b keeps its slot in the list.
+        let ids = WorkspaceStacks.reorder([d, a, b, c], moving: "c", toGap: 0, repo: repo, visible: ["d", "a", "c"])
+        XCTAssertEqual(ids, ["c", "d", "b", "a"])
+    }
+
+    func testReorderAmongVisibleIgnoresAHiddenMovedRow() {
+        let ids = WorkspaceStacks.reorder([d, a, b, c], moving: "b", toGap: 0, repo: repo, visible: ["d", "a"])
+        XCTAssertEqual(ids, ["d", "a", "b", "c"])
+    }
+
     func testLocalStackSummary() throws {
         let all = [a, b, c, d]
         let summary = try XCTUnwrap(StackSummary.build(for: b, in: all, repo: repo) { _ in nil })

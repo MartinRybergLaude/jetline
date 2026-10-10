@@ -19,7 +19,7 @@ action bar that fast-paths the common things and hands the rest to an agent.
 - Git action bar: commit / create PR / pull / rebase / fix CI / fix comments / review / merge ✅
 - Fast-path rebase + pull (no agent token spend on the no-conflict case) ✅
 - Per-repo branch naming controls, setup / run / archive scripts, exclusive run ✅
-- Settings: agents, binary paths, prompt overrides (global + per-repo), theme, terminal font, stack grouping, delete on merge, reopen sessions on launch ✅
+- Settings: agents, binary paths, prompt overrides (global + per-repo), theme, terminal font, stack grouping, delete on merge, reopen sessions on launch, hide closed workspaces ✅
 - Remote machines: repos on Linux boxes (`jetlined`, over ssh) sit in the sidebar next to this Mac's, one group per machine, all live at once ✅
 - File editor, Conductor import ❌ explicitly out of scope
 
@@ -295,6 +295,9 @@ turns both off for a flat list. With "Reopen sessions on launch" on, the
 chats and terminal tabs running at the last quit (recorded in
 `session_restore_tabs`) start again on launch, the first Claude Code tab of
 a workspace with `--continue` when it has a conversation to continue.
+"Hide workspaces without open tabs" lists only open workspaces under each
+repository and folds the rest into an "N hidden" row that unfolds to open
+one.
 
 Per-workspace mutable state (diff snapshots, PR snapshot, sessions, branch
 position, run/setup controllers) lives on `WorkspaceState` instances looked

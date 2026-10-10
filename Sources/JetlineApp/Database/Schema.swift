@@ -405,5 +405,11 @@ enum Schema {
                 t.primaryKey(["workspaceId", "displayOrder"])
             }
         }
+
+        migrator.registerMigration("v29_hide_closed_workspaces") { db in
+            try db.alter(table: "app_settings") { t in
+                t.add(column: "hideClosedWorkspaces", .boolean).notNull().defaults(to: false)
+            }
+        }
     }
 }

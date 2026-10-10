@@ -73,8 +73,25 @@ enum WorkspaceStacks {
     /// The full list order after moving the stack rooted at `movedId` into
     /// sidebar gap `gap` (`onMove`'s "insert before" convention; the
     /// sidebar only offers gaps between stacks), each stack kept whole.
-    /// Ungrouped, every workspace is its own stack.
-    static func reorder(_ workspaces: [Workspace], moving movedId: String, toGap gap: Int, repo: Repository, grouped: Bool = true) -> [String] {
+    /// Ungrouped, every workspace is its own stack. With `visible` (the
+    /// sidebar hides workspaces without open tabs), the gap counts shown
+    /// rows only; the shown workspaces reorder among the list slots they
+    /// hold and hidden ones keep theirs.
+    static func reorder(
+        _ workspaces: [Workspace],
+        moving movedId: String,
+        toGap gap: Int,
+        repo: Repository,
+        grouped: Bool = true,
+        visible: Set<String>? = nil
+    ) -> [String] {
+        guard let visible else { return reorderAll(workspaces, moving: movedId, toGap: gap, repo: repo, grouped: grouped) }
+        let shown = workspaces.filter { visible.contains($0.id) }
+        var reordered = reorderAll(shown, moving: movedId, toGap: gap, repo: repo, grouped: grouped).makeIterator()
+        return workspaces.map { visible.contains($0.id) ? reordered.next() ?? $0.id : $0.id }
+    }
+
+    private static func reorderAll(_ workspaces: [Workspace], moving movedId: String, toGap gap: Int, repo: Repository, grouped: Bool) -> [String] {
         var groups: [[String]] = []
         for (ws, depth) in sidebarOrder(workspaces, repo: repo, grouped: grouped) {
             if depth == 0 || groups.isEmpty { groups.append([ws.id]) } else { groups[groups.count - 1].append(ws.id) }

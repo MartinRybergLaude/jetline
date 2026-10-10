@@ -16,6 +16,8 @@ struct RepositorySection: View {
     var groupHeader: AnyView? = nil
 
     @State private var expanded: Bool = true
+    /// The hidden workspaces (no open tabs) are unfolded under the rest.
+    @State private var showingHidden = false
     @State private var hovering = false
     @State private var rowHeight: CGFloat = 30
     @GestureState private var rowDrag: RowDrag?
@@ -30,9 +32,22 @@ struct RepositorySection: View {
 
     private var workspaces: [Workspace] { state.workspacesByRepo[repo.id] ?? [] }
     /// Rows as shown: each stack's layers under the workspace they sit on,
-    /// or the plain list when stack grouping is off.
+    /// or the plain list when stack grouping is off. A layer whose base is
+    /// hidden shows as a root.
     private var rows: [(workspace: Workspace, depth: Int)] {
-        WorkspaceStacks.sidebarOrder(workspaces, repo: repo, grouped: state.settings.groupStackedWorkspaces)
+        WorkspaceStacks.sidebarOrder(
+            workspaces.filter { state.isShownInSidebar($0.id) },
+            repo: repo,
+            grouped: state.settings.groupStackedWorkspaces
+        )
+    }
+    /// Workspaces without open tabs, when the user hides those.
+    private var hiddenRows: [(workspace: Workspace, depth: Int)] {
+        WorkspaceStacks.sidebarOrder(
+            workspaces.filter { !state.isShownInSidebar($0.id) },
+            repo: repo,
+            grouped: state.settings.groupStackedWorkspaces
+        )
     }
     private var hasWorkspaces: Bool { !workspaces.isEmpty }
     private var baseWorkspaceId: String { state.repositoryBaseWorkspaceId(for: repo) }
@@ -78,9 +93,21 @@ struct RepositorySection: View {
                         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
                             rowHeight = $0
                         }
-                        .listRowBackground(Color.clear)
-                        .listRowInsets(EdgeInsets(top: 1, leading: -8, bottom: 1, trailing: -8))
-                        .listRowSeparator(.hidden)
+                        .sidebarRowPlacement()
+                }
+                let hiddenRows = self.hiddenRows
+                if !hiddenRows.isEmpty {
+                    hiddenToggle(count: hiddenRows.count)
+                        .sidebarRowPlacement()
+                    if showingHidden {
+                        ForEach(hiddenRows, id: \.workspace.id) { row in
+                            let ws = row.workspace
+                            WorkspaceRow(workspace: ws, depth: row.depth) { onNewWorkspace(ws.id) }
+                                .contentShape(Rectangle())
+                                .onTapGesture { state.selectWorkspace(ws.id) }
+                                .sidebarRowPlacement()
+                        }
+                    }
                 }
             }
         } header: {
@@ -91,6 +118,31 @@ struct RepositorySection: View {
                 repositoryHeader
             }
         }
+    }
+
+    /// "3 hidden": folds the workspaces without open tabs in and out.
+    /// Selecting one opens it, which lists it with the rest.
+    private func hiddenToggle(count: Int) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.15)) { showingHidden.toggle() }
+        } label: {
+            HStack(spacing: SidebarMetrics.labelGap) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .bold))
+                    .rotationEffect(.degrees(showingHidden ? 90 : 0))
+                    .frame(width: SidebarMetrics.iconColumn)
+                Text("\(count) hidden")
+                    .font(.callout)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(.secondary)
+            .padding(.leading, SidebarMetrics.iconLeading)
+            .padding(.trailing, 8)
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(showingHidden ? "Hide workspaces without open tabs" : "Show workspaces without open tabs")
     }
 
     private var repositoryHeader: some View {
@@ -266,6 +318,15 @@ struct RepositorySection: View {
             .fill(Color.accentColor)
             .frame(height: 2)
             .padding(.horizontal, 6)
+    }
+}
+
+private extension View {
+    /// List-row chrome shared by every row under a repository header.
+    func sidebarRowPlacement() -> some View {
+        listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets(top: 1, leading: -8, bottom: 1, trailing: -8))
+            .listRowSeparator(.hidden)
     }
 }
 #endif
