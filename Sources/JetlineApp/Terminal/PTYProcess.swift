@@ -297,8 +297,9 @@ final class PTYProcess: @unchecked Sendable {
         } else if DispatchTime.now() >= deadline {
             Self.settleTermination(of: Array(remaining), on: queue, forceKillAfter: .now(), completion: finish)
         } else {
+            let groups = signalled
             queue.asyncAfter(deadline: .now() + Self.terminationPollInterval) {
-                self.awaitGracefulStop(signalled: signalled, signal: signal, deadline: deadline, completion: completion)
+                self.awaitGracefulStop(signalled: groups, signal: signal, deadline: deadline, completion: completion)
             }
         }
     }
