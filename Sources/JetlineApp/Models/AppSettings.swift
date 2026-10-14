@@ -35,7 +35,7 @@ struct AppSettings: Codable, Equatable, Sendable, FetchableRecord, PersistableRe
 
     /// How Claude Code and Codex tabs open: their own TUI in a terminal, or
     /// Jetline's native chat UI driving the CLI's machine protocol.
-    var agentInterface: AgentInterface = .terminal
+    var agentInterface: AgentInterface = .chat
     /// Permission mode new chats start in.
     var chatRuntimeMode: AgentRuntimeMode = .supervised
     /// Font family for chat text. `nil` → the system font.

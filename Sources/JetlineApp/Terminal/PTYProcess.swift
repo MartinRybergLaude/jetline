@@ -31,6 +31,11 @@ final class PTYProcess: @unchecked Sendable {
 
     private var masterFd: Int32 = -1
     private var childPid: pid_t = 0
+    /// A graceful stop is waiting for the signalled groups to finish
+    /// cleaning up. The master stays open and read meanwhile, even after
+    /// the child exits: closing it would SIGHUP them mid-cleanup, and an
+    /// unread master blocks them once the tty buffer fills. On `queue`.
+    private var draining = false
     private var readSource: DispatchSourceRead?
     private var procSource: ProcessExitSource?
     private let queue = DispatchQueue(label: "PTYProcess.io", qos: .userInitiated)
@@ -205,6 +210,7 @@ final class PTYProcess: @unchecked Sendable {
     /// a peer — have to wait for this, not for the exit.
     func terminate(completion: (@Sendable () -> Void)? = nil) {
         queue.async {
+            self.draining = false
             let groups = self.signalTargets()
             for group in groups {
                 _ = kill(-group, SIGHUP)
@@ -219,6 +225,81 @@ final class PTYProcess: @unchecked Sendable {
             self.procSource = nil
             self.readSource?.cancel()
             self.readSource = nil
+        }
+    }
+
+    /// Stop the way ⌃C in a terminal would: `signal` to the child's and the
+    /// foreground process groups, then wait for them to exit on their own —
+    /// a script's exit trap tearing down containers can take a while — and
+    /// SIGKILL whatever is left after `grace`. `terminate` cuts it short.
+    /// `completion` fires once the groups are gone, off the io queue.
+    func stopGracefully(
+        signal: Int32 = SIGINT,
+        grace: DispatchTimeInterval,
+        completion: (@Sendable () -> Void)? = nil
+    ) {
+        queue.async {
+            let groups = self.signalTargets()
+            guard !groups.isEmpty, self.masterFd >= 0 else {
+                completion?()
+                return
+            }
+            self.draining = true
+            for group in groups {
+                _ = kill(-group, signal)
+            }
+            self.awaitGracefulStop(
+                signalled: Set(groups),
+                signal: signal,
+                deadline: .now() + grace,
+                completion: completion
+            )
+        }
+    }
+
+    /// Poll until the signalled groups are gone. A job that takes the
+    /// foreground meanwhile gets the signal too: one sent between two
+    /// commands of the shell's list reaches only the shell, and the next
+    /// command starts as if nothing happened. On `queue`.
+    private func awaitGracefulStop(
+        signalled: Set<pid_t>,
+        signal: Int32,
+        deadline: DispatchTime,
+        completion: (@Sendable () -> Void)?
+    ) {
+        // `terminate` took over.
+        guard draining else {
+            completion?()
+            return
+        }
+        var signalled = signalled
+        if masterFd >= 0 {
+            let foreground = tcgetpgrp(masterFd)
+            if foreground > 0, signalled.insert(foreground).inserted {
+                _ = kill(-foreground, signal)
+            }
+        }
+        let remaining = signalled.filter { kill(-$0, 0) == 0 }
+        let finish: @Sendable () -> Void = {
+            self.queue.async {
+                if self.draining {
+                    self.draining = false
+                    self.procSource?.cancel()
+                    self.procSource = nil
+                    self.readSource?.cancel()
+                    self.readSource = nil
+                }
+                completion?()
+            }
+        }
+        if remaining.isEmpty {
+            finish()
+        } else if DispatchTime.now() >= deadline {
+            Self.settleTermination(of: Array(remaining), on: queue, forceKillAfter: .now(), completion: finish)
+        } else {
+            queue.asyncAfter(deadline: .now() + Self.terminationPollInterval) {
+                self.awaitGracefulStop(signalled: signalled, signal: signal, deadline: deadline, completion: completion)
+            }
         }
     }
 
@@ -327,7 +408,13 @@ final class PTYProcess: @unchecked Sendable {
             self.procSource?.cancel()
             self.procSource = nil
             self.drainOutput()
-            self.readSource?.cancel()
+            if self.draining {
+                // Report the exit, but keep the master for the groups
+                // still cleaning up (see `draining`).
+                if let code = self.collectExitStatus() { self.exitHandler(code) }
+            } else {
+                self.readSource?.cancel()
+            }
         }
     }
 
@@ -365,7 +452,17 @@ final class PTYProcess: @unchecked Sendable {
     }
 
     private func reapChildIfNeeded() {
-        if hasReportedExit { return }
+        let code = collectExitStatus()
+        if masterFd >= 0 {
+            close(masterFd)
+            masterFd = -1
+        }
+        if let code { exitHandler(code) }
+    }
+
+    /// The child's exit status, the first time it's asked for; nil after.
+    private func collectExitStatus() -> Int32? {
+        if hasReportedExit { return nil }
         hasReportedExit = true
 
         procSource?.cancel()
@@ -373,10 +470,7 @@ final class PTYProcess: @unchecked Sendable {
 
         var status: Int32 = 0
         let pid = childPid
-        guard pid > 0 else {
-            exitHandler(0)
-            return
-        }
+        guard pid > 0 else { return 0 }
 
         // Poll with WNOHANG so a child that hasn't fully exited (rare —
         // master EOF usually means the kernel already collected it) can't
@@ -410,13 +504,7 @@ final class PTYProcess: @unchecked Sendable {
         } else {
             exitCode = 0
         }
-
-        if masterFd >= 0 {
-            close(masterFd)
-            masterFd = -1
-        }
-
-        exitHandler(exitCode)
+        return exitCode
     }
 
     var pid: pid_t { childPid }

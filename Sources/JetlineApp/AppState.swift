@@ -535,17 +535,13 @@ final class AppState: ObservableObject {
         // Detach from the incubator (or whichever container hosts it) so the
         // libghostty allocations don't outlive the tab.
         session.emulator.nsView.removeFromSuperview()
-        if let next = ws.removeTab(.session(session.id)) {
-            selectTab(next, in: ws.id)
-        }
+        showNeighbour(ws.removeTab(.session(session.id)), in: ws.id)
     }
 
     private func dropChat(_ chat: ChatSession, from ws: WorkspaceState) {
         ws.chats.removeAll { $0 === chat }
         chat.unsubscribe()
-        if let next = ws.removeTab(.chat(chat.id)) {
-            selectTab(next, in: ws.id)
-        }
+        showNeighbour(ws.removeTab(.chat(chat.id)), in: ws.id)
     }
 
     // MARK: - Repositories
@@ -970,8 +966,7 @@ final class AppState: ObservableObject {
         ws.activeChat?.connectIfNeeded()
     }
 
-    /// Close a chat tab. Like closing a session, closing the last agent tab
-    /// closes the workspace.
+    /// Close a chat tab, handing the strip over to its neighbour.
     func closeChat(_ chatId: String, in workspaceId: String) {
         let connection = self.connection(forWorkspace: workspaceId)
         guard requireConnection(connection) else { return }
@@ -982,11 +977,7 @@ final class AppState: ObservableObject {
         let next = ws.removeTab(.chat(chatId))
         chat.unsubscribe()
         perform(API.CloseChat(chatId: chatId), on: connection)
-        if !ws.hasAgentTabs {
-            closeWorkspace(workspaceId)
-        } else if let next {
-            selectTab(next, in: workspaceId)
-        }
+        showNeighbour(next, in: workspaceId)
     }
 
     /// Continue a chat in the agent's own TUI.
@@ -1060,9 +1051,7 @@ final class AppState: ObservableObject {
         let ws = workspaceState(for: workspaceId)
         guard let idx = ws.diffTabs.firstIndex(where: { $0.id == tabId }) else { return }
         ws.diffTabs.remove(at: idx)
-        if let next = ws.removeTab(.diff(tabId)) {
-            selectTab(next, in: workspaceId)
-        }
+        showNeighbour(ws.removeTab(.diff(tabId)), in: workspaceId)
     }
 
     /// The full-file diff for a diff tab.
@@ -1217,7 +1206,7 @@ final class AppState: ObservableObject {
         let chats = states.flatMap(\.chats).filter { $0.activity == .working || $0.activity == .needsInput }.count
         let terminals = states.flatMap(\.terminals).filter(\.isRunning).count
         let scripts = states.flatMap { [$0.setup, $0.run].compactMap { $0 } }
-            .filter { [.queued, .starting, .running].contains($0.phase) }.count
+            .filter { [.queued, .starting, .running, .stopping].contains($0.phase) }.count
         func count(_ n: Int, _ noun: String) -> String? {
             n == 0 ? nil : "\(n) \(noun)\(n == 1 ? "" : "s")"
         }
@@ -1231,7 +1220,7 @@ final class AppState: ObservableObject {
     }
 
     /// Close one session tab, handing the strip over to its neighbour when it
-    /// was showing. Closing the last session closes the workspace.
+    /// was showing.
     func closeSession(_ sessionId: String, in workspaceId: String) {
         guard requireConnection(connection(forWorkspace: workspaceId)) else { return }
         let ws = workspaceState(for: workspaceId)
@@ -1241,10 +1230,17 @@ final class AppState: ObservableObject {
         let next = ws.removeTab(.session(sessionId))
         session.terminate()
         session.emulator.nsView.removeFromSuperview()
-        if !ws.hasAgentTabs {
-            closeWorkspace(workspaceId)
-        } else if let next {
+        showNeighbour(next, in: workspaceId)
+    }
+
+    /// After closing a tab: show its neighbour, or a new-tab page when the
+    /// strip is empty. The workspace stays selected and its runtime (run
+    /// script, watcher) keeps going.
+    private func showNeighbour(_ next: TabRef?, in workspaceId: String) {
+        if let next {
             selectTab(next, in: workspaceId)
+        } else if workspaceState(for: workspaceId).tabOrder.isEmpty {
+            openLauncherTab(in: workspaceId)
         }
     }
 

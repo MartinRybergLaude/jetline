@@ -95,6 +95,11 @@ final class EngineTerminal: Identifiable {
 
     @ObservationIgnored let buffer = TerminalBuffer()
     @ObservationIgnored private var pty: PTYProcess?
+    /// The process a graceful stop is still waiting on; `pty` is cleared
+    /// when the child exits, before the processes it started are gone.
+    @ObservationIgnored private var stoppingPty: PTYProcess?
+    /// Called with the child's pid once it is spawned.
+    @ObservationIgnored var onSpawn: ((pid_t) -> Void)?
     @ObservationIgnored private var size: TerminalSize?
     @ObservationIgnored private var spawnTask: Task<Void, Never>?
     @ObservationIgnored private var spawnRequested = false
@@ -211,10 +216,31 @@ final class EngineTerminal: Identifiable {
             // Never spawned, or still resolving its command: settle it so
             // waiters don't hang (the spawn sees `terminated` and stands down).
             if exitCode == nil { markExited(0) }
-            completion?()
+            stoppingPty?.terminate(completion: completion)
+            if stoppingPty == nil { completion?() }
             return
         }
         pty.terminate(completion: completion)
+    }
+
+    /// Stop like ⌃C, giving the processes `grace` to clean up (see
+    /// `PTYProcess.stopGracefully`). `terminate` forces it meanwhile.
+    func stopGracefully(grace: DispatchTimeInterval, completion: (@Sendable () -> Void)? = nil) {
+        guard let pty else {
+            terminate(completion: completion)
+            return
+        }
+        stoppingPty = pty
+        pty.stopGracefully(grace: grace) {
+            Task { @MainActor [weak self] in self?.stoppingPty = nil }
+            completion?()
+        }
+    }
+
+    /// Append a line of Jetline's own to the transcript.
+    func note(_ text: String) {
+        let line = "\r\n\u{1B}[2m" + text.replacingOccurrences(of: "\n", with: "\r\n") + "\u{1B}[0m\r\n"
+        buffer.publish(Data(line.utf8))
     }
 
     /// Output as plain text, for "copy output".
@@ -287,6 +313,7 @@ final class EngineTerminal: Identifiable {
         do {
             try pty.start()
             self.pty = pty
+            onSpawn?(pty.pid)
             if let current = self.size, current != size {
                 pty.resize(cols: current.cols, rows: current.rows, widthPx: current.widthPx, heightPx: current.heightPx)
             }

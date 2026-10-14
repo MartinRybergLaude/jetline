@@ -194,7 +194,7 @@ private struct RunOutputContent: View {
     /// owns the port, so a green "Running" would be a lie.
     private var isLive: Bool {
         switch controller.phase {
-        case .idle, .queued: return false
+        case .idle, .queued, .stopping: return false
         case .starting, .running: return true
         }
     }
@@ -202,6 +202,7 @@ private struct RunOutputContent: View {
     private var statusLabel: String {
         switch controller.phase {
         case .queued: return "Waiting"
+        case .stopping: return "Stopping"
         case .starting, .running: return "Running"
         case .idle:
             if let status = controller.exitStatus { return "Exited (\(status))" }

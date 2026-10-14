@@ -388,5 +388,16 @@ enum Schema {
                 t.add(column: "note", .text)
             }
         }
+
+        migrator.registerMigration("v28_stop_script") { db in
+            try db.alter(table: "repositories") { t in
+                t.add(column: "stopScript", .text)
+            }
+        }
+
+        // Chat became the default interface; move everyone over once.
+        migrator.registerMigration("v29_chat_default") { db in
+            try db.execute(sql: "UPDATE app_settings SET agentInterface = 'chat'")
+        }
     }
 }

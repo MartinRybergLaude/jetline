@@ -15,6 +15,8 @@ final class RunController: ObservableObject, Identifiable {
         case queued
         case starting
         case running
+        /// Stopped; cleaning up after the run before it can start again.
+        case stopping
     }
 
     let id = UUID().uuidString
@@ -44,6 +46,7 @@ final class RunController: ObservableObject, Identifiable {
         case .queued: phase = .queued
         case .starting: phase = .starting
         case .running: phase = .running
+        case .stopping: phase = .stopping
         }
         if self.phase != phase { self.phase = phase }
         if exitStatus != info.exitStatus { exitStatus = info.exitStatus }

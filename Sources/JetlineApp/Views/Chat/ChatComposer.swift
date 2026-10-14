@@ -158,7 +158,7 @@ struct ChatComposer: View {
 
     private var placeholder: String {
         if session.isWorking {
-            return session.provider == .codex ? "Steer the agent…" : "Queue a follow-up…"
+            return "Steer the agent…"
         }
         return "Ask \(session.provider.displayName)…"
     }

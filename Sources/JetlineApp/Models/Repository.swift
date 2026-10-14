@@ -48,6 +48,10 @@ struct Repository: Codable, Identifiable, Hashable, Sendable, FetchableRecord, P
     var addUniqueBranchSuffix: Bool = true
     var setupScript: String?
     var runScript: String?
+    /// Cleans up what the run script leaves behind that Jetline can't stop
+    /// itself (`docker compose down`). Runs after Stop, and before a run
+    /// when the previous one ended on its own.
+    var stopScript: String?
     /// When true, starting a run stops every other active runner in the same repo.
     var runExclusive: Bool = false
 
@@ -71,6 +75,7 @@ struct Repository: Codable, Identifiable, Hashable, Sendable, FetchableRecord, P
     /// blank so callers can use `if let` instead of repeated trim+isEmpty.
     var trimmedSetupScript: String? { setupScript?.nonBlank }
     var trimmedRunScript: String? { runScript?.nonBlank }
+    var trimmedStopScript: String? { stopScript?.nonBlank }
 
     /// Resolved worktree folder — falls back to the legacy UUID id when
     /// `folderName` is unset so path construction never breaks.
@@ -112,6 +117,7 @@ struct Repository: Codable, Identifiable, Hashable, Sendable, FetchableRecord, P
         static let addUniqueBranchSuffix = Column(CodingKeys.addUniqueBranchSuffix)
         static let setupScript = Column(CodingKeys.setupScript)
         static let runScript = Column(CodingKeys.runScript)
+        static let stopScript = Column(CodingKeys.stopScript)
         static let runExclusive = Column(CodingKeys.runExclusive)
         static let lastMergeMethod = Column(CodingKeys.lastMergeMethod)
         static let commitPrompt = Column(CodingKeys.commitPrompt)

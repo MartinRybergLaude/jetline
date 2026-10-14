@@ -183,6 +183,15 @@ struct RepositorySettingsSheet: View {
                     set: { draft.runScript = $0.isEmpty ? nil : $0 }
                 )
             )
+            scriptEditor(
+                title: "Stop script",
+                help: "Runs after Stop, and before the next run if the last one ended on its own. Processes the run started are stopped automatically, even detached ones; use this for what lives elsewhere, like Docker containers.",
+                placeholder: "docker compose down",
+                text: Binding(
+                    get: { draft.stopScript ?? "" },
+                    set: { draft.stopScript = $0.isEmpty ? nil : $0 }
+                )
+            )
             describedRow(
                 title: "Exclusive run",
                 description: "Only one workspace in this repo can run at a time. Starting another stops the previous run."

@@ -18,9 +18,9 @@ actor ClaudeProvider: AgentProvider {
     nonisolated let kind: AgentProviderKind = .claude
     nonisolated let capabilities = AgentCapabilities(
         liveModelSwitch: true,
-        // Messages sent mid-turn are queued by the CLI and answered as
-        // separate turns, not folded into the running one.
-        steering: false,
+        // Messages sent mid-turn are folded into the running turn at the
+        // next tool boundary; one that misses it gets a turn of its own.
+        steering: true,
         conversationRevert: true,
         remoteControl: true
     )
@@ -259,7 +259,12 @@ actor ClaudeProvider: AgentProvider {
     /// person wrote came in over Remote Control and starts a turn of its own.
     private func handleReplay(_ message: JSONValue) {
         let uuid = message["uuid"]?.string
-        if let uuid, sentMessageIds.remove(uuid) != nil { return }
+        if let uuid, sentMessageIds.remove(uuid) != nil {
+            // A steer that missed its turn: the CLI answers it in a new one.
+            openSyntheticTurnIfNeeded(for: message)
+            recordAnchor(message, turnId: activeTurnId)
+            return
+        }
         guard message["parent_tool_use_id"]?.string == nil,
               message["isSynthetic"]?.bool != true,
               Self.isFromAPerson(message) else { return }
@@ -509,6 +514,10 @@ actor ClaudeProvider: AgentProvider {
     // MARK: - Turns
 
     func send(_ input: AgentTurnInput) async throws {
+        if let turnId = activeTurnId, let process, !needsRespawn {
+            try await steer(input, turnId: turnId, process: process)
+            return
+        }
         startingTurn = true
         defer {
             startingTurn = false
@@ -547,27 +556,42 @@ actor ClaudeProvider: AgentProvider {
             content: .userMessage(.init(text: input.text, images: input.images.map(\.path)))
         )))
 
-        // Images first, text last: the CLI only recognises a slash command
-        // when the final content block is text.
-        var content: [JSONValue] = input.images.compactMap(Self.imageBlock)
-        content.append(["type": "text", "text": .string(input.text)])
-        let messageId = UUID().uuidString.lowercased()
-        sentMessageIds.insert(messageId)
-        let message: JSONValue = [
-            "type": "user",
-            "uuid": .string(messageId),
-            "session_id": "",
-            "message": ["role": "user", "content": .array(content)],
-            "parent_tool_use_id": nil
-        ]
         do {
-            try await process.send(message)
+            try await process.send(userMessage(input))
         } catch {
             activeTurnId = nil
             mapper.turnId = nil
             continuation.yield(.turnCompleted(id: turnId, .failed(message: "Couldn't reach Claude.")))
             throw error
         }
+    }
+
+    /// Hand a message to the running turn. The CLI reads it at the next
+    /// tool boundary, or answers it in a turn of its own once this one ends.
+    private func steer(_ input: AgentTurnInput, turnId: String, process: JSONLineProcess) async throws {
+        continuation.yield(.item(AgentItem(
+            id: "user-\(UUID().uuidString.lowercased())",
+            turnId: turnId,
+            status: .completed,
+            content: .userMessage(.init(text: input.text, images: input.images.map(\.path)))
+        )))
+        try await process.send(userMessage(input))
+    }
+
+    private func userMessage(_ input: AgentTurnInput) -> JSONValue {
+        // Images first, text last: the CLI only recognises a slash command
+        // when the final content block is text.
+        var content: [JSONValue] = input.images.compactMap(Self.imageBlock)
+        content.append(["type": "text", "text": .string(input.text)])
+        let messageId = UUID().uuidString.lowercased()
+        sentMessageIds.insert(messageId)
+        return [
+            "type": "user",
+            "uuid": .string(messageId),
+            "session_id": "",
+            "message": ["role": "user", "content": .array(content)],
+            "parent_tool_use_id": nil
+        ]
     }
 
     func interrupt() async {

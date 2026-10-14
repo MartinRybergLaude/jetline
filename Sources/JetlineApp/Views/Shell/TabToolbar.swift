@@ -228,7 +228,7 @@ final class TabToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
                 .store(in: &controllerCancellables)
         }
         switch phase {
-        case .queued, .starting: startPulse()
+        case .queued, .starting, .stopping: startPulse()
         case .idle, .running: stopPulse()
         }
         run.image = RunImage.image(phase: phase, dimmed: pulseDim)
@@ -237,6 +237,7 @@ final class TabToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
         case .queued: "Waiting for the other run to stop… click to cancel"
         case .starting: "Starting… click to stop"
         case .running: "Running — click to stop"
+        case .stopping: "Stopping and cleaning up…"
         }
     }
 
@@ -493,7 +494,7 @@ private enum RunImage {
         ) else { return nil }
         let dot: NSColor? = switch phase {
         case .idle: nil
-        case .queued, .starting: NSColor.systemYellow.withAlphaComponent(dimmed ? 0.35 : 1)
+        case .queued, .starting, .stopping: NSColor.systemYellow.withAlphaComponent(dimmed ? 0.35 : 1)
         case .running: .readableGreen
         }
         guard let dot else {

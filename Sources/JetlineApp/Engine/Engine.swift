@@ -729,6 +729,10 @@ final class Engine {
                 }
             }
         }
+        // Note what runs started before their shells go: a detached
+        // process loses its link to the run once its parent exits.
+        let trackers = workspaceStates.values.compactMap { $0.run?.tracker }
+        for tracker in trackers { await tracker.refresh() }
         // Terminals: wait (briefly) until their process groups are really
         // gone — the SIGHUP / SIGKILL escalation runs on their io queues and
         // wouldn't happen at all if the process exited first.
@@ -745,6 +749,14 @@ final class Engine {
         let deadline = ContinuousClock.now + .seconds(4)
         while remaining.value > 0, ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(50))
+        }
+        // What runs left detached from their process groups. Stop scripts
+        // wait for the next run: they can take a while, and the first run
+        // after launch runs it anyway.
+        await withTaskGroup(of: Void.self) { group in
+            for tracker in trackers {
+                group.addTask { await tracker.terminateAll(grace: .seconds(1)) }
+            }
         }
     }
 
@@ -1023,11 +1035,12 @@ final class Engine {
         ws.isOpen = true
         let cwd = workspace.worktreePath
         let env = ScriptRunner.defaultEnv(repoPath: repo.path)
+        let stopScript = repo.trimmedStopScript
         guard !peers.isEmpty else {
-            runner.start(script: script, cwd: cwd, env: env)
+            runner.startRun(script: script, stopScript: stopScript, cwd: cwd, env: env)
             return
         }
-        runner.start(script: script, cwd: cwd, env: env) {
+        runner.startRun(script: script, stopScript: stopScript, cwd: cwd, env: env) {
             await withTaskGroup(of: Void.self) { group in
                 for peer in peers {
                     group.addTask { await peer.stopAndWait() }

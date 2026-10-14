@@ -155,6 +155,9 @@ struct ChatSummary: Codable, Sendable, Equatable, Identifiable {
 struct ScriptRunInfo: Codable, Sendable, Equatable {
     enum Phase: String, Codable, Sendable {
         case idle, queued, starting, running, finished
+        /// Run only: stopped, cleaning up (detached processes, the stop
+        /// script) before it can start again.
+        case stopping
     }
     var phase: Phase
     var exitStatus: Int32?
