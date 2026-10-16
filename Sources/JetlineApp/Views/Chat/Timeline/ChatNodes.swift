@@ -781,21 +781,38 @@ final class ThumbNode: ChatNode {
         self.maxSide = maxSide
     }
 
-    private static let cache = NSCache<NSString, NSImage>()
+    /// Downsampled thumbnails, costed by decoded bytes. Full-size screenshots
+    /// decode to tens of MB each; Quick Look reads the original from disk.
+    private static let cache: NSCache<NSString, CGImage> = {
+        let cache = NSCache<NSString, CGImage>()
+        cache.totalCostLimit = 64 << 20
+        return cache
+    }()
 
-    private var image: NSImage? {
-        if let hit = Self.cache.object(forKey: path as NSString) { return hit }
-        guard let image = NSImage(contentsOfFile: EngineFiles.localPath(for: path)) else { return nil }
-        Self.cache.setObject(image, forKey: path as NSString)
+    private var image: CGImage? {
+        let key = "\(path)@\(maxSide)" as NSString
+        if let hit = Self.cache.object(forKey: key) { return hit }
+        let url = URL(fileURLWithPath: EngineFiles.localPath(for: path))
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceCreateThumbnailWithTransform: true,
+                  kCGImageSourceShouldCacheImmediately: true,
+                  // Retina-sharp at the largest size the node draws.
+                  kCGImageSourceThumbnailMaxPixelSize: Int(maxSide * 2)
+              ] as CFDictionary)
+        else { return nil }
+        Self.cache.setObject(image, forKey: key, cost: image.bytesPerRow * image.height)
         return image
     }
 
     override func measure(_ width: CGFloat) -> CGSize {
         let limit = min(maxSide, width)
-        guard let image, image.size.width > 0, image.size.height > 0 else { return CGSize(width: limit, height: limit) }
-        let scale = limit / max(image.size.width, image.size.height)
+        guard let image, image.width > 0, image.height > 0 else { return CGSize(width: limit, height: limit) }
+        let w = CGFloat(image.width), h = CGFloat(image.height)
+        let scale = limit / max(w, h)
         // Very thin images still get a clickable frame.
-        return CGSize(width: max(48, (image.size.width * scale).rounded()), height: max(48, (image.size.height * scale).rounded()))
+        return CGSize(width: max(48, (w * scale).rounded()), height: max(48, (h * scale).rounded()))
     }
 
     override var viewType: NSView.Type { ChatThumbView.self }

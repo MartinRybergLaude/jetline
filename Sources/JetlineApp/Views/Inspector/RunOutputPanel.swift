@@ -277,7 +277,11 @@ private struct RunTerminalHost: NSViewRepresentable {
         // Hand the emulator back to the incubator so its surface keeps
         // receiving PTY output even though the panel is gone. The emulator
         // outlives this host — RunController/SetupController owns it.
-        if let emulator = coordinator.emulator as? TerminalEmulatorView {
+        // Only while the terminal is still ours: a discarded run/setup
+        // already detached its view, and parking it would keep the whole
+        // surface alive in the incubator for good.
+        if let emulator = coordinator.emulator as? TerminalEmulatorView,
+           emulator.nsView.isDescendant(of: nsView) {
             MainActor.assumeIsolated {
                 emulator.setActive(false)
                 TerminalIncubator.park(emulator.nsView)

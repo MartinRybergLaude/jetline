@@ -1347,12 +1347,15 @@ final class AppState: ObservableObject {
     }
 
     /// Close a workspace's live runtime — sessions, chats, run/setup —
-    /// while keeping its sidebar entry and cached diff/PR state.
+    /// while keeping its sidebar entry, PR state and a hunk-less diff
+    /// summary (the engine strips its copy the same way).
     func closeWorkspace(_ id: String) {
         let connection = self.connection(forWorkspace: id)
         guard requireConnection(connection) else { return }
         if let ws = workspaceStates[id] {
             tearDownLocalRuntime(ws)
+            ws.diff = ws.diff?.withoutHunks
+            ws.localDiff = ws.localDiff?.withoutHunks
         }
         perform(API.CloseWorkspace(workspaceId: id), on: connection)
         reassignSelection(afterClosing: id)

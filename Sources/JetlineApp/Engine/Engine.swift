@@ -1101,8 +1101,16 @@ final class Engine {
         async let uncommitted = DiffComputer.hasUncommittedChanges(worktreePath: workspace.worktreePath)
 
         let ws = workspaceState(for: workspace.id)
-        if let snap = await combined, ws.diff != snap { ws.diff = snap }
-        if let snap = await localSnap, ws.localDiff != snap { ws.localDiff = snap }
+        // A closed workspace (git action, base retarget, refresh racing the
+        // close) keeps only the summary; activation recomputes the hunks.
+        if var snap = await combined {
+            if !ws.isOpen { snap = snap.withoutHunks }
+            if ws.diff != snap { ws.diff = snap }
+        }
+        if var snap = await localSnap {
+            if !ws.isOpen { snap = snap.withoutHunks }
+            if ws.localDiff != snap { ws.localDiff = snap }
+        }
         let dirty = await uncommitted
         if ws.hasUncommitted != dirty { ws.hasUncommitted = dirty }
     }
@@ -1285,7 +1293,9 @@ final class Engine {
     }
 
     /// Stop a workspace's live runtime — sessions, watcher, run/setup —
-    /// while keeping its sidebar entry and cached diff/PR state.
+    /// while keeping its sidebar entry, PR state and a hunk-less diff
+    /// summary. Full diffs of heavy worktrees otherwise stay resident (on
+    /// both engine and client) for every workspace ever opened.
     func closeWorkspace(_ id: String) {
         watchers[id]?.stop()
         watchers.removeValue(forKey: id)
@@ -1329,6 +1339,8 @@ final class Engine {
         ws.run?.discard()
         ws.run = nil
         ws.isOpen = false
+        ws.diff = ws.diff?.withoutHunks
+        ws.localDiff = ws.localDiff?.withoutHunks
     }
 
     private func worktreeExists(for workspace: Workspace) -> Bool {

@@ -9,6 +9,14 @@ struct DiffSnapshot: Equatable, Codable, Sendable {
     static let empty = DiffSnapshot(files: [], totalAdditions: 0, totalDeletions: 0)
 
     var isEmpty: Bool { files.isEmpty }
+
+    /// Paths and counts without hunk lines — what a closed workspace keeps
+    /// for the sidebar and toolbar until activation recomputes the full diff.
+    var withoutHunks: DiffSnapshot {
+        var copy = self
+        for i in copy.files.indices { copy.files[i].hunks = [] }
+        return copy
+    }
 }
 
 struct FileDiff: Identifiable, Equatable, Codable, Sendable {
@@ -237,10 +245,13 @@ enum DiffComputer {
         // ForEach.
         if let untracked = try? await untrackedTask, untracked.success {
             let trackedPaths = Set(files.map(\.path))
+            // Shared across the listing: an untracked build or fixture dump
+            // would otherwise materialize every file as hunk lines.
+            var budget = maxUntrackedSnapshotBytes
             for sub in untracked.stdout.split(separator: "\0") {
                 let path = String(sub)
                 guard !trackedPaths.contains(path),
-                      let file = untrackedFileDiff(path: path, worktreePath: worktreePath)
+                      let file = untrackedFileDiff(path: path, worktreePath: worktreePath, budget: &budget)
                 else { continue }
                 totalAdds += file.additions
                 files.append(file)
@@ -257,6 +268,13 @@ enum DiffComputer {
     /// the whole listing instead of a `git diff --no-index /dev/null <path>`
     /// per file. Returns nil when the file vanished between listing and read.
     static func untrackedFileDiff(path: String, worktreePath: String) -> FileDiff? {
+        var budget = maxUntrackedPreviewBytes
+        return untrackedFileDiff(path: path, worktreePath: worktreePath, budget: &budget)
+    }
+
+    /// Materialized content is charged against `budget`; a file larger than
+    /// what's left (or than the per-file cap) is listed without lines.
+    private static func untrackedFileDiff(path: String, worktreePath: String, budget: inout Int) -> FileDiff? {
         let url = URL(fileURLWithPath: worktreePath).appendingPathComponent(path)
         guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
 
@@ -264,7 +282,7 @@ enum DiffComputer {
         // get the same not-shown treatment: an agent-created file that large
         // is an artifact, and materializing it as hunk lines would bloat the
         // panel for no reading value.
-        if data.prefix(8000).contains(0) || data.count > maxUntrackedPreviewBytes {
+        if data.prefix(8000).contains(0) || data.count > min(maxUntrackedPreviewBytes, budget) {
             return FileDiff(
                 path: path, status: .added, additions: 0, deletions: 0,
                 hunks: [], isBinary: true
@@ -281,6 +299,7 @@ enum DiffComputer {
         var lines = String(decoding: data, as: UTF8.self)
             .split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
         if lines.last == "" { lines.removeLast() } // trailing newline isn't a line
+        budget -= data.count
         let hunk = FileDiff.Hunk(
             header: "@@ -0,0 +1,\(lines.count) @@",
             lines: lines.map { FileDiff.Line(kind: .addition, text: String($0)) }
@@ -295,6 +314,7 @@ enum DiffComputer {
     }
 
     private static let maxUntrackedPreviewBytes = 4 << 20
+    private static let maxUntrackedSnapshotBytes = 16 << 20
 
     /// `path`'s diff with the whole file as context, for the full-file diff
     /// tab: one hunk spanning every line, changes inline. Untracked files come
@@ -443,32 +463,64 @@ actor HunkCache {
         static let empty = Value(hunks: [], isBinary: false)
     }
 
-    private var entries: [Key: Value] = [:]
-    /// Cap on entries. When hit, an arbitrary half is evicted rather than
-    /// everything — a full flush would force the next refresh of every open
-    /// workspace to re-fetch and re-parse its whole working set at once.
-    private let limit = 4096
-    /// Per-entry ceiling on cached hunk lines. Pathological diffs (generated
-    /// files, lockfiles) re-fetch on demand instead of pinning large payloads
-    /// in a process-lifetime cache.
-    private let maxCachedLines = 20_000
+    private struct Entry {
+        var value: Value
+        var cost: Int
+        var lastUse: UInt64
+    }
 
-    func get(_ keys: [Key]) -> [Value?] { keys.map { entries[$0] } }
+    private var entries: [Key: Entry] = [:]
+    private var totalCost = 0
+    private var clock: UInt64 = 0
+    /// Byte budget across all entries, estimated from line text. Worktree-side
+    /// keys are stat fingerprints, so every save of a changed file mints a key
+    /// that's never hit again; least-recently-used entries age out past this.
+    private let budget = 64 << 20
+    /// Per-entry ceiling. Pathological diffs (generated files, lockfiles)
+    /// re-fetch on demand instead of pinning large payloads.
+    private let maxEntryCost = 4 << 20
+
+    func get(_ keys: [Key]) -> [Value?] {
+        keys.map { key in
+            guard var entry = entries[key] else { return nil }
+            clock &+= 1
+            entry.lastUse = clock
+            entries[key] = entry
+            return entry.value
+        }
+    }
 
     func set(_ pairs: [(Key, Value)]) {
         for (key, value) in pairs {
-            guard value.hunks.reduce(0, { $0 + $1.lines.count }) <= maxCachedLines else { continue }
-            if entries.count >= limit {
-                for evicted in entries.keys.prefix(limit / 2) {
-                    entries.removeValue(forKey: evicted)
-                }
+            let cost = Self.cost(of: value)
+            guard cost <= maxEntryCost else { continue }
+            clock &+= 1
+            if let old = entries.updateValue(Entry(value: value, cost: cost, lastUse: clock), forKey: key) {
+                totalCost -= old.cost
             }
-            entries[key] = value
+            totalCost += cost
+        }
+        guard totalCost > budget else { return }
+        // Evict down to 3/4 so a full cache doesn't sort on every insert.
+        for (key, entry) in entries.sorted(by: { $0.value.lastUse < $1.value.lastUse }) {
+            guard totalCost > budget / 4 * 3 else { break }
+            entries.removeValue(forKey: key)
+            totalCost -= entry.cost
+        }
+    }
+
+    /// Approximate resident size: line text plus `Line` and `String` overhead.
+    private static func cost(of value: Value) -> Int {
+        value.hunks.reduce(64) { sum, hunk in
+            hunk.lines.reduce(sum + hunk.header.utf8.count + 64) { $0 + $1.text.utf8.count + 48 }
         }
     }
 
     /// Test hook so the parser tests can isolate cache state.
-    func clear() { entries.removeAll(keepingCapacity: true) }
+    func clear() {
+        entries.removeAll(keepingCapacity: true)
+        totalCost = 0
+    }
 }
 
 /// Parses `git diff` unified-format output into per-file hunks.
