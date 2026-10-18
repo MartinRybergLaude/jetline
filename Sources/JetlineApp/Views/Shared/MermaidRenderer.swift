@@ -2,12 +2,13 @@
 import AppKit
 import WebKit
 
-/// Renders mermaid diagrams to vector images.
+/// Renders mermaid diagrams to vector images, with Pele (pele.run).
 ///
-/// Mermaid needs a browser DOM, so one offscreen `WKWebView` does all the
-/// rendering, a diagram at a time, and hands back a PDF of the SVG. Views
-/// draw the cached image; nothing on screen is a web view. Results are kept
-/// per source and appearance (mermaid bakes its theme into the SVG).
+/// Pele measures label text with a canvas, so one offscreen `WKWebView`
+/// does all the rendering, a diagram at a time, and hands back a PDF of the
+/// SVG. Views draw the cached image; nothing on screen is a web view.
+/// Results are kept per source and appearance: the PDF bakes in the colors
+/// the page's CSS variables resolve to.
 @MainActor
 final class MermaidRenderer: NSObject, WKNavigationDelegate {
     static let shared = MermaidRenderer()
@@ -102,8 +103,8 @@ final class MermaidRenderer: NSObject, WKNavigationDelegate {
 
     private func loadIfNeeded() {
         guard webView == nil else { return }
-        guard let page = Bundle.jetlineResources.url(forResource: "mermaid", withExtension: "html") else {
-            failAll("Mermaid isn't bundled with this build.")
+        guard let page = Bundle.jetlineResources.url(forResource: "pele", withExtension: "html") else {
+            failAll("The diagram renderer isn't bundled with this build.")
             return
         }
         let config = WKWebViewConfiguration()
@@ -115,7 +116,7 @@ final class MermaidRenderer: NSObject, WKNavigationDelegate {
         webView.navigationDelegate = self
         self.webView = webView
         pageURL = page
-        // The page loads mermaid.min.js beside it, off the main thread.
+        // The page loads pele.min.js beside it, off the main thread.
         webView.loadFileURL(page, allowingReadAccessTo: page.deletingLastPathComponent())
     }
 
@@ -156,31 +157,17 @@ final class MermaidRenderer: NSObject, WKNavigationDelegate {
     // MARK: Rendering
 
     private static let renderScript = """
-        mermaid.initialize({
-            startOnLoad: false,
-            theme: dark ? 'dark' : 'default',
-            securityLevel: 'strict',
-            fontFamily: '-apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif',
-        });
         const out = document.getElementById('out');
+        out.className = dark ? 'dark' : '';
         out.innerHTML = '';
-        try {
-            const { svg } = await mermaid.render('jetline-diagram', source);
-            out.innerHTML = svg;
-            const el = out.querySelector('svg');
-            const box = el.viewBox.baseVal;
-            const width = Math.ceil(box && box.width ? box.width : el.getBoundingClientRect().width);
-            const height = Math.ceil(box && box.height ? box.height : el.getBoundingClientRect().height);
-            el.removeAttribute('style');
-            el.setAttribute('width', width);
-            el.setAttribute('height', height);
-            return [width, height];
-        } finally {
-            // Mermaid leaves its scratch element behind when parsing fails.
-            for (const node of Array.from(document.body.children)) {
-                if (node !== out) node.remove();
-            }
-        }
+        const { svg, width, height } = pele.render(source, {
+            fontFamily: '-apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif',
+            responsive: false,
+            links: false,
+            images: false,
+        });
+        out.innerHTML = svg;
+        return [Math.ceil(width), Math.ceil(height)];
         """
 
     private static func render(_ key: Key, in webView: WKWebView) async -> Result {
@@ -192,7 +179,7 @@ final class MermaidRenderer: NSObject, WKNavigationDelegate {
             )
             guard let dimensions = value as? [NSNumber], dimensions.count == 2,
                   dimensions[0].doubleValue > 0, dimensions[1].doubleValue > 0 else {
-                return .failed("Mermaid produced an empty diagram.")
+                return .failed("The diagram came out empty.")
             }
             let size = CGSize(width: dimensions[0].doubleValue, height: dimensions[1].doubleValue)
             let config = WKPDFConfiguration()
@@ -207,9 +194,13 @@ final class MermaidRenderer: NSObject, WKNavigationDelegate {
         }
     }
 
-    /// Mermaid's parse errors lead with a generic "Error: ".
+    /// Exceptions arrive as "PeleError: …" or "Error: …"; the message
+    /// alone reads better.
     private static func clean(_ message: String) -> String {
-        message.hasPrefix("Error: ") ? String(message.dropFirst(7)) : message
+        for prefix in ["PeleError: ", "Error: "] where message.hasPrefix(prefix) {
+            return String(message.dropFirst(prefix.count))
+        }
+        return message
     }
 }
 #endif

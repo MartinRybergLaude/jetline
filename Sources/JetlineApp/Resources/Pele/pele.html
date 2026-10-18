@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html,body{margin:0;padding:0;background:transparent}
+#out{display:inline-block}
+.pele{--pele-font:-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif}
+/* Light; --pele-bg backs edge labels, so it matches the code frame. */
+.pele{--pele-bg:#f2f2f2;--pele-fg:#1f1f1f;--pele-muted:#6e6e6e;--pele-line:#3c3c3c;--pele-surface:#ffffff;--pele-surface-alt:#e9e9e9;--pele-border:#9a9a9a;--pele-accent:#3a72d8}
+.dark .pele{--pele-bg:#2a2a2a;--pele-fg:#e3e3e3;--pele-muted:#9a9a9a;--pele-line:#c8c8c8;--pele-surface:#363636;--pele-surface-alt:#323232;--pele-border:#6a6a6a;--pele-accent:#5b8fe6;--pele-critical:#e0605e}
+/* WebKit's PDF export draws translucent subgraph fills wrong in dark
+   mode, so they get an opaque color of their own above. */
+.pele-cluster>rect{fill-opacity:1}
+</style>
+<script src="pele.min.js"></script>
+</head>
+<body><div id="out"></div></body>
+</html>
