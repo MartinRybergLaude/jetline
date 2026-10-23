@@ -95,12 +95,22 @@ enum DiffComputer {
         return result.stdout.nonBlank != nil
     }
 
-    /// Resolve `merge-base HEAD baseBranch`. Hoisted so the caller can share
-    /// one resolution across the three diff modes — combined and pr need the
-    /// same SHA, and re-running it for each is two extra subprocesses per
-    /// `refreshDiff` tick.
+    /// Resolve where HEAD forked off `baseBranch`.
+    ///
+    /// `--fork-point` first: it consults the base's reflog, so a stacked
+    /// branch whose parent was since rebased or amended still diffs against
+    /// the parent's commits it was built on. A plain merge-base there lands
+    /// on the trunk and drags the parent's old commits into the diff. Falls
+    /// back to the plain merge-base when the reflog has nothing (expired, or
+    /// a ref with no reflog).
     static func mergeBase(worktreePath: String, baseBranch: String) async throws -> String {
-        try await GitRunner.runChecked(
+        if let sha = try? await GitRunner.runChecked(
+            ["merge-base", "--fork-point", baseBranch, "HEAD"],
+            cwd: worktreePath
+        ).nonBlank {
+            return sha
+        }
+        return try await GitRunner.runChecked(
             ["merge-base", "HEAD", baseBranch],
             cwd: worktreePath
         ).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -115,29 +125,14 @@ enum DiffComputer {
     /// only fetch + parse `git diff -U3 -- <path>...` for the cache misses.
     /// In steady state (FSEvents tick where most files are unchanged) this skips
     /// ~all of `PatchParser.parse`.
-    ///
-    /// Pass `precomputedMergeBase` when the caller has already resolved
-    /// `merge-base HEAD baseBranch` so we don't repeat the lookup; ignored when
-    /// `mode == .local`.
     static func compute(
         worktreePath: String,
         baseBranch: String,
-        mode: DiffMode = .combined,
-        precomputedMergeBase: String? = nil
+        mode: DiffMode = .combined
     ) async throws -> DiffSnapshot {
-        let mergeBase: String?
-        if mode.needsMergeBase {
-            if let pre = precomputedMergeBase {
-                mergeBase = pre
-            } else {
-                mergeBase = try await Self.mergeBase(
-                    worktreePath: worktreePath,
-                    baseBranch: baseBranch
-                )
-            }
-        } else {
-            mergeBase = nil
-        }
+        let mergeBase = mode.needsMergeBase
+            ? try await Self.mergeBase(worktreePath: worktreePath, baseBranch: baseBranch)
+            : nil
         let revspec = mode.revspec(mergeBase: mergeBase)
 
         // Phase 1: enumerate changed files + per-file blob SHAs (--raw) and

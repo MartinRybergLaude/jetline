@@ -1084,16 +1084,8 @@ final class Engine {
             handleMissingWorktree(workspace)
             return
         }
-        // nil means the lookup itself failed (offline base / brand-new
-        // repo); the combined compute then falls back to its own resolution.
-        let mergeBase = try? await DiffComputer.mergeBase(worktreePath: workspace.worktreePath, baseBranch: workspace.baseBranch)
         async let combined: DiffSnapshot? = {
-            try? await DiffComputer.compute(
-                worktreePath: workspace.worktreePath,
-                baseBranch: workspace.baseBranch,
-                mode: .combined,
-                precomputedMergeBase: mergeBase
-            )
+            try? await DiffComputer.compute(worktreePath: workspace.worktreePath, baseBranch: workspace.baseBranch, mode: .combined)
         }()
         async let localSnap: DiffSnapshot? = {
             try? await DiffComputer.compute(worktreePath: workspace.worktreePath, baseBranch: workspace.baseBranch, mode: .local)
