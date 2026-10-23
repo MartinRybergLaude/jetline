@@ -26,7 +26,7 @@ struct Workspace: Codable, Identifiable, Hashable, Sendable, FetchableRecord, Pe
     /// tools. That agent may change it; agents elsewhere may not.
     var createdByWorkspaceId: String?
     /// Why the workspace exists, left by the agent that created it. Shown
-    /// (never sent) as the first chat's draft.
+    /// in the sidebar row's tooltip.
     var note: String?
 
     enum AgentKind: String, Codable, Sendable, CaseIterable, DatabaseValueConvertible {

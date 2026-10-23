@@ -499,11 +499,10 @@ final class AppState: ObservableObject {
         return session
     }
 
-    @discardableResult
-    private func ensureChat(_ summary: ChatSummary, in ws: WorkspaceState, on host: EngineHost) -> ChatSession {
+    private func ensureChat(_ summary: ChatSummary, in ws: WorkspaceState, on host: EngineHost) {
         if let existing = ws.chats.first(where: { $0.id == summary.id }) {
             existing.applySummary(summary)
-            return existing
+            return
         }
         let cwd = workspaceById(ws.id)?.worktreePath ?? ""
         let chat = ChatSession(summary: summary, workspaceId: ws.id, cwd: cwd, backend: host.connection, files: host.files)
@@ -511,22 +510,6 @@ final class AppState: ObservableObject {
         let tab = TabRef.chat(summary.id)
         ws.insertTab(tab, replacing: pendingPlacements.removeValue(forKey: tab))
         chat.subscribe()
-        return chat
-    }
-
-    /// The first chat opened here in a workspace an agent created starts
-    /// with the agent's note as its draft: there to edit and send, never
-    /// sent. Only for a chat just opened (not one restored on launch or
-    /// reconnect), and once per workspace, so closing the chat doesn't
-    /// bring it back.
-    private func prefillNote(into chat: ChatSession) {
-        guard let workspace = workspaceById(chat.workspaceId), workspace.createdByWorkspaceId != nil,
-              let note = workspace.note?.nonBlank, chat.draft.isEmpty else { return }
-        let key = "JetlineNotesPrefilled"
-        var done = Set(UserDefaults.standard.stringArray(forKey: key) ?? [])
-        guard done.insert(chat.workspaceId).inserted else { return }
-        UserDefaults.standard.set(Array(done), forKey: key)
-        chat.draft = note
     }
 
     private func dropSession(_ session: PTYSession, from ws: WorkspaceState) {
@@ -909,7 +892,7 @@ final class AppState: ObservableObject {
         let host = self.host(forWorkspace: workspaceId) ?? localHost
         switch opened {
         case let .terminal(info): ensureSession(info, in: ws, on: host)
-        case let .chat(summary): prefillNote(into: ensureChat(summary, in: ws, on: host))
+        case let .chat(summary): ensureChat(summary, in: ws, on: host)
         }
         selectTab(tab, in: workspaceId)
     }
