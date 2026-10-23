@@ -520,7 +520,7 @@ actor CodexProvider: AgentProvider {
         guard let threadId else { throw AgentError.notRunning }
         if let model = input.model { self.model = model }
         if let effort = input.effort { self.effort = effort }
-        let clientId = "user-\(UUID().uuidString.lowercased())"
+        let clientId = input.itemId ?? "user-\(UUID().uuidString.lowercased())"
         let userInput: [JSONValue] = [["type": "text", "text": .string(input.text), "text_elements": []]]
             + input.images.map { ["type": "localImage", "path": .string($0.path)] }
 

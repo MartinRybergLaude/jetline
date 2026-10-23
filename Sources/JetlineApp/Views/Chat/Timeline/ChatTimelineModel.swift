@@ -15,7 +15,7 @@ struct ChatRow: Equatable {
         case work(items: [AgentItem], isLive: Bool)
         case plan(String)
         case notice(AgentItem.Notice)
-        case compaction
+        case compaction(AgentItem.Status)
         case footer(Footer)
     }
 
@@ -34,6 +34,7 @@ struct ChatRow: Equatable {
         case thinking
         case writing
         case runningTools
+        case compacting
         case waitingForYou
     }
 
@@ -183,7 +184,7 @@ final class ChatTimelineModel {
                 guard case let .notice(notice) = box.item.content else { continue }
                 add(box.id, .notice(notice))
             case let .compaction(box):
-                add(box.id, .compaction)
+                add(box.id, .compaction(box.item.status))
             }
         }
         if turn.status != .running { markReplyEnd(&rows) }
@@ -226,6 +227,7 @@ final class ChatTimelineModel {
         switch box.item.content {
         case .reasoning: return .thinking
         case .assistantMessage: return .writing
+        case .compaction: return .compacting
         default: return box.kind == .work ? .runningTools : .waitingForAgent
         }
     }

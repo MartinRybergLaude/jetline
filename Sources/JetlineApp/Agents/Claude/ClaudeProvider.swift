@@ -54,8 +54,13 @@ actor ClaudeProvider: AgentProvider {
     /// A spawn is waiting on `initialize`: the process dying then is a
     /// failed launch for `spawn` to report, not the session ending.
     private var launching = false
-    /// Uuids of the messages we sent, whose replay echoes we already show.
-    private var sentMessageIds: Set<String> = []
+    /// Messages we sent and haven't seen echoed yet, by uuid. A turn's
+    /// first message is on screen already (nil); a steer's item waits for
+    /// the echo, which says the model has read it.
+    private var sentMessages: [String: AgentItem?] = [:]
+    /// The structured events just rendered a local command's result (a
+    /// compaction): its stdout echo would say it twice.
+    private var commandOutputShown = false
     /// Remote Control's session name while it's on; restored on respawn.
     private var remoteControlName: String??
 
@@ -231,6 +236,15 @@ actor ClaudeProvider: AgentProvider {
             let events = mapper.map(message)
             recordAnchor(message, turnId: turnId)
             for event in events {
+                switch event {
+                case let .item(item) where item.content == .compaction && item.status == .completed:
+                    commandOutputShown = true
+                case .turnCompleted:
+                    // An auto-compaction mid-turn has no echo to swallow.
+                    commandOutputShown = false
+                default:
+                    break
+                }
                 continuation.yield(event)
                 if case let .turnCompleted(id, _) = event, id == activeTurnId {
                     activeTurnId = nil
@@ -255,13 +269,17 @@ actor ClaudeProvider: AgentProvider {
         continuation.yield(.turnStarted(id: turnId))
     }
 
-    /// A user message starting. Ours are on screen already; any other a
-    /// person wrote came in over Remote Control and starts a turn of its own.
+    /// A user message starting. Ours show now if they're steers; any other
+    /// a person wrote came in over Remote Control and starts a turn of its own.
     private func handleReplay(_ message: JSONValue) {
         let uuid = message["uuid"]?.string
-        if let uuid, sentMessageIds.remove(uuid) != nil {
+        if let uuid, let sent = sentMessages.removeValue(forKey: uuid) {
             // A steer that missed its turn: the CLI answers it in a new one.
             openSyntheticTurnIfNeeded(for: message)
+            if var steer = sent, let turnId = activeTurnId {
+                steer.turnId = turnId
+                continuation.yield(.item(steer))
+            }
             recordAnchor(message, turnId: activeTurnId)
             return
         }
@@ -273,6 +291,20 @@ actor ClaudeProvider: AgentProvider {
         let text = content?.string ?? blocks
             .compactMap { $0["type"]?.string == "text" ? $0["text"]?.string : nil }
             .joined(separator: "\n\n")
+        if Self.isLocalCommandEcho(text) {
+            // A slash command the CLI ran itself (`/compact`, `/context`):
+            // its output, not something the person said.
+            guard let (level, output) = Self.localCommandOutput(text) else { return }
+            if commandOutputShown {
+                commandOutputShown = false
+                return
+            }
+            openSyntheticTurnIfNeeded(for: message)
+            continuation.yield(.item(.notice(
+                level, output, turnId: activeTurnId, id: "local-command-\(uuid ?? UUID().uuidString.lowercased())"
+            )))
+            return
+        }
         let images = blocks.compactMap(Self.saveImageBlock)
         guard !text.isEmpty || !images.isEmpty else { return }
         openSyntheticTurnIfNeeded(for: message)
@@ -284,6 +316,22 @@ actor ClaudeProvider: AgentProvider {
             content: .userMessage(.init(text: text, images: images))
         )))
         recordAnchor(message, turnId: turnId)
+    }
+
+    private static let localCommandTags: [(tag: String, level: AgentItem.Notice.Level)] = [
+        ("local-command-stdout", .info), ("local-command-stderr", .warning)
+    ]
+
+    static func isLocalCommandEcho(_ text: String) -> Bool {
+        text.hasPrefix("<command-name>") || localCommandTags.contains { text.hasPrefix("<\($0.tag)>") }
+    }
+
+    /// What a local command printed, if anything; not the command line.
+    static func localCommandOutput(_ text: String) -> (AgentItem.Notice.Level, String)? {
+        guard let (tag, level) = localCommandTags.first(where: { text.hasPrefix("<\($0.tag)>") }),
+              let output = text.dropFirst(tag.count + 2).replacingOccurrences(of: "</\(tag)>", with: "").nonBlank
+        else { return nil }
+        return (level, output)
     }
 
     /// The CLI tags input it made itself (a finished background task's
@@ -514,8 +562,8 @@ actor ClaudeProvider: AgentProvider {
     // MARK: - Turns
 
     func send(_ input: AgentTurnInput) async throws {
-        if let turnId = activeTurnId, let process, !needsRespawn {
-            try await steer(input, turnId: turnId, process: process)
+        if activeTurnId != nil, let process, !needsRespawn {
+            try await steer(input, process: process)
             return
         }
         startingTurn = true
@@ -567,24 +615,28 @@ actor ClaudeProvider: AgentProvider {
     }
 
     /// Hand a message to the running turn. The CLI reads it at the next
-    /// tool boundary, or answers it in a turn of its own once this one ends.
-    private func steer(_ input: AgentTurnInput, turnId: String, process: JSONLineProcess) async throws {
-        continuation.yield(.item(AgentItem(
-            id: "user-\(UUID().uuidString.lowercased())",
-            turnId: turnId,
-            status: .completed,
+    /// tool boundary, or answers it in a turn of its own once this one ends;
+    /// its replay echo marks that moment, and shows it (`handleReplay`).
+    private func steer(_ input: AgentTurnInput, process: JSONLineProcess) async throws {
+        let messageId = UUID().uuidString.lowercased()
+        let item = AgentItem(
+            id: input.itemId ?? "user-\(messageId)", turnId: nil, status: .completed,
             content: .userMessage(.init(text: input.text, images: input.images.map(\.path)))
-        )))
-        try await process.send(userMessage(input))
+        )
+        do {
+            try await process.send(userMessage(input, id: messageId, steer: item))
+        } catch {
+            sentMessages[messageId] = nil
+            throw error
+        }
     }
 
-    private func userMessage(_ input: AgentTurnInput) -> JSONValue {
+    private func userMessage(_ input: AgentTurnInput, id messageId: String = UUID().uuidString.lowercased(), steer: AgentItem? = nil) -> JSONValue {
         // Images first, text last: the CLI only recognises a slash command
         // when the final content block is text.
         var content: [JSONValue] = input.images.compactMap(Self.imageBlock)
         content.append(["type": "text", "text": .string(input.text)])
-        let messageId = UUID().uuidString.lowercased()
-        sentMessageIds.insert(messageId)
+        sentMessages[messageId] = .some(steer)
         return [
             "type": "user",
             "uuid": .string(messageId),
@@ -715,7 +767,7 @@ actor ClaudeProvider: AgentProvider {
             continuation.yield(.turnCompleted(id: turn, .interrupted))
         }
         activeTurnId = nil
-        sentMessageIds.removeAll()
+        sentMessages.removeAll()
         mapper = ClaudeEventMapper()
         let newId = UUID().uuidString.lowercased()
         if index > 0, let cut = anchors[index - 1].lastMessageId {

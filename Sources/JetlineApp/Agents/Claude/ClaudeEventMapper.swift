@@ -40,6 +40,9 @@ struct ClaudeEventMapper {
     private var failureHint: String?
     /// Usage-limit windows already announced this turn.
     private var announcedLimits: Set<String> = []
+    /// The compaction under way, shown from its `compacting` status until
+    /// its boundary lands.
+    private var compactionId: String?
 
     private struct Block {
         var itemId: String
@@ -271,8 +274,17 @@ struct ClaudeEventMapper {
             }
             return events
         case "status":
-            guard let mode = message["permissionMode"]?.string else { return [] }
-            return Self.modeEvents(for: mode)
+            var events: [AgentEvent] = []
+            if let mode = message["permissionMode"]?.string { events += Self.modeEvents(for: mode) }
+            if message["status"]?.string == "compacting", compactionId == nil {
+                let id = "compaction-\(UUID().uuidString.lowercased())"
+                compactionId = id
+                events.append(.item(AgentItem(id: id, turnId: turnId, status: .inProgress, content: .compaction)))
+            } else if let result = message["compact_result"]?.string, result != "success", let id = compactionId {
+                compactionId = nil
+                events.append(.item(AgentItem(id: id, turnId: turnId, status: .failed, content: .compaction)))
+            }
+            return events
         case "task_notification":
             // A background agent finished. It may outlive its turn, so its
             // item keeps the turn it started in.
@@ -289,8 +301,16 @@ struct ClaudeEventMapper {
             tools[toolUseId] = state
             return [.item(state.item)]
         case "compact_boundary":
-            let id = message["uuid"]?.string ?? UUID().uuidString
-            return [.item(AgentItem(id: id, turnId: turnId, status: .completed, content: .compaction))]
+            let id = compactionId ?? message["uuid"]?.string ?? UUID().uuidString
+            compactionId = nil
+            var events: [AgentEvent] = [.item(AgentItem(id: id, turnId: turnId, status: .completed, content: .compaction))]
+            // The context just shrank; don't wait for the next reply's usage.
+            if let tokens = message["compact_metadata"]?["post_tokens"]?.int {
+                let usage = AgentTokenUsage(contextTokens: tokens, contextWindow: contextWindow)
+                lastUsage = usage
+                events.append(.usage(usage))
+            }
+            return events
         case "api_retry":
             let attempt = message["attempt"]?.int.map { " (attempt \($0))" } ?? ""
             let id = message["uuid"]?.string ?? UUID().uuidString

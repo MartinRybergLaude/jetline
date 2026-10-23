@@ -94,6 +94,37 @@ final class ClaudeEventMapperTests: XCTestCase {
         XCTAssertEqual(ClaudeEventMapper.outcome(of: result), .failed(message: "Claude's API is overloaded (529). Try again shortly."))
     }
 
+    func testCompactionShowsWhileRunningAndResetsTheContextMeter() {
+        // As Claude Code 2.1.309 reports a `/compact`.
+        var mapper = ClaudeEventMapper()
+        mapper.turnId = "turn-1"
+        let started = mapper.map(["type": "system", "subtype": "status", "status": "compacting"])
+        guard case let .item(running)? = started.first else { return XCTFail() }
+        XCTAssertEqual(running.content, .compaction)
+        XCTAssertEqual(running.status, .inProgress)
+
+        _ = mapper.map(["type": "system", "subtype": "status", "status": nil, "compact_result": "success"])
+        let boundary = mapper.map([
+            "type": "system", "subtype": "compact_boundary", "uuid": "b",
+            "compact_metadata": ["trigger": "manual", "pre_tokens": 28047, "post_tokens": 9330]
+        ])
+        XCTAssertEqual(boundary.first, .item(AgentItem(id: running.id, turnId: "turn-1", status: .completed, content: .compaction)))
+        XCTAssertTrue(boundary.contains { if case let .usage(usage) = $0 { return usage.contextTokens == 9330 }; return false })
+
+        // The command's own result carries no usage: the meter stays reset.
+        let result = mapper.map(["type": "result", "subtype": "success", "is_error": false, "result": ""])
+        XCTAssertTrue(result.contains { if case let .usage(usage) = $0 { return usage.contextTokens == 9330 }; return false })
+    }
+
+    func testFailedCompactionIsMarkedFailed() {
+        var mapper = ClaudeEventMapper()
+        mapper.turnId = "turn-1"
+        _ = mapper.map(["type": "system", "subtype": "status", "status": "compacting"])
+        let failed = mapper.map(["type": "system", "subtype": "status", "status": nil, "compact_result": "failed"])
+        guard case let .item(item)? = failed.first else { return XCTFail() }
+        XCTAssertEqual(item.status, .failed)
+    }
+
     func testRateLimitEventReportsEachWindow() {
         let info: JSONValue = [
             "status": "allowed", "rateLimitType": "five_hour",
@@ -310,5 +341,17 @@ final class ClaudeReplayOriginTests: XCTestCase {
         // A finished background command, as Claude Code 2.1 echoes it.
         XCTAssertFalse(ClaudeProvider.isFromAPerson(try replay("task-notification")))
         XCTAssertFalse(ClaudeProvider.isFromAPerson(try replay("auto-continuation")))
+    }
+
+    func testLocalCommandEchoesAreOutputNotSpeech() {
+        let command = "<command-name>/compact</command-name>\n<command-message>compact</command-message>"
+        XCTAssertTrue(ClaudeProvider.isLocalCommandEcho(command))
+        XCTAssertNil(ClaudeProvider.localCommandOutput(command))
+        XCTAssertTrue(ClaudeProvider.isLocalCommandEcho("<local-command-stdout> </local-command-stdout>"))
+        XCTAssertNil(ClaudeProvider.localCommandOutput("<local-command-stdout> </local-command-stdout>"))
+        let output = ClaudeProvider.localCommandOutput("<local-command-stderr>Nothing to compact</local-command-stderr>")
+        XCTAssertEqual(output?.0, .warning)
+        XCTAssertEqual(output?.1, "Nothing to compact")
+        XCTAssertFalse(ClaudeProvider.isLocalCommandEcho("Say <local-command-stdout> please"))
     }
 }

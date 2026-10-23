@@ -358,7 +358,8 @@ final class ChatEngine: Identifiable {
         connection = failure.map { .failed("\(provider.displayName) stopped: \($0)") } ?? .disconnected
         // A requested stop drops what was queued behind the turn, rather
         // than starting it on a fresh process.
-        if failure == nil { queued.removeAll() }
+        // Steered messages died with the process either way.
+        queued.removeAll { failure == nil || $0.steered }
         if let turn = activeTurn {
             finish(turn, outcome: failure.map { .failed(message: $0) } ?? .interrupted)
         }
@@ -381,7 +382,9 @@ final class ChatEngine: Identifiable {
             // Steer only a turn the agent has started: before that, the
             // message would become a turn of its own.
             if capabilities?.steering == true, let agent, pendingTurn == nil {
-                steer(text: text, images: images, agent: agent)
+                let message = QueuedMessage(text: text, images: images.map(\.path), steered: true)
+                queued.append(message)
+                steer(message, agent: agent)
             } else {
                 queued.append(QueuedMessage(text: text, images: images.map(\.path)))
             }
@@ -391,7 +394,7 @@ final class ChatEngine: Identifiable {
     }
 
     func removeQueued(_ message: QueuedMessage) {
-        queued.removeAll { $0.id == message.id }
+        queued.removeAll { $0.id == message.id && !$0.steered }
     }
 
     private func startTurn(text: String, images: [URL]) {
@@ -439,15 +442,19 @@ final class ChatEngine: Identifiable {
         }
     }
 
-    private func steer(text: String, images: [URL], agent: any AgentProvider) {
+    /// Hand `message` to the running turn. It stays queued until the
+    /// agent's echo of it (`upsert`), which comes once the agent reads it.
+    private func steer(_ message: QueuedMessage, agent: any AgentProvider) {
         Task { [weak self] in
             guard let self else { return }
             do {
                 try await agent.send(AgentTurnInput(
-                    text: text, images: images, model: self.model, effort: self.effort,
-                    interactionMode: self.interactionMode
+                    text: message.text, images: message.images.map { URL(fileURLWithPath: $0) },
+                    model: self.model, effort: self.effort,
+                    interactionMode: self.interactionMode, itemId: message.itemId
                 ))
             } catch {
+                self.queued.removeAll { $0.id == message.id }
                 self.banner = error.localizedDescription
             }
         }
@@ -782,9 +789,16 @@ final class ChatEngine: Identifiable {
             return
         }
         guard let turn = targetTurn(for: item) else { return }
+        guard case .userMessage = item.content else {
+            insert(item, in: turn)
+            return
+        }
+        // A steer the agent has read.
+        if let index = queued.firstIndex(where: { $0.steered && $0.itemId == item.id }) {
+            queued.remove(at: index)
+        }
         // The provider's echo of the message we showed optimistically.
-        if case .userMessage = item.content,
-           let local = turn.items.first(where: { $0.item.id.hasPrefix("local-") }) {
+        if let local = turn.items.first(where: { $0.item.id.hasPrefix("local-") }) {
             var adopted = item
             if case let .userMessage(message) = adopted.content, message.text.isEmpty, let original = turn.userMessage {
                 adopted.content = .userMessage(original)
@@ -794,6 +808,10 @@ final class ChatEngine: Identifiable {
             persistItem(local, in: turn)
             return
         }
+        insert(item, in: turn)
+    }
+
+    private func insert(_ item: AgentItem, in turn: ChatTurn) {
         let box = ChatItemBox(id: item.id, item: item)
         boxesByItemId[item.id] = box
         // A subagent's calls go under it, after its earlier ones: parallel
@@ -883,8 +901,8 @@ final class ChatEngine: Identifiable {
     /// Stopping clears the queue (`interrupt`), so anything still queued
     /// was meant to follow whatever the last turn's outcome.
     private func startNextQueued() {
-        guard !isWorking, !isRetired, let next = queued.first else { return }
-        queued.removeFirst()
+        guard !isWorking, !isRetired, let index = queued.firstIndex(where: { !$0.steered }) else { return }
+        let next = queued.remove(at: index)
         startTurn(text: next.text, images: next.images.map { URL(fileURLWithPath: $0) })
     }
 

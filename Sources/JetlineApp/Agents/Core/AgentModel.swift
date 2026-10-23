@@ -182,6 +182,10 @@ struct AgentTurnInput: Sendable {
     var model: String?
     var effort: String?
     var interactionMode: AgentInteractionMode = .normal
+    /// Item id the provider gives the user message, so the caller can
+    /// match it. Generated when nil. A steer's item is emitted only once the
+    /// agent has read the message: that's when it leaves the queue.
+    var itemId: String?
 }
 
 // MARK: - Items

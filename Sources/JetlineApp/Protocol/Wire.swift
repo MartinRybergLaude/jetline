@@ -225,6 +225,23 @@ struct ChatQueuedMessage: Identifiable, Equatable, Codable, Sendable {
     var text: String
     /// Image paths on the engine's machine.
     var images: [String]
+    /// Already handed to the running turn; waits for the agent to read it.
+    /// It can't be taken back.
+    var steered = false
+
+    /// The id the agent's echo of a steered message carries.
+    var itemId: String { "user-\(id.uuidString.lowercased())" }
+}
+
+extension ChatQueuedMessage {
+    /// `steered` may be missing from an older engine's messages.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        text = try container.decode(String.self, forKey: .text)
+        images = try container.decode([String].self, forKey: .images)
+        steered = try container.decodeIfPresent(Bool.self, forKey: .steered) ?? false
+    }
 }
 
 /// A chat's scalar state — everything but the transcript.

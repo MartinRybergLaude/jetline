@@ -57,8 +57,8 @@ enum ChatRowNodes {
             return (plan(text: text, row: row.id, host: host), 0)
         case let .notice(notice):
             return (self.notice(notice), 0)
-        case .compaction:
-            return (compaction(), 0)
+        case let .compaction(status):
+            return (compaction(status), 0)
         case let .footer(footer):
             return (self.footer(footer, row: row.id, host: host), 0)
         }
@@ -473,10 +473,17 @@ enum ChatRowNodes {
         ], spacing: 6, flexible: [1], align: .top)
     }
 
-    private static func compaction() -> ChatNode {
-        HStackNode([
+    private static func compaction(_ status: AgentItem.Status) -> ChatNode {
+        let label: String
+        switch status {
+        case .inProgress: label = "Compacting context…"
+        case .failed: label = "Compaction failed"
+        case .interrupted, .declined: label = "Compaction stopped"
+        default: label = "Context compacted"
+        }
+        return HStackNode([
             FillNode(height: 0.5, color: .secondary(0.25)),
-            LabelNode("Context compacted", font: font(13), color: .secondaryLabelColor),
+            LabelNode(label, font: font(13), color: .secondaryLabelColor),
             FillNode(height: 0.5, color: .secondary(0.25)),
         ], spacing: 8, flexible: [0, 2])
     }
@@ -513,6 +520,7 @@ enum ChatRowNodes {
         case .thinking: return "Thinking…"
         case .writing: return "Writing…"
         case .runningTools: return "Running tools…"
+        case .compacting: return "Compacting…"
         case .waitingForYou: return "Waiting for you"
         }
     }

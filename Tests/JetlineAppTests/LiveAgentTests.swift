@@ -29,6 +29,51 @@ final class LiveAgentTests: XCTestCase {
         try await runRevertScenario(kind: .codex, model: nil, effort: "low")
     }
 
+    /// A steer shows once Claude reads it (after the running command), not
+    /// when sent; `/compact` shows its progress and resets the meter.
+    func testClaudeSteerAndCompact() async throws {
+        let repo = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: repo) }
+        let config = AgentSessionConfig(
+            cwd: repo.path, executable: try await resolve(.claude), model: "haiku", effort: nil,
+            runtimeMode: .fullAccess, interactionMode: .normal, resume: nil
+        )
+        let recorder = try await Recorder.start(kind: .claude, config: config)
+
+        var mark = recorder.mark
+        try await recorder.provider.send(AgentTurnInput(text: "Run the bash command `sleep 6; echo done`, then reply with one word."))
+        _ = try await recorder.log.waitFor(timeout: 60) { events in
+            events.dropFirst(mark).contains { if case let .item(item) = $0, case .command = item.content { return true }; return false } ? true : nil
+        }
+        let steerMark = recorder.mark
+        try await recorder.provider.send(AgentTurnInput(text: "Also say banana.", itemId: "user-steer"))
+        try await Task.sleep(for: .seconds(2))
+        XCTAssertFalse(recorder.items(since: steerMark).contains { $0.id == "user-steer" }, "shown before Claude read it")
+        let outcome = try await recorder.waitForTurn(since: mark, timeout: 120) { _ in .allowOnce }
+        XCTAssertEqual(outcome, .completed)
+        let items = recorder.items(since: mark)
+        let steer = try XCTUnwrap(items.firstIndex { $0.id == "user-steer" })
+        let command = try XCTUnwrap(items.firstIndex { if case .command = $0.content { return true }; return false })
+        XCTAssertGreaterThan(steer, command)
+        XCTAssertTrue(recorder.lastAssistantText.lowercased().contains("banana"))
+
+        mark = recorder.mark
+        try await recorder.provider.send(AgentTurnInput(text: "/compact"))
+        let compactOutcome = try await recorder.waitForTurn(since: mark, timeout: 180) { _ in .allowOnce }
+        XCTAssertEqual(compactOutcome, .completed)
+        let events = Array(recorder.log.snapshot.dropFirst(mark))
+        XCTAssertTrue(events.contains { if case let .item(item) = $0 { return item.content == .compaction && item.status == .inProgress }; return false })
+        XCTAssertTrue(events.contains { if case let .item(item) = $0 { return item.content == .compaction && item.status == .completed }; return false })
+        let spoken = recorder.items(since: mark).compactMap { item -> String? in
+            if case let .userMessage(message) = item.content { return message.text }
+            return nil
+        }
+        XCTAssertEqual(spoken, ["/compact"], "a command echo showed as speech")
+        XCTAssertFalse(recorder.items(since: mark).contains { if case .notice = $0.content { return true }; return false }, "the divider's confirmation showed twice")
+        XCTAssertTrue(events.contains { if case .usage = $0 { return true }; return false })
+        await recorder.provider.stop()
+    }
+
     /// Revert turns and check the agent forgot them. Arithmetic questions
     /// rather than "remember X": Claude's auto-memory can persist those to
     /// files outside the conversation, which no revert touches.
@@ -174,7 +219,7 @@ final class LiveAgentTests: XCTestCase {
 /// Consumes a provider's events and answers its requests.
 private struct Recorder {
     let provider: any AgentProvider
-    private let log: EventLog
+    let log: EventLog
     private(set) var info: AgentSessionInfo?
 
     static func start(kind: AgentProviderKind, config: AgentSessionConfig) async throws -> Recorder {
@@ -262,7 +307,7 @@ private struct Recorder {
     }
 }
 
-private final class EventLog: @unchecked Sendable {
+final class EventLog: @unchecked Sendable {
     private let lock = NSLock()
     private var events: [AgentEvent] = []
 
