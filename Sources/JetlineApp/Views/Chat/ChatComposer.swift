@@ -12,8 +12,8 @@ struct ComposerCompletion: Equatable {
     var range: NSRange
     var query: String
 
-    /// Slash commands only complete at the very start of the message (that's
-    /// the only place the CLIs treat them as commands); mentions anywhere.
+    /// Both complete wherever a word starts, so skills can be named
+    /// mid-message; a `/` inside a word (a path) doesn't trigger.
     static func detect(in text: String, caret: Int) -> ComposerCompletion? {
         let ns = text as NSString
         guard caret <= ns.length else { return nil }
@@ -25,7 +25,7 @@ struct ComposerCompletion: Equatable {
         }
         guard start < caret else { return nil }
         let token = ns.substring(with: NSRange(location: start, length: caret - start))
-        if token.hasPrefix("/"), start == 0 {
+        if token.hasPrefix("/") {
             return ComposerCompletion(kind: .command, range: NSRange(location: start, length: caret - start), query: String(token.dropFirst()))
         }
         if token.hasPrefix("@") {
@@ -229,22 +229,27 @@ struct ChatComposer: View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(session.queued) { message in
                 HStack(spacing: 6) {
-                    Image(systemName: "clock").font(.system(size: 12))
+                    Image(systemName: message.steered ? "arrow.turn.down.right" : "clock").font(.system(size: 12))
                     Text(message.text).lineLimit(1)
                     Spacer()
-                    Button {
-                        session.removeQueued(message)
-                    } label: {
-                        Image(systemName: "xmark").font(.system(size: 11, weight: .bold))
+                    // A steer is with the agent already; it can't be taken back.
+                    if !message.steered {
+                        Button {
+                            session.removeQueued(message)
+                        } label: {
+                            Image(systemName: "xmark").font(.system(size: 11, weight: .bold))
+                        }
+                        .buttonStyle(.borderless)
                     }
-                    .buttonStyle(.borderless)
                 }
                 .font(.system(size: 14))
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
                 .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
-                .help("Sent when the current turn finishes")
+                .help(message.steered
+                    ? "Sent; the agent reads it once its current step finishes"
+                    : "Sent when the current turn finishes")
             }
         }
     }
@@ -291,7 +296,7 @@ struct ChatComposer: View {
                 .filter { !$0.name.hasPrefix("_") && (q.isEmpty || $0.name.lowercased().contains(q)) }
                 .sorted { ($0.name.lowercased().hasPrefix(q) ? 0 : 1, $0.name) < ($1.name.lowercased().hasPrefix(q) ? 0 : 1, $1.name) }
                 .prefix(8)
-                .map { Suggestion(insertion: "/" + $0.name, title: "/" + $0.name, detail: $0.description.nonBlank) }
+                .map { Suggestion(insertion: "/" + $0.name, title: "/" + $0.name, detail: Self.description(of: $0)) }
         case .file:
             let cwd = session.cwd
             let query = detected.query
@@ -302,6 +307,17 @@ struct ChatComposer: View {
                 suggestions = ranked.map { Suggestion(insertion: "@" + $0, title: $0, detail: nil) }
             }
         }
+    }
+
+    /// A command's description without the "(plugin) " prefix the CLI adds
+    /// to plugin skills: the name says it already.
+    static func description(of command: AgentSlashCommand) -> String? {
+        var text = command.description
+        if let colon = command.name.firstIndex(of: ":") {
+            let prefix = "(\(command.name[..<colon])) "
+            if text.hasPrefix(prefix) { text.removeFirst(prefix.count) }
+        }
+        return text.nonBlank
     }
 
     private func handlePopupKey(_ key: ComposerKey) -> Bool {
