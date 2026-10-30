@@ -56,6 +56,8 @@ final class Engine {
 
     @ObservationIgnored private var diffRefreshTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var diffRefreshQueued: Set<String> = []
+    @ObservationIgnored private let diffGate = DiffRefreshGate()
+    @ObservationIgnored private var pendingDiffPollTask: Task<Void, Never>?
     @ObservationIgnored private(set) lazy var prTracker: PRTracker = PRTracker(state: self)
     @ObservationIgnored private(set) lazy var conversationStore: PRConversationLoader = PRConversationLoader(state: self)
     @ObservationIgnored private var hasLoaded = false
@@ -114,6 +116,8 @@ final class Engine {
         }
         prTracker.sync()
         startIdleSweep()
+        startPendingDiffPoll()
+        if settings.restoreSessionsOnLaunch { restoreSessions() }
     }
 
     // MARK: - Focus & idle pausing
@@ -566,22 +570,98 @@ final class Engine {
     private func ensureSessionExists(for workspace: Workspace, terminalSize: TerminalSize?) {
         let ws = workspaceState(for: workspace.id)
         guard !ws.hasAgentTabs else { return }
-        let restored = ChatStore.openThreads(workspaceId: workspace.id)
-        if !restored.isEmpty {
-            for record in restored {
-                let chat = ChatEngine(
-                    record: record,
-                    cwd: workspace.worktreePath,
-                    rateLimits: rateLimits,
-                    executableResolver: resolveAgentExecutable
-                )
-                attach(chat, to: workspace.id)
-            }
+        if restoreOpenChats(for: workspace) {
             // The chat the client will show first starts its agent now.
             ws.chats.last?.connectIfNeeded()
             return
         }
         _ = startNewSession(for: workspace, agent: workspace.agent, terminalSize: terminalSize)
+    }
+
+    /// Attach a chat for each of the workspace's open threads, without
+    /// starting their agents. Whether there were any.
+    private func restoreOpenChats(for workspace: Workspace) -> Bool {
+        let restored = ChatStore.openThreads(workspaceId: workspace.id)
+        for record in restored {
+            let chat = ChatEngine(
+                record: record,
+                cwd: workspace.worktreePath,
+                rateLimits: rateLimits,
+                executableResolver: resolveAgentExecutable
+            )
+            attach(chat, to: workspace.id)
+        }
+        return !restored.isEmpty
+    }
+
+    // MARK: - Session restore
+
+    /// Bring back the tabs `recordSessionsForRestore` saw at the last quit.
+    /// Chats reconnect, terminal tabs start their agent again (Claude
+    /// continuing its last conversation).
+    private func restoreSessions() {
+        let tabs: [RestorableTab]
+        do {
+            tabs = try SessionRestoreStore.all()
+        } catch {
+            activityLog.record(.error, "Couldn't read the sessions to reopen: \(error)")
+            return
+        }
+        // Consumed: a crash before the next quit's record mustn't bring
+        // these back a second time.
+        do {
+            try SessionRestoreStore.replace(with: [])
+        } catch {
+            activityLog.record(.error, "Couldn't clear the reopened sessions: \(error)")
+        }
+        let plans = SessionRestore.plans(for: tabs) { workspaceId in
+            guard let workspace = workspaceById(workspaceId) else { return false }
+            return AgentLauncher.hasClaudeConversation(inWorkingDirectory: workspace.worktreePath)
+        }
+        for plan in plans {
+            guard let workspace = workspaceById(plan.workspaceId),
+                  worktreeExists(for: workspace) else { continue }
+            let ws = workspaceState(for: workspace.id)
+            guard !ws.hasAgentTabs else { continue }
+            if plan.restoresChats, restoreOpenChats(for: workspace) {
+                ws.isOpen = true
+                for chat in ws.chats { chat.connectIfNeeded() }
+            }
+            for terminal in plan.terminals {
+                startNewTerminal(for: workspace, agent: terminal.agent, launchArgs: terminal.launchArgs, terminalSize: nil)
+            }
+            guard ws.hasAgentTabs else { continue }
+            activityLog.record(
+                .lifecycle,
+                "Reopened sessions in \(workspace.name)",
+                repoId: workspace.repositoryId,
+                workspaceId: workspace.id
+            )
+        }
+    }
+
+    /// Save the tabs running now so the next launch can reopen them. Runs
+    /// on every quit, so turning the setting on later picks up the last one.
+    private func recordSessionsForRestore() {
+        // Before `load`, nothing ran: keep the last quit's record.
+        guard hasLoaded else { return }
+        let tabs = workspaceStates.values.flatMap { ws -> [RestorableTab] in
+            let chats = ws.chats.map { (kind: RestorableTab.Kind.chat, agent: $0.provider.agentKind) }
+            let terminals = ws.terminals.map { (kind: RestorableTab.Kind.terminal, agent: $0.agent) }
+            return (chats + terminals).enumerated().map { index, tab in
+                RestorableTab(
+                    workspaceId: ws.id,
+                    displayOrder: (index + 1) * RestorableTab.orderStep,
+                    kind: tab.kind,
+                    agent: tab.agent
+                )
+            }
+        }
+        do {
+            try SessionRestoreStore.replace(with: tabs)
+        } catch {
+            activityLog.record(.error, "Couldn't save the sessions to reopen: \(error)")
+        }
     }
 
     /// Open a new tab for `agent` in whichever interface the settings pick.
@@ -722,6 +802,7 @@ final class Engine {
     /// Stop every chat's agent process and every terminal. Chats run in
     /// their own sessions, so nothing else would signal them on quit.
     func shutdown() async {
+        recordSessionsForRestore()
         await withTaskGroup(of: Void.self) { group in
             for ws in workspaceStates.values {
                 for chat in ws.chats {
@@ -1079,11 +1160,44 @@ final class Engine {
         await task.value
     }
 
+    /// Under "Low git performance", the watcher's refresh: one `rev-parse`,
+    /// and the full diff only when HEAD or the base moved.
+    private func refreshDiffIfCommitsMoved(_ workspace: Workspace) async {
+        let key = await DiffComputer.commitKey(worktreePath: workspace.worktreePath, baseBranch: workspace.baseBranch)
+        guard diffGate.commitsMoved(key, for: workspace.id) else { return }
+        await refreshDiff(for: workspace)
+    }
+
+    /// Picks up the working-tree writes that "Low git performance" left
+    /// pending, in workspaces that are open and awake.
+    private func startPendingDiffPoll() {
+        guard pendingDiffPollTask == nil else { return }
+        pendingDiffPollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: DiffRefreshGate.pollInterval)
+                self?.refreshPendingDiffs()
+            }
+        }
+    }
+
+    private func refreshPendingDiffs() {
+        for id in diffGate.pending where watchers[id] != nil {
+            guard let workspace = workspaceById(id) else { continue }
+            Task { await refreshDiff(for: workspace) }
+        }
+    }
+
     private func performDiffRefresh(for workspace: Workspace) async {
         guard worktreeExists(for: workspace) else {
             handleMissingWorktree(workspace)
             return
         }
+        diffGate.refreshStarted(workspace.id)
+        let lowGit = settings.lowGitPerformance
+        async let commitKey: DiffCommitKey? = {
+            guard lowGit else { return nil }
+            return await DiffComputer.commitKey(worktreePath: workspace.worktreePath, baseBranch: workspace.baseBranch)
+        }()
         async let combined: DiffSnapshot? = {
             try? await DiffComputer.compute(worktreePath: workspace.worktreePath, baseBranch: workspace.baseBranch, mode: .combined)
         }()
@@ -1105,6 +1219,7 @@ final class Engine {
         }
         let dirty = await uncommitted
         if ws.hasUncommitted != dirty { ws.hasUncommitted = dirty }
+        diffGate.refreshed(workspace.id, at: await commitKey)
     }
 
     /// Single write path for PR snapshots; mirrored to disk so the next
@@ -1267,7 +1382,7 @@ final class Engine {
                   self.workspaceStates[id]?.isOpen == true else { return }
             var additional: [String] = []
             if let gitDir, gitDir != worktreePath { additional.append(gitDir) }
-            let watcher = WorktreeWatcher(worktreePath: worktreePath, additionalPaths: additional) { [weak self] in
+            let watcher = WorktreeWatcher(worktreePath: worktreePath, additionalPaths: additional) { [weak self] change in
                 guard let self, let ws = self.workspaceById(id) else { return }
                 // Worktree writes count as activity — a background agent
                 // still working keeps its workspace out of the idle sweep.
@@ -1275,7 +1390,16 @@ final class Engine {
                 if let gitDir, !WorktreeOps.hasActiveIndexWrite(worktreePath: worktreePath) {
                     WorktreeOps.removeStaleIndexLock(gitDir: gitDir)
                 }
-                Task { await self.refreshDiff(for: ws) }
+                if self.settings.lowGitPerformance {
+                    // Edits wait for the slow poll; only moved commits
+                    // redo the diff now. Git-dir writes alone (our own
+                    // `git status` refreshing the index) mark nothing.
+                    if change.workTree { self.diffGate.markPending(id) }
+                    guard change.gitDir else { return }
+                    Task { await self.refreshDiffIfCommitsMoved(ws) }
+                } else {
+                    Task { await self.refreshDiff(for: ws) }
+                }
                 // Likely a commit or push: wake the PR tracker.
                 self.prTracker.kick(workspaceId: id)
             }
@@ -1291,6 +1415,7 @@ final class Engine {
     func closeWorkspace(_ id: String) {
         watchers[id]?.stop()
         watchers.removeValue(forKey: id)
+        diffGate.forget(id)
         pausedWorkspaces.remove(id)
         if let ws = workspaceStates[id] {
             tearDownWorkspaceRuntime(ws)

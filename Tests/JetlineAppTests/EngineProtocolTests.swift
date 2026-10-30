@@ -124,6 +124,8 @@ final class EngineProtocolTests: XCTestCase {
         var settings = try XCTUnwrap(latestGlobal()?.settings ?? hello.snapshot.global.settings)
         settings.agentInterface = .terminal
         settings.defaultAgent = .shell
+        // Every write refreshes the diff; low git performance is checked below.
+        settings.lowGitPerformance = false
         _ = try await client.call(API.SaveSettings(settings: settings))
 
         // Workspace with a run script.
@@ -193,6 +195,15 @@ final class EngineProtocolTests: XCTestCase {
         }
         let files = try await client.call(API.ListFiles(cwd: workspace.worktreePath))
         XCTAssertTrue(files.contains("added.txt"))
+
+        // Low git performance: a commit moves HEAD, which redoes the diff.
+        settings.lowGitPerformance = true
+        _ = try await client.call(API.SaveSettings(settings: settings))
+        _ = try await GitRunner.runChecked(["add", "added.txt"], cwd: workspace.worktreePath)
+        _ = try await GitRunner.runChecked(["commit", "-qm", "add"], cwd: workspace.worktreePath)
+        await eventually("a commit refreshes the diff", timeout: 15) {
+            latestDiff(workspace.id)?.hasUncommitted == false
+        }
 
         // Remote file browsing.
         let listing = try await client.call(API.ListDirectory(path: (repoPath as NSString).deletingLastPathComponent))

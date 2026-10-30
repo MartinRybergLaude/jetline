@@ -655,6 +655,7 @@ final class PRTracker {
     /// Bottom-up: a layer links only once the one below it is in a stack or
     /// targets the trunk, which a later poll gets to.
     private func linkStacks(in repo: Repository, identifier: RepoIdentifier, state: Engine) async {
+        guard state.settings.groupStackedWorkspaces else { return }
         let workspaces = state.workspacesByRepo[repo.id] ?? []
         let trunk = repo.localName(forRemoteRef: repo.defaultBranch)
         func openPR(_ ws: Workspace) -> PullRequest? {
@@ -696,7 +697,10 @@ final class PRTracker {
     /// name. A same-named branch recreated after an older PR merged should
     /// not be deleted by that historical merged PR.
     private func autoDeleteIfMerged(workspace: Workspace, snapshot: PRSnapshot, state: Engine) {
-        guard case let .loaded(pr, _) = snapshot,
+        // Checked before `autoDeleted` so turning the setting on later
+        // still cleans up workspaces that merged while it was off.
+        guard state.settings.deleteWorkspaceOnMerge,
+              case let .loaded(pr, _) = snapshot,
               MergeCleanupPolicy.shouldDelete(workspace: workspace, pr: pr),
               !autoDeleted.contains(workspace.id) else { return }
         autoDeleted.insert(workspace.id)

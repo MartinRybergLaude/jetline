@@ -1,7 +1,9 @@
 import Foundation
 
 /// Coalesced filesystem watcher backed by FSEvents (inotify on Linux). Fires `onChange`
-/// after any change inside the worktree, throttled.
+/// after any change inside the worktree, throttled, saying whether the
+/// coalesced events touched working-tree files, the git-dir (a commit,
+/// checkout or index write), or both.
 ///
 /// Pinned to the main actor so the throttle Task and the `onChange`
 /// callback share the same isolation domain — FSEvents already
@@ -18,6 +20,17 @@ import Foundation
 /// commits update HEAD/index there and we always want to see those.
 @MainActor
 final class WorktreeWatcher {
+    struct Change: Equatable, Sendable {
+        var workTree = false
+        var gitDir = false
+
+        static let unknown = Change(workTree: true, gitDir: true)
+
+        func merging(_ other: Change) -> Change {
+            Change(workTree: workTree || other.workTree, gitDir: gitDir || other.gitDir)
+        }
+    }
+
     #if os(macOS)
     private var stream: FSEventStreamRef?
     #else
@@ -31,8 +44,10 @@ final class WorktreeWatcher {
     /// dir for HEAD/index visibility). Events under any of these always
     /// pass through unfiltered.
     private let additionalPaths: [String]
-    private let onChange: @MainActor () -> Void
+    private let onChange: @MainActor (Change) -> Void
     private var pendingTask: Task<Void, Never>?
+    /// What the events since the last `onChange` touched.
+    private var pendingChange = Change()
 
     /// Absolute paths (with trailing slash) of git-ignored directories
     /// under `worktreePath`. Empty until the first load completes.
@@ -43,7 +58,7 @@ final class WorktreeWatcher {
     init(
         worktreePath: String,
         additionalPaths: [String] = [],
-        onChange: @escaping @MainActor () -> Void
+        onChange: @escaping @MainActor (Change) -> Void
     ) {
         self.worktreePath = worktreePath
         self.additionalPaths = additionalPaths
@@ -163,7 +178,7 @@ final class WorktreeWatcher {
         // existing dedupe-on-equality in `refreshDiff` no-op if nothing
         // actually changed.
         guard !paths.isEmpty else {
-            scheduleNotify()
+            scheduleNotify(.unknown)
             return
         }
         if didTouchGitignore(paths) {
@@ -173,8 +188,16 @@ final class WorktreeWatcher {
             reloadIgnoredPrefixes()
         }
         if shouldFire(paths: paths) {
-            scheduleNotify()
+            scheduleNotify(Self.change(touching: paths, gitDirs: additionalPaths))
         }
+    }
+
+    /// Which side of the worktree `paths` fall on. No paths at all could be
+    /// anything, so that counts as both.
+    nonisolated static func change(touching paths: [String], gitDirs: [String]) -> Change {
+        guard !paths.isEmpty else { return .unknown }
+        let inGitDir = paths.map { path in gitDirs.contains { path.hasPrefix($0) } }
+        return Change(workTree: inGitDir.contains(false), gitDir: inGitDir.contains(true))
     }
 
     private func shouldFire(paths: [String]) -> Bool {
@@ -250,12 +273,15 @@ final class WorktreeWatcher {
             }
     }
 
-    private func scheduleNotify() {
+    private func scheduleNotify(_ change: Change) {
+        pendingChange = pendingChange.merging(change)
         pendingTask?.cancel()
         pendingTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 250_000_000)
-            guard !Task.isCancelled else { return }
-            self?.onChange()
+            guard !Task.isCancelled, let self else { return }
+            let change = self.pendingChange
+            self.pendingChange = Change()
+            self.onChange(change)
         }
     }
 }
