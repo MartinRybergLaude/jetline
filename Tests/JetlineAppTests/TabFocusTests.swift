@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import XCTest
 @testable import JetlineApp
@@ -29,3 +30,4 @@ final class TabFocusTests: XCTestCase {
         XCTAssertNil(TabFocus.target(for: nil, session: { _ in nil }, in: window))
     }
 }
+#endif

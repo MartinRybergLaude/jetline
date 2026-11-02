@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 
 /// Where keyboard focus goes when navigation lands on a tab: a terminal's
@@ -26,3 +27,4 @@ enum TabFocus {
         return nil
     }
 }
+#endif
