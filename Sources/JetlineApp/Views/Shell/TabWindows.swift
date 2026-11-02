@@ -128,6 +128,14 @@ final class MainWindowCoordinator: NSObject, NSWindowDelegate {
     private var isHidden = false
     private var tabBarWasVisible = true
     private var frameSaveScheduled = false
+    private var tabFocusTask: Task<Void, Never>?
+    private static let tabFocusAttempts = 20
+    private static let tabFocusRetryDelay: Duration = .milliseconds(50)
+    private lazy var quickOpen = QuickOpenController(state: state) { [weak self] in
+        guard let self else { return nil }
+        self.showMainWindow()
+        return self.selectedSlot?.window
+    }
 
     /// Captured from the first root view — the coordinator has no SwiftUI
     /// environment of its own to open scene windows (onboarding) with.
@@ -181,6 +189,18 @@ final class MainWindowCoordinator: NSObject, NSWindowDelegate {
         .receive(on: DispatchQueue.main)
         .sink { Self.refreshMenuCommands() }
         .store(in: &cancellables)
+        state.$showingQuickOpen
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] showing in
+                if showing { self?.quickOpen.show() } else { self?.quickOpen.dismiss() }
+            }
+            .store(in: &cancellables)
+        state.$tabFocusRequest
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.focusSelectedTab() }
+            .store(in: &cancellables)
         state.$inspectorVisible
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
@@ -537,6 +557,32 @@ final class MainWindowCoordinator: NSObject, NSWindowDelegate {
         if let previous, previous !== target {
             scheduleSplitLayoutCopy(from: previous, to: target)
         }
+    }
+
+    // MARK: - Keyboard focus
+
+    /// Keyboard navigation landed on a tab: give its terminal or chat input
+    /// focus once it shows. The content lags the selection (the sync is
+    /// deferred, a rapid switch settles before mounting), so retry briefly.
+    private func focusSelectedTab() {
+        tabFocusTask?.cancel()
+        tabFocusTask = Task { [weak self] in
+            for _ in 0..<Self.tabFocusAttempts {
+                try? await Task.sleep(for: Self.tabFocusRetryDelay)
+                guard !Task.isCancelled, let self else { return }
+                if self.focusSelectedTabNow() { return }
+            }
+        }
+    }
+
+    private func focusSelectedTabNow() -> Bool {
+        guard let slot = selectedSlot, let window = slot.window, let wsId = slot.workspaceId else { return false }
+        let sessions = state.workspaceState(for: wsId).sessions
+        guard let view = TabFocus.target(for: slot.tab, session: { id in sessions.first { $0.id == id } }, in: window) else {
+            return false
+        }
+        if window.firstResponder !== view { window.makeFirstResponder(view) }
+        return true
     }
 
     // MARK: - Tab group events
