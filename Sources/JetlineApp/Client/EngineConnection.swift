@@ -238,6 +238,10 @@ final class EngineConnection {
         if let listener = try? Sockets.listen(path: path) {
             server.accept(onListener: listener)
             server.engine.agentToolsSocket = path
+            let activityLog = server.engine.activityLog
+            AgentToolsRegistration.registerInBackground { message in
+                Task { @MainActor in activityLog.record(.error, message) }
+            }
         }
         return server
     }

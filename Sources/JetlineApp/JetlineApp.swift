@@ -41,6 +41,13 @@ struct JetlineApp: App {
                 .keyboardShortcut("n", modifiers: [.command])
                 .disabled(state.selectedRepository == nil)
 
+                // Opening a workspace without tabs starts its first one.
+                Button("Open Workspace…") {
+                    state.showingQuickOpen.toggle()
+                }
+                .keyboardShortcut("k", modifiers: [.command])
+                .disabled(state.repositories.isEmpty)
+
                 Divider()
 
                 Button("New Tab") {

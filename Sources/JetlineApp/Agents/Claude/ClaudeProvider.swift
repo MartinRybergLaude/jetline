@@ -104,13 +104,18 @@ actor ClaudeProvider: AgentProvider {
     /// enabled it by default (`/chrome`), but stream-json sessions only get
     /// it with an explicit `--chrome`.
     static func chromeEnabledByDefault() -> Bool {
-        let dir = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"]
-            .map { URL(fileURLWithPath: $0) }
-            ?? FileManager.default.homeDirectoryForCurrentUser
-        guard let data = try? Data(contentsOf: dir.appendingPathComponent(".claude.json")),
+        guard let data = try? Data(contentsOf: userConfigFile),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return false }
         return json["claudeInChromeDefaultEnabled"] as? Bool ?? false
+    }
+
+    /// The CLI's user-level state and config (`~/.claude.json`).
+    static var userConfigFile: URL {
+        let dir = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"]
+            .map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser
+        return dir.appendingPathComponent(".claude.json")
     }
 
     static func isMissingSession(_ error: AgentError) -> Bool {

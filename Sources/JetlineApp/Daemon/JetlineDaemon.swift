@@ -20,6 +20,9 @@ import Glibc
 /// the network) drops the `attach` bridge, not the agents.
 public enum JetlineDaemon {
     public static func run(arguments: [String]) -> Never {
+        if let command = arguments.first, AgentToolsCLI.handles(command) {
+            AgentToolsCLI.run(argv: arguments)
+        }
         var args = arguments
         let command = args.isEmpty ? "help" : args.removeFirst()
         var options = Options()
@@ -69,8 +72,12 @@ public enum JetlineDaemon {
       rpc METHOD [JSON]
                 Send one request to the running engine and print the reply
                 (for scripting and debugging; methods are in Protocol/API.swift).
-      mcp       Serve Jetline's agent tools over MCP on stdin/stdout. Jetline
-                starts this for the agents it launches.
+      mcp       Serve Jetline's agent tools over MCP on stdin/stdout, for the
+                workspace holding the working directory. Jetline starts this for
+                the agents it launches and registers it with Claude Code and Codex
+                (as ~/.jetline/bin/jetline) for the ones started by hand.
+      tools     List Jetline's agent tools. Each runs as a command of its own,
+                e.g. `jetline list-workspaces` (`jetline <tool> --help`).
       version   Print the version.
       info      Print version and protocol as JSON.
 
@@ -198,6 +205,7 @@ public enum JetlineDaemon {
             server.accept(onListener: listener)
             // Agents this engine launches reach it on the same socket.
             engine.agentToolsSocket = socketPath
+            AgentToolsRegistration.registerInBackground { log($0) }
 
             for sig in [SIGTERM, SIGINT] {
                 signal(sig, SIG_IGN)

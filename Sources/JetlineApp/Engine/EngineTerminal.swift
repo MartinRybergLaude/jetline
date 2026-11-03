@@ -75,8 +75,9 @@ final class TerminalBuffer: @unchecked Sendable {
 @Observable
 final class EngineTerminal: Identifiable {
     enum Launch: Sendable {
-        /// An agent CLI (or the login shell), resolved through `AgentLauncher`.
-        case agent(initialPrompt: String?, launchArgs: [String])
+        /// An agent CLI (or the login shell), resolved through `AgentLauncher`,
+        /// with `env` added to its environment.
+        case agent(initialPrompt: String?, launchArgs: [String], env: [String: String])
         /// A repository script run through the interactive login shell.
         case script(String, env: [String: String])
     }
@@ -260,7 +261,7 @@ final class EngineTerminal: Identifiable {
             let args: [String]
             var env: [String: String]
             switch self.launch {
-            case let .agent(initialPrompt, launchArgs):
+            case let .agent(initialPrompt, launchArgs, launchEnv):
                 do {
                     let spec = try await AgentLauncher.spec(
                         for: self.agent,
@@ -271,7 +272,7 @@ final class EngineTerminal: Identifiable {
                     self.fellBackToShell = spec.fellBackToShell
                     executable = spec.executable
                     args = spec.args
-                    env = spec.env
+                    env = spec.env.merging(launchEnv) { $1 }
                 } catch {
                     self.lastError = error.localizedDescription
                     self.markExited(127)
@@ -285,6 +286,10 @@ final class EngineTerminal: Identifiable {
             _ = await LoginShellPath.get()
             guard !self.terminated else { return }
             var environment = Subprocess.inheritedEnvironment(overrides: env)
+            if case .agent = self.launch {
+                // `jetline <tool>` in the shell and to the agent's own commands.
+                environment = AgentToolsCLI.prependingBin(AgentToolsRegistration.binDirectory().path, to: environment)
+            }
             environment["TERM"] = environment["TERM"] ?? "xterm-256color"
             environment["COLORTERM"] = "truecolor"
             self.spawn(executable: executable, args: args, env: environment, size: size)
