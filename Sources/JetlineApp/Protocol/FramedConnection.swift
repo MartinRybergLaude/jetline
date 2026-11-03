@@ -53,6 +53,9 @@ final class FramedConnection: @unchecked Sendable {
     private let writeQueue: DispatchQueue
     private var readSource: DispatchSourceRead?
     private var inbox = Data()
+    /// Reused by every drain (read queue only): a fresh one per read is a
+    /// 256 KB allocation, zero-filled, for every keystroke frame.
+    private var readBuffer = [UInt8](repeating: 0, count: 256 * 1024)
     /// Bytes to skip up to (and including) before framing starts: a noisy
     /// remote shell can print a banner before `jetlined attach` runs.
     private var preamble: Data?
@@ -146,13 +149,12 @@ final class FramedConnection: @unchecked Sendable {
     }
 
     private func drain() {
-        var buffer = [UInt8](repeating: 0, count: 256 * 1024)
         var sawEOF = false
         while true {
-            let n = read(readFD, &buffer, buffer.count)
+            let n = read(readFD, &readBuffer, readBuffer.count)
             if n > 0 {
-                inbox.append(contentsOf: buffer[0..<n])
-                if n < buffer.count { break }
+                inbox.append(contentsOf: readBuffer[0..<n])
+                if n < readBuffer.count { break }
             } else if n == 0 {
                 sawEOF = true
                 break
@@ -193,7 +195,11 @@ final class FramedConnection: @unchecked Sendable {
                 frames.append((kind, payload))
             }
         }
-        if offset > inbox.startIndex {
+        if offset == inbox.endIndex {
+            // Start over rather than keep the room the largest burst (an
+            // uploaded file) needed, for the life of the connection.
+            inbox = Data()
+        } else if offset > inbox.startIndex {
             inbox.removeSubrange(inbox.startIndex..<offset)
         }
         if !frames.isEmpty { onFrames?(frames) }

@@ -152,6 +152,95 @@ final class MemoryRetentionTests: XCTestCase {
     }
     #endif
 
+    #if os(Linux)
+    /// A connection's inbox grows to fit the largest burst it reads (an
+    /// uploaded file arrives as one frame); once that is delivered, the
+    /// connection must not hold the room for the rest of its life. Linux
+    /// only: on macOS a burst this size leaves ~256 MB of footprint behind
+    /// with or without the fix, so the measure can't see it there.
+    func testConnectionKeepsNoRoomFromABurst() async throws {
+        let (a, b) = try XCTUnwrap(Sockets.pair())
+        defer { _ = close(b) }
+        let connection = FramedConnection(readFD: a, writeFD: a, label: "memory-test")
+        let delivered = Locked(0)
+        connection.onFrames = { batch in delivered.mutate { $0 += batch.count } }
+        connection.start()
+        defer { connection.close() }
+
+        let burst = FramedConnection.frame(.message, Data(repeating: 0x41, count: Self.written / 2))
+        let before = Memory.residentBytes()
+        await TestIO.background { _ = writeAll(fd: b, burst) }.value
+        await eventually("the burst") { delivered.value == 1 }
+        let grown = Memory.residentBytes() - before
+        withExtendedLifetime(burst) {}
+        XCTAssertLessThan(grown, Self.allowedGrowth, "the connection kept \(grown) bytes after the burst")
+    }
+    #endif
+
+    #if os(Linux)
+    /// The daemon's churn, many threads at once: each reads a reply of up to
+    /// a few MB into a growing `Data` (a `gh` or `git` poll), parses it into
+    /// thousands of small objects and keeps a handful. glibc kept the freed
+    /// rest in its arenas instead of returning it.
+    ///
+    /// In a process of its own, started like the daemon: the tuning has to
+    /// come before threads claim arenas, and earlier tests here have claimed
+    /// dozens.
+    func testChurnedHeapGoesBackToTheSystem() throws {
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+        child.arguments = ["JetlineAppTests.MemoryRetentionTests/testChurnInThisProcess"]
+        child.environment = ProcessInfo.processInfo.environment.merging([Self.churnChild: "1"]) { $1 }
+        let output = Pipe()
+        child.standardOutput = output
+        child.standardError = output
+        try child.run()
+        let report = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        child.waitUntilExit()
+        let failures = report.split(separator: "\n").filter { $0.contains("error:") }.joined(separator: "\n")
+        XCTAssertEqual(child.terminationStatus, 0, failures.isEmpty ? report : failures)
+        XCTAssertTrue(report.contains("testChurnInThisProcess' passed"), report)
+    }
+
+    private static let churnChild = "JETLINE_CHURN_CHILD"
+
+    func testChurnInThisProcess() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment[Self.churnChild] != nil, "run by testChurnedHeapGoesBackToTheSystem")
+        Heap.tune()
+        let piece = Data(repeating: 0x41, count: 16 * 1024)
+        let kept = Survivors()
+        let before = Memory.residentBytes()
+        // Threads, not `concurrentPerform`: the daemon blocks dozens of them
+        // (subprocess waits, socket writes), and glibc gives each its own arena.
+        let done = DispatchGroup()
+        for worker in 0..<64 {
+            done.enter()
+            Thread {
+                for round in 0..<12 {
+                    var reply = Data()
+                    for _ in 0..<(16 + (worker * 7 + round * 13) % 192) { reply.append(piece) }
+                    let parsed = (0..<4000).map { String(repeating: "x", count: 32 + ($0 * 31 + worker) % 400) }
+                    kept.add(parsed[(worker + round) % parsed.count])
+                    withExtendedLifetime(reply) {}
+                }
+                done.leave()
+            }.start()
+        }
+        done.wait()
+        Heap.trim()
+        let grown = Memory.residentBytes() - before
+        withExtendedLifetime(kept) {
+            XCTAssertLessThan(grown, Self.allowedGrowth, "the allocator kept \(grown) bytes of freed churn")
+        }
+    }
+
+    private final class Survivors: @unchecked Sendable {
+        private let lock = NSLock()
+        private var items: [String] = []
+        func add(_ item: String) { lock.withLock { items.append(item) } }
+    }
+    #endif
+
     /// A stand-in engine: answers every framed request with `reply` as its
     /// result, until the client hangs up.
     private static func answerEveryRequest(on listener: Int32, with reply: String) {
@@ -194,4 +283,18 @@ enum Memory {
         return pages * Int(sysconf(Int32(_SC_PAGESIZE)))
         #endif
     }
+
+    #if os(Linux)
+    /// The most this process has had resident since `resetPeak()`.
+    static func peakResidentBytes() -> Int {
+        guard let status = try? String(contentsOfFile: "/proc/self/status", encoding: .utf8),
+              let line = status.split(separator: "\n").first(where: { $0.hasPrefix("VmHWM:") }),
+              let kb = line.split(separator: " ").dropFirst().first.flatMap({ Int($0) }) else { return 0 }
+        return kb * 1024
+    }
+
+    static func resetPeak() {
+        try? "5".write(toFile: "/proc/self/clear_refs", atomically: false, encoding: .utf8)
+    }
+    #endif
 }

@@ -927,19 +927,14 @@ final class ChatEngine: Identifiable {
         var updated: [String: AgentItem] = [:]
         var order: [String] = []
         for delta in batch {
-            var item: AgentItem
-            if let pending = updated[delta.itemId] {
-                item = pending
-            } else if let box = boxesByItemId[delta.itemId] {
-                item = box.item
-            } else if let placeholder = AgentItem.placeholder(id: delta.itemId, turnId: delta.turnId, kind: delta.kind) {
-                item = placeholder
-            } else {
-                continue
+            if updated[delta.itemId] == nil {
+                guard let item = boxesByItemId[delta.itemId]?.item
+                    ?? AgentItem.placeholder(id: delta.itemId, turnId: delta.turnId, kind: delta.kind) else { continue }
+                updated[delta.itemId] = item
+                order.append(delta.itemId)
             }
-            if updated[delta.itemId] == nil { order.append(delta.itemId) }
-            item.append(delta.text, kind: delta.kind)
-            updated[delta.itemId] = item
+            // In place: copying the item out per delta copied its whole text.
+            updated[delta.itemId]?.append(delta.text, kind: delta.kind)
         }
         for id in order {
             guard let item = updated[id] else { continue }

@@ -192,6 +192,22 @@ final class ClaudeEventMapperTests: XCTestCase {
         XCTAssertTrue(snapshots.dropLast().allSatisfy { $0.status == .inProgress })
     }
 
+    /// A finished call's input and output (a whole written file, a Read's
+    /// contents) went to the chat; the mapper kept them too, for every call
+    /// in the chat's life.
+    func testFinishedToolCallsAreNotKept() throws {
+        for fixture in ["claude-tools", "claude-approvals"] {
+            var mapper = ClaudeEventMapper()
+            for message in try loadFixture(fixture) {
+                let type = message["type"]?.string
+                if type == "control_request" || type == "control_response" { continue }
+                if mapper.turnId == nil { mapper.turnId = "turn-1" }
+                _ = mapper.map(message)
+            }
+            XCTAssertEqual(mapper.trackedToolCalls, 0, fixture)
+        }
+    }
+
     func testRuntimeModeRoundTrip() {
         for mode in AgentRuntimeMode.allCases {
             let claude = ClaudeProvider.claudeMode(for: mode, interaction: .normal)
@@ -283,6 +299,18 @@ final class CodexEventMapperTests: XCTestCase {
         XCTAssertTrue(replies.contains("Done. `b.txt` contains `world`; `touch z.txt` was rejected."))
         XCTAssertTrue(events.contains { if case .usage = $0 { return true }; return false })
         XCTAssertTrue(events.contains(.requestClosed(id: "codex-0")))
+    }
+
+    /// The mapper keeps items only while they can still be streamed into
+    /// or approved; it kept every item's full text (command output, diffs)
+    /// for the life of the chat.
+    func testCompletedTranscriptLeavesNoItemsBehind() throws {
+        var mapper = CodexEventMapper()
+        for message in try loadFixture("codex-approvals-interrupt-resume") {
+            guard let method = message["method"]?.string, message["id"] == nil else { continue }
+            _ = mapper.map(method: method, params: message["params"] ?? .null)
+        }
+        XCTAssertEqual(mapper.items.count, 0)
     }
 
     func testUnwrapShell() {

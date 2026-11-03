@@ -23,6 +23,8 @@ final class InotifyTreeWatcher {
     private var fd: Int32 = -1
     private var source: DispatchSourceRead?
     private var directories: [Int32: String] = [:]
+    /// Reused by every drain.
+    private var readBuffer = [UInt8](repeating: 0, count: 64 * 1024)
     private var exhausted = false
 
     private static let mask: UInt32 = UInt32(
@@ -103,16 +105,15 @@ final class InotifyTreeWatcher {
 
     private func drain() {
         guard fd >= 0 else { return }
-        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         var paths: [String] = []
         var overflowed = false
         while true {
-            let n = read(fd, &buffer, buffer.count)
+            let n = read(fd, &readBuffer, readBuffer.count)
             if n <= 0 { break }
             var offset = 0
             let headerSize = MemoryLayout<inotify_event>.size
             while offset + headerSize <= n {
-                let (wd, mask, len): (Int32, UInt32, Int) = buffer.withUnsafeBytes { raw in
+                let (wd, mask, len): (Int32, UInt32, Int) = readBuffer.withUnsafeBytes { raw in
                     let base = raw.baseAddress!.advanced(by: offset)
                     let wd = base.loadUnaligned(as: Int32.self)
                     let mask = base.loadUnaligned(fromByteOffset: 4, as: UInt32.self)
@@ -122,7 +123,7 @@ final class InotifyTreeWatcher {
                 var name = ""
                 if len > 0 {
                     let start = offset + headerSize
-                    let slice = buffer[start..<min(start + len, n)]
+                    let slice = readBuffer[start..<min(start + len, n)]
                     name = String(decoding: slice.prefix(while: { $0 != 0 }), as: UTF8.self)
                 }
                 offset += headerSize + len

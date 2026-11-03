@@ -13,6 +13,7 @@
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <poll.h>
+#include <stdlib.h>
 
 #if defined(__APPLE__)
 #include <util.h>
@@ -20,6 +21,9 @@
 #include <pty.h>
 #include <unistd.h>
 #include <sys/syscall.h>
+#endif
+#if defined(__GLIBC__)
+#include <malloc.h>
 #endif
 
 pid_t jl_forkpty(int *master, struct winsize *ws) {
@@ -226,4 +230,30 @@ long jl_send(int fd, const void *buffer, unsigned long length) {
 void jl_tcp_abort_on_close(int fd) {
     struct linger linger = { 1, 0 };
     setsockopt(fd, SOL_SOCKET, SO_LINGER, &linger, sizeof(linger));
+}
+
+#if defined(__GLIBC__)
+static int jl_malloc_overridden(const char *env, const char *tunable) {
+    const char *tunables = getenv("GLIBC_TUNABLES");
+    return getenv(env) != NULL || (tunables != NULL && strstr(tunables, tunable) != NULL);
+}
+#endif
+
+void jl_malloc_tune(int max_arenas) {
+#if defined(__GLIBC__)
+    if (!jl_malloc_overridden("MALLOC_MMAP_THRESHOLD_", "glibc.malloc.mmap_threshold")) {
+        mallopt(M_MMAP_THRESHOLD, 128 * 1024);
+    }
+    if (!jl_malloc_overridden("MALLOC_ARENA_MAX", "glibc.malloc.arena_max")) {
+        mallopt(M_ARENA_MAX, max_arenas);
+    }
+#else
+    (void)max_arenas;
+#endif
+}
+
+void jl_malloc_trim(void) {
+#if defined(__GLIBC__)
+    malloc_trim(0);
+#endif
 }

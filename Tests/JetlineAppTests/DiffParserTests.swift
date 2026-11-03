@@ -93,6 +93,29 @@ final class DiffParserTests: XCTestCase {
         XCTAssertTrue(file.hunks.isEmpty)
     }
 
+    #if os(Linux)
+    /// Over the cap an untracked file is listed without lines whatever it
+    /// holds, so it isn't read: every diff refresh read each such file in
+    /// full (an agent's log or dump, often) only to throw it away.
+    func testOversizedUntrackedFileIsNotRead() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("dump.log")
+        XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.truncate(atOffset: 256 << 20)
+        try handle.close()
+
+        Memory.resetPeak()
+        let before = Memory.residentBytes()
+        let file = try XCTUnwrap(DiffComputer.untrackedFileDiff(path: "dump.log", worktreePath: dir.path))
+        let peak = Memory.peakResidentBytes() - before
+        XCTAssertTrue(file.isBinary)
+        XCTAssertTrue(file.hunks.isEmpty)
+        XCTAssertLessThan(peak, 32 << 20, "reading the file took \(peak) bytes")
+    }
+    #endif
+
     func testUntrackedFileDiffEmptyAndMissingFiles() throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }

@@ -20,6 +20,7 @@ import Glibc
 /// the network) drops the `attach` bridge, not the agents.
 public enum JetlineDaemon {
     public static func run(arguments: [String]) -> Never {
+        Heap.tune()
         var args = arguments
         let command = args.isEmpty ? "help" : args.removeFirst()
         var options = Options()
@@ -216,6 +217,7 @@ public enum JetlineDaemon {
                 source.resume()
                 DaemonRuntime.shared.sources.append(source)
             }
+            DaemonRuntime.shared.sources.append(Heap.trimPeriodically())
         }
         dispatchMain()
     }

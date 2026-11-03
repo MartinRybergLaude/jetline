@@ -197,6 +197,8 @@ private final class PipeDrain: @unchecked Sendable {
     private var data = Data()
     private var done = false
     private let semaphore = DispatchSemaphore(value: 0)
+    /// Reused by every drain (they run on the source's serial queue).
+    private var readBuffer = [UInt8](repeating: 0, count: 64 * 1024)
 
     init?() {
         var fds: [Int32] = [-1, -1]
@@ -219,12 +221,11 @@ private final class PipeDrain: @unchecked Sendable {
     }
 
     private func drain(_ fd: Int32) {
-        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         while true {
-            let n = read(fd, &buffer, buffer.count)
+            let n = read(fd, &readBuffer, readBuffer.count)
             if n > 0 {
                 lock.lock()
-                data.append(contentsOf: buffer[0..<n])
+                data.append(contentsOf: readBuffer[0..<n])
                 lock.unlock()
             } else if n < 0, errno == EINTR {
                 continue
