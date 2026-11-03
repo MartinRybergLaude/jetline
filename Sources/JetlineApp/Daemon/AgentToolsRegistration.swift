@@ -66,7 +66,7 @@ enum AgentToolsRegistration {
     /// `<data dir>/bin/jetline`, pointing at `executable`. Swapped in with a
     /// rename, so a session starting meanwhile never finds it missing.
     static func linkExecutable(_ executable: String, dataDir: URL) throws -> String {
-        let bin = dataDir.appendingPathComponent("bin", isDirectory: true)
+        let bin = binDirectory(dataDir: dataDir)
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
         let link = bin.appendingPathComponent("jetline").path
         if (try? FileManager.default.destinationOfSymbolicLink(atPath: link)) == executable { return link }
@@ -79,6 +79,11 @@ enum AgentToolsRegistration {
             throw JetlineDaemon.DaemonError("can't link \(link): \(reason)")
         }
         return link
+    }
+
+    /// Where the link lives; Jetline terminals have it first on PATH.
+    static func binDirectory(dataDir: URL = Database.dataDirectory()) -> URL {
+        dataDir.appendingPathComponent("bin", isDirectory: true)
     }
 
     // MARK: Claude Code

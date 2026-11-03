@@ -286,6 +286,10 @@ final class EngineTerminal: Identifiable {
             _ = await LoginShellPath.get()
             guard !self.terminated else { return }
             var environment = Subprocess.inheritedEnvironment(overrides: env)
+            if case .agent = self.launch {
+                // `jetline <tool>` in the shell and to the agent's own commands.
+                environment = AgentToolsCLI.prependingBin(AgentToolsRegistration.binDirectory().path, to: environment)
+            }
             environment["TERM"] = environment["TERM"] ?? "xterm-256color"
             environment["COLORTERM"] = "truecolor"
             self.spawn(executable: executable, args: args, env: environment, size: size)

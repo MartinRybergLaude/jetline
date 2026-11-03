@@ -22,6 +22,7 @@ action bar that fast-paths the common things and hands the rest to an agent.
 - Per-repo branch naming controls, setup / run / archive scripts, exclusive run ✅
 - Settings: agents, binary paths, prompt overrides (global + per-repo), theme, terminal font, stack grouping, delete on merge, reopen sessions on launch, hide closed workspaces ✅
 - Agent tools over MCP (`mcp__jetline__*`): agents list, create, stack and rebase workspaces and dispatch sessions into them. Agents Jetline launches get them directly, and `claude` / `codex` started by hand in any workspace's worktree get them too: Jetline registers the server in their user config on launch (remove the entry to opt out; it stays removed) ✅
+- `jetline` CLI for the same tools: `jetline tools`, `jetline list-workspaces`, `jetline create-workspace settings-screen --stack-on current`. Runs as the workspace holding the current directory; on PATH in every Jetline terminal (`~/.jetline/bin`) ✅
 - Remote machines: repos on Linux boxes (`jetlined`, over ssh) sit in the sidebar next to this Mac's, one group per machine, all live at once ✅
 - File editor, Conductor import ❌ explicitly out of scope
 
