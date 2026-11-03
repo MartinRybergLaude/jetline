@@ -282,22 +282,36 @@ struct AgentItem: Codable, Sendable, Identifiable, Equatable {
     }
 
     /// Append streamed text to whichever field the stream kind targets.
+    /// Each case takes the payload out of `content` first, so the text
+    /// grows in place: appending while `content` still held it copied the
+    /// whole text for every delta, quadratic over a long log.
     mutating func append(_ delta: String, kind: AgentStreamKind) {
-        switch (kind, content) {
-        case (.assistantText, .assistantMessage(let text)):
-            content = .assistantMessage(text: text + delta)
-        case (.reasoningText, .reasoning(let text)):
-            content = .reasoning(text: text + delta)
-        case (.planText, .plan(let text)):
-            content = .plan(text: text + delta)
-        case (.commandOutput, .command(var command)):
+        switch kind {
+        case .assistantText:
+            guard case .assistantMessage(var text) = content else { return }
+            content = .compaction
+            text += delta
+            content = .assistantMessage(text: text)
+        case .reasoningText:
+            guard case .reasoning(var text) = content else { return }
+            content = .compaction
+            text += delta
+            content = .reasoning(text: text)
+        case .planText:
+            guard case .plan(var text) = content else { return }
+            content = .compaction
+            text += delta
+            content = .plan(text: text)
+        case .commandOutput:
+            guard case .command(var command) = content else { return }
+            content = .compaction
             command.output += delta
             content = .command(command)
-        case (.toolOutput, .tool(var tool)):
+        case .toolOutput:
+            guard case .tool(var tool) = content else { return }
+            content = .compaction
             tool.output = (tool.output ?? "") + delta
             content = .tool(tool)
-        default:
-            break
         }
     }
 

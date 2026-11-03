@@ -44,6 +44,14 @@ final class PTYProcess: @unchecked Sendable {
     /// Reused across reads from the io queue so steady-state output
     /// doesn't allocate an 8 KB array per chunk.
     private var readBuffer = [UInt8](repeating: 0, count: 8192)
+    /// Set by `terminate()` from any thread, so a write waiting for room the
+    /// child will never make gives up and lets the teardown behind it run.
+    private let stoppingLock = NSLock()
+    private var _stopping = false
+    private var stopping: Bool {
+        get { stoppingLock.withLock { _stopping } }
+        set { stoppingLock.withLock { _stopping = newValue } }
+    }
 
     init(
         executable: String,
@@ -161,12 +169,14 @@ final class PTYProcess: @unchecked Sendable {
     }
 
     /// Write bytes to the child's stdin. Loops over EAGAIN/EINTR.
-    /// FileHandle.write throws on EAGAIN and isn't an option here.
+    /// FileHandle.write throws on EAGAIN and isn't an option here. Waits
+    /// for a child that isn't reading only until `terminate()`.
     func write(_ data: Data) {
         guard masterFd >= 0, !data.isEmpty else { return }
         let fd = masterFd
         queue.async {
-            _ = writeAll(fd: fd, data)
+            guard !self.stopping else { return }
+            _ = writeAll(fd: fd, data, giveUp: { self.stopping })
         }
     }
 
@@ -209,6 +219,7 @@ final class PTYProcess: @unchecked Sendable {
     /// lands. Callers that need the port free — an exclusive run replacing
     /// a peer — have to wait for this, not for the exit.
     func terminate(completion: (@Sendable () -> Void)? = nil) {
+        stopping = true
         queue.async {
             self.draining = false
             let groups = self.signalTargets()
@@ -395,8 +406,12 @@ final class PTYProcess: @unchecked Sendable {
         source.setEventHandler { [weak self] in
             self?.drainOutput()
         }
-        source.setCancelHandler { [weak self] in
-            self?.reapChildIfNeeded()
+        // Strong: this handler is the only thing that closes the master and
+        // reaps the child, and `terminate()` is often the last call before
+        // the owner lets go. Dispatch drops it once it has run, which ends
+        // the cycle.
+        source.setCancelHandler {
+            self.reapChildIfNeeded()
         }
         readSource = source
         source.resume()
@@ -509,4 +524,7 @@ final class PTYProcess: @unchecked Sendable {
     }
 
     var pid: pid_t { childPid }
+
+    /// For tests: the master fd while it is open.
+    var masterDescriptor: Int32 { queue.sync { masterFd } }
 }

@@ -47,6 +47,8 @@ final class JSONLineProcess: @unchecked Sendable {
     private var processSource: ProcessExitSource?
 
     private var lineBuffer = Data()
+    /// Shared by the stdout and stderr drains, which both run on `queue`.
+    private var readBuffer = [UInt8](repeating: 0, count: 64 * 1024)
     private var stderrBuffer = Data()
     private var stdoutClosed = false
     private var stderrClosed = false
@@ -318,11 +320,10 @@ final class JSONLineProcess: @unchecked Sendable {
         // The cancel handler closes the fd; reading it after that could hit
         // a recycled descriptor.
         guard !stdoutClosed else { return }
-        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         while true {
-            let n = read(stdoutFd, &buffer, buffer.count)
+            let n = read(stdoutFd, &readBuffer, readBuffer.count)
             if n > 0 {
-                appendStdout(buffer[0..<n])
+                appendStdout(readBuffer[0..<n])
             } else if n == 0 {
                 finishStdout()
                 return
@@ -372,14 +373,13 @@ final class JSONLineProcess: @unchecked Sendable {
 
     private func drainStderr() {
         guard !stderrClosed else { return }
-        var buffer = [UInt8](repeating: 0, count: 16 * 1024)
         while true {
-            let n = read(stderrFd, &buffer, buffer.count)
+            let n = read(stderrFd, &readBuffer, readBuffer.count)
             if n > 0 {
                 lock.withLock {
-                    stderrBuffer.append(contentsOf: buffer[0..<n])
+                    stderrBuffer.append(contentsOf: readBuffer[0..<n])
                     if stderrBuffer.count > Self.stderrTailLength {
-                        stderrBuffer.removeFirst(stderrBuffer.count - Self.stderrTailLength)
+                        stderrBuffer.removePrefix(stderrBuffer.count - Self.stderrTailLength)
                     }
                 }
             } else if n < 0, errno == EINTR {

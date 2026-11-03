@@ -40,11 +40,16 @@ final class RunProcessTracker: @unchecked Sendable {
             scan(table)
             let timer = DispatchSource.makeTimerSource(queue: queue)
             timer.schedule(deadline: .now() + Self.pollInterval, repeating: Self.pollInterval, leeway: .milliseconds(250))
-            timer.setEventHandler { [weak self] in self?.scan(Self.processTable()) }
+            timer.setEventHandler { [weak self] in self?.poll() }
             self.timer?.cancel()
             self.timer = timer
             timer.resume()
         }
+    }
+
+    /// Whether the poll timer is running.
+    var isPolling: Bool {
+        queue.sync { timer != nil }
     }
 
     /// Record what is running now. Call right before signalling the run, so
@@ -83,6 +88,19 @@ final class RunProcessTracker: @unchecked Sendable {
             alive = alive.filter { table[$0.pid]?.start == $0.start }
         }
         for process in alive { _ = kill(process.pid, SIGKILL) }
+    }
+
+    /// One timer tick. Once the root and everything seen below it have
+    /// exited there is nothing left to find (or to stop), so stand down
+    /// rather than read the process table every second until the next run.
+    private func poll() {
+        let table = Self.processTable()
+        scan(table)
+        let rootAlive = root.map { table[$0.pid]?.start == $0.start } ?? false
+        if !rootAlive, known.isEmpty {
+            timer?.cancel()
+            timer = nil
+        }
     }
 
     /// Add every descendant of the root, or of a process already known, to

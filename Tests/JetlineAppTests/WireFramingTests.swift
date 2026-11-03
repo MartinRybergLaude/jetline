@@ -223,6 +223,23 @@ final class WireFramingTests: XCTestCase {
         XCTAssertEqual(received, TestIO.frame(.tunnelData, payload), "the final frame isn't cut off by the close")
     }
 
+    /// A peer that stays connected but stops reading (a laptop asleep on a
+    /// half-dead ssh link) mustn't pin the backlog and the socket after
+    /// `close()`.
+    func testCloseGivesUpOnAPeerThatStoppedReading() async throws {
+        let h = try harness()
+        let frames = 64
+        let payload = Data(count: 256 * 1024)
+        for _ in 0..<frames { h.connection.send(.terminalOutput, payload) }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertGreaterThan(h.connection.pendingWriteBytes, 0)
+        h.connection.close()
+        await eventually("queued writes dropped", timeout: 5) { h.connection.pendingWriteBytes == 0 }
+        // The socket is closed: the peer gets what the buffers held, then EOF.
+        let received = await TestIO.readToEnd(h.peer, silence: 5)
+        XCTAssertLessThan(received.count, frames * TestIO.frame(.terminalOutput, payload).count)
+    }
+
     func testBacklogIsCountedAndDrainIsReported() async throws {
         let h = try harness()
         let drained = Locked(0)

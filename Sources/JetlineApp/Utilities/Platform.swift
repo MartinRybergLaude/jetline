@@ -50,8 +50,10 @@ enum Platform {
 
 /// `write(2)` that loops over short writes and EINTR. Returns the errno that
 /// stopped it, or nil once every byte is out. `EAGAIN` on a non-blocking fd
-/// waits for it to drain (`poll`) rather than spinning.
-func writeAll(fd: Int32, _ base: UnsafeRawPointer, count: Int) -> Int32? {
+/// waits for it to drain (`poll`) rather than spinning — until a full poll
+/// interval passes with no room and `giveUp` says to stop waiting, which
+/// returns `EAGAIN`.
+func writeAll(fd: Int32, _ base: UnsafeRawPointer, count: Int, giveUp: (() -> Bool)? = nil) -> Int32? {
     var offset = 0
     while offset < count {
         #if canImport(Darwin)
@@ -68,7 +70,7 @@ func writeAll(fd: Int32, _ base: UnsafeRawPointer, count: Int) -> Int32? {
             if e == EINTR { continue }
             if e == EAGAIN || e == EWOULDBLOCK {
                 var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
-                _ = poll(&pfd, 1, 1000)
+                if poll(&pfd, 1, 1000) == 0, giveUp?() == true { return e }
                 continue
             }
             return e
@@ -79,11 +81,23 @@ func writeAll(fd: Int32, _ base: UnsafeRawPointer, count: Int) -> Int32? {
     return nil
 }
 
-func writeAll(fd: Int32, _ data: Data) -> Int32? {
+func writeAll(fd: Int32, _ data: Data, giveUp: (() -> Bool)? = nil) -> Int32? {
     data.withUnsafeBytes { raw -> Int32? in
         guard let base = raw.baseAddress else { return nil }
-        return writeAll(fd: fd, base, count: raw.count)
+        return writeAll(fd: fd, base, count: raw.count, giveUp: giveUp)
     }
+}
+
+/// `body` in its own autorelease pool, for a loop that never returns to a
+/// run loop or dispatch queue (which drain theirs): Foundation's Objective-C
+/// side (`JSONSerialization`) autoreleases, and nothing else would free it.
+/// Darwin only; elsewhere there's nothing to drain.
+func drainingAutoreleases<R>(_ body: () throws -> R) rethrows -> R {
+    #if canImport(Darwin)
+    try autoreleasepool(invoking: body)
+    #else
+    try body()
+    #endif
 }
 
 /// Fires `handler` on `queue` once `pid` exits, without reaping it — the

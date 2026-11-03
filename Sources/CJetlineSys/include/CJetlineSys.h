@@ -62,6 +62,19 @@ long jl_send(int fd, const void *buffer, unsigned long length);
 /// Make the next close send a RST instead of a FIN.
 void jl_tcp_abort_on_close(int fd);
 
+/// Make glibc's malloc give freed memory back (no-op elsewhere): pin the
+/// mmap threshold at 128 KB, so large buffers are mapped and unmapped on
+/// their own rather than carved from the heap (by default the threshold
+/// climbs to the largest buffer freed so far, up to 32 MB), and cap the
+/// arenas at `max_arenas` (default: 8 per core). Leaves alone whatever the
+/// user set through MALLOC_ARENA_MAX, MALLOC_MMAP_THRESHOLD_ or
+/// GLIBC_TUNABLES. Call before starting threads.
+void jl_malloc_tune(int max_arenas);
+
+/// Hand the kernel the free pages in every malloc arena, not just the top of
+/// the main heap (glibc's `malloc_trim(0)`; no-op elsewhere).
+void jl_malloc_trim(void);
+
 #if defined(__linux__)
 /// glibc's `posix_spawn_file_actions_add{chdir,closefrom}_np` and
 /// `POSIX_SPAWN_SETSID` are only declared under _GNU_SOURCE, which Swift's

@@ -53,11 +53,17 @@ final class FramedConnection: @unchecked Sendable {
     private let writeQueue: DispatchQueue
     private var readSource: DispatchSourceRead?
     private var inbox = Data()
+    /// Reused by every drain (read queue only): a fresh one per read is a
+    /// 256 KB allocation, zero-filled, for every keystroke frame.
+    private var readBuffer = [UInt8](repeating: 0, count: 256 * 1024)
     /// Bytes to skip up to (and including) before framing starts: a noisy
     /// remote shell can print a banner before `jetlined attach` runs.
     private var preamble: Data?
     private let lock = NSLock()
     private var closed = false
+    /// A write failed (or was abandoned): the stream is cut mid-frame, so
+    /// the rest of the queue is dropped. Write queue only.
+    private var writeFailed = false
     private var _pendingWriteBytes = 0
 
     /// Called on the read queue with every complete frame read in one drain.
@@ -113,7 +119,12 @@ final class FramedConnection: @unchecked Sendable {
         guard !closed else { return }
         _pendingWriteBytes += size
         writeQueue.async { [self] in
-            let failure = writeAll(fd: writeFD, bytes)
+            // Once closed, a peer that takes nothing for a poll interval
+            // has stopped reading (a laptop asleep on a live ssh link):
+            // waiting on it would pin the backlog and the socket until TCP
+            // gives up, hours later.
+            let failure = writeFailed ? nil : writeAll(fd: writeFD, bytes, giveUp: { [self] in isClosed })
+            if failure != nil { writeFailed = true }
             let drained: Bool = lock.withLock {
                 _pendingWriteBytes -= size
                 if _pendingWriteBytes > drainThreshold { wasBacklogged = true }
@@ -138,13 +149,12 @@ final class FramedConnection: @unchecked Sendable {
     }
 
     private func drain() {
-        var buffer = [UInt8](repeating: 0, count: 256 * 1024)
         var sawEOF = false
         while true {
-            let n = read(readFD, &buffer, buffer.count)
+            let n = read(readFD, &readBuffer, readBuffer.count)
             if n > 0 {
-                inbox.append(contentsOf: buffer[0..<n])
-                if n < buffer.count { break }
+                inbox.append(contentsOf: readBuffer[0..<n])
+                if n < readBuffer.count { break }
             } else if n == 0 {
                 sawEOF = true
                 break
@@ -185,7 +195,11 @@ final class FramedConnection: @unchecked Sendable {
                 frames.append((kind, payload))
             }
         }
-        if offset > inbox.startIndex {
+        if offset == inbox.endIndex {
+            // Start over rather than keep the room the largest burst (an
+            // uploaded file) needed, for the life of the connection.
+            inbox = Data()
+        } else if offset > inbox.startIndex {
             inbox.removeSubrange(inbox.startIndex..<offset)
         }
         if !frames.isEmpty { onFrames?(frames) }

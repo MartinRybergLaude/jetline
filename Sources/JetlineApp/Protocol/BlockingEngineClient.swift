@@ -41,7 +41,7 @@ final class BlockingEngineClient {
                 guard inbox.count >= 4 + length else { break }
                 let kind = inbox[inbox.startIndex + 4]
                 let body = inbox.subdata(in: (inbox.startIndex + 5)..<(inbox.startIndex + 4 + length))
-                inbox.removeFirst(4 + length)
+                inbox.removePrefix(4 + length)
                 guard kind == FrameKind.message.rawValue,
                       let message = try? JSONValue.parse(body),
                       message["type"]?.string == "response",

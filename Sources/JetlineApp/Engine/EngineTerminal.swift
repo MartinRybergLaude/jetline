@@ -39,7 +39,7 @@ final class TerminalBuffer: @unchecked Sendable {
             if storage.count > capacity {
                 // Trim to 75% so steady output doesn't re-trim every chunk.
                 let drop = storage.count - capacity * 3 / 4
-                storage.removeFirst(drop)
+                storage.removePrefix(drop)
                 start += UInt64(drop)
             }
             return offset

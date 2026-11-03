@@ -101,7 +101,7 @@ final class OutputCapture {
     func append(_ data: Data) {
         bytes.append(data)
         if bytes.count > maxBytes {
-            bytes.removeFirst(bytes.count - trimTarget)
+            bytes.removePrefix(bytes.count - trimTarget)
         }
     }
 

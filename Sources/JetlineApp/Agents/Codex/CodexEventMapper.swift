@@ -7,8 +7,10 @@ import Foundation
 /// field-by-field rename; the work is in normalising `ThreadItem` variants
 /// onto the shared item kinds.
 struct CodexEventMapper {
-    /// Items by id, kept so approval requests (which only carry an item id)
-    /// can describe what they're approving.
+    /// Items in progress by id, kept so approval requests (which only carry
+    /// an item id) can describe what they're approving and deltas have text
+    /// to grow. Dropped on completion: the chat has the finished item, and
+    /// holding every command's output here for the life of the chat added up.
     private(set) var items: [String: AgentItem] = [:]
     /// Reasoning items that have streamed summary text. Codex can stream
     /// both a summary and the raw reasoning for one item; showing both
@@ -27,6 +29,11 @@ struct CodexEventMapper {
 
         case "turn/completed":
             guard let turn = params["turn"], let id = turn["id"]?.string else { return [] }
+            // An interrupted turn can leave items that never complete.
+            for (itemId, item) in items where item.turnId == id {
+                items[itemId] = nil
+                summarizedReasoning.remove(itemId)
+            }
             return [.turnCompleted(id: id, Self.outcome(of: turn))]
 
         case "item/started", "item/completed":
@@ -41,9 +48,12 @@ struct CodexEventMapper {
             if let previous = items[item.id] {
                 item = Self.merge(previous: previous, snapshot: item)
             }
-            items[item.id] = item
-            if method == "item/completed", case let .plan(text) = item.content {
-                completedPlans[item.id] = text
+            if method == "item/completed" {
+                items[item.id] = nil
+                summarizedReasoning.remove(item.id)
+                if case let .plan(text) = item.content { completedPlans[item.id] = text }
+            } else {
+                items[item.id] = item
             }
             return [.item(item)]
 
@@ -303,10 +313,8 @@ struct CodexEventMapper {
     }
 
     private mutating func appendText(_ text: String, itemId: String, turnId: String?, kind: AgentStreamKind) -> [AgentEvent] {
-        if var item = items[itemId] {
-            item.append(text, kind: kind)
-            items[itemId] = item
-        }
+        // In place: a copy out of the map would copy the whole text too.
+        items[itemId]?.append(text, kind: kind)
         return [.delta(itemId: itemId, turnId: turnId, kind: kind, text: text)]
     }
 

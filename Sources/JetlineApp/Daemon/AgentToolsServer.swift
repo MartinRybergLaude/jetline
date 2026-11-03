@@ -20,43 +20,53 @@ enum AgentToolsServer {
         }
         let link = EngineLink(socketPath: socket)
         while let line = readLine(strippingNewline: true) {
-            guard let data = line.data(using: .utf8), !data.isEmpty,
-                  let message = try? JSONValue.parse(data) else { continue }
-            // Notifications (no id) need no answer.
-            guard let id = message["id"], !id.isNull else { continue }
-            let reply: JSONValue
-            switch message["method"]?.string {
-            case "initialize":
-                reply = result(id, [
-                    "protocolVersion": message["params"]?["protocolVersion"] ?? "2025-06-18",
-                    "capabilities": ["tools": .object([:])],
-                    "serverInfo": ["name": .string(AgentTools.serverName), "version": .string(JetlineVersion.current)],
-                    "instructions": .string(instructions)
-                ])
-            case "ping":
-                reply = result(id, [:])
-            case "tools/list":
-                reply = result(id, ["tools": .array(AgentTools.catalog.map(describe))])
-            case "tools/call":
-                let name = message["params"]?["name"]?.string ?? ""
-                let arguments = message["params"]?["arguments"] ?? .object([:])
-                let outcome = link.callTool(name, arguments: arguments, workspaceId: workspaceId)
-                reply = result(id, [
-                    "content": .array([.object(["type": "text", "text": .string(outcome.text)])]),
-                    "isError": .bool(outcome.isError)
-                ])
-            default:
-                reply = .object([
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": ["code": -32601, "message": .string("Unknown method \(message["method"]?.string ?? "")")]
-                ])
-            }
-            var out = reply.serialized()
-            out.append(0x0A)
-            FileHandle.standardOutput.write(out)
+            // JSONSerialization autoreleases what it builds, and nothing
+            // drains a pool around this loop: without one every request and
+            // reply stays resident until the agent exits.
+            let out = drainingAutoreleases { reply(to: line, link: link, workspaceId: workspaceId) }
+            if let out { FileHandle.standardOutput.write(out) }
         }
         exit(0)
+    }
+
+    /// The newline-terminated answer to one request line; nil for a
+    /// notification or a line that isn't JSON.
+    private static func reply(to line: String, link: EngineLink, workspaceId: String) -> Data? {
+        guard let data = line.data(using: .utf8), !data.isEmpty,
+              let message = try? JSONValue.parse(data) else { return nil }
+        // Notifications (no id) need no answer.
+        guard let id = message["id"], !id.isNull else { return nil }
+        let reply: JSONValue
+        switch message["method"]?.string {
+        case "initialize":
+            reply = result(id, [
+                "protocolVersion": message["params"]?["protocolVersion"] ?? "2025-06-18",
+                "capabilities": ["tools": .object([:])],
+                "serverInfo": ["name": .string(AgentTools.serverName), "version": .string(JetlineVersion.current)],
+                "instructions": .string(instructions)
+            ])
+        case "ping":
+            reply = result(id, [:])
+        case "tools/list":
+            reply = result(id, ["tools": .array(AgentTools.catalog.map(describe))])
+        case "tools/call":
+            let name = message["params"]?["name"]?.string ?? ""
+            let arguments = message["params"]?["arguments"] ?? .object([:])
+            let outcome = link.callTool(name, arguments: arguments, workspaceId: workspaceId)
+            reply = result(id, [
+                "content": .array([.object(["type": "text", "text": .string(outcome.text)])]),
+                "isError": .bool(outcome.isError)
+            ])
+        default:
+            reply = .object([
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": ["code": -32601, "message": .string("Unknown method \(message["method"]?.string ?? "")")]
+            ])
+        }
+        var out = reply.serialized()
+        out.append(0x0A)
+        return out
     }
 
     private static let instructions = """

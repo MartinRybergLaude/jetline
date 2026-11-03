@@ -297,6 +297,9 @@ final class EngineServer {
         for pump in pumps { pump.stop() }
         broadcast(.workspaceRemoved(id: id))
         dropClosedChatPublishers()
+        // Its stopped status pump won't reconcile again, and the next
+        // workspace's change may be a long way off on a quiet daemon.
+        pruneClosedTerminals()
     }
 
     private func flushPumps() {
@@ -317,7 +320,11 @@ final class EngineServer {
         if let t = ws.run?.terminal { all.append(t) }
         if let t = ws.setup?.terminal { all.append(t) }
         for terminal in all { terminals.install(on: terminal) }
-        // Drop what closed terminals retained (up to 4 MB each).
+        pruneClosedTerminals()
+    }
+
+    /// Drop what closed terminals retained (up to 4 MB each).
+    private func pruneClosedTerminals() {
         var live = Set<String>()
         for ws in engine.allWorkspaceStates {
             for t in ws.terminals { live.insert(t.id) }

@@ -9,6 +9,56 @@ import XCTest
 /// Stop (or an exclusive run displacing a peer) that flipped the UI to idle
 /// while the dev server kept its port.
 final class PTYProcessTerminationTests: XCTestCase {
+    /// Closing a tab drops the terminal, and with it the last reference to
+    /// its `PTYProcess`, right after `terminate()`. The master fd and the
+    /// child's exit status must still be collected, or every closed tab
+    /// leaves a descriptor open and a zombie behind for the daemon's life.
+    func testTerminateReleasesTheChildWithNoOneHoldingTheProcess() throws {
+        let exited = expectation(description: "exit reported")
+        var pid: pid_t = 0
+        var master: Int32 = -1
+        do {
+            let process = PTYProcess(
+                executable: "/bin/sh",
+                args: ["-c", "sleep 30"],
+                cwd: NSTemporaryDirectory(),
+                env: ProcessInfo.processInfo.environment,
+                output: { _ in },
+                exit: { _ in exited.fulfill() }
+            )
+            try process.start()
+            pid = process.pid
+            master = process.masterDescriptor
+            process.terminate()
+        }
+        wait(for: [exited], timeout: 10)
+        var status: Int32 = 0
+        XCTAssertEqual(waitpid(pid, &status, WNOHANG), -1, "the child was left unreaped")
+        XCTAssertEqual(fcntl(master, F_GETFD), -1, "the master fd was left open")
+    }
+
+    /// A paste into a program that isn't reading its input fills the tty
+    /// and the write waits for room. It must not hold up `terminate()`
+    /// (queued behind it), or the tab never goes away.
+    func testTerminateIsNotStuckBehindAWriteNobodyReads() throws {
+        let exited = expectation(description: "exit reported")
+        let process = PTYProcess(
+            executable: "/bin/sh",
+            args: ["-c", "stty raw -echo; sleep 30"],
+            cwd: NSTemporaryDirectory(),
+            env: ProcessInfo.processInfo.environment,
+            output: { _ in },
+            exit: { _ in exited.fulfill() }
+        )
+        try process.start()
+        usleep(200_000)
+        process.write(Data(repeating: 0x61, count: 256 * 1024))
+        process.write(Data(repeating: 0x62, count: 256 * 1024))
+        usleep(200_000)
+        process.terminate()
+        wait(for: [exited], timeout: 8)
+    }
+
     /// The shape that leaked: an interactive login shell, a job in a process
     /// group of its own, and a process that ignores SIGHUP.
     func testTerminateKillsJobGroupIgnoringSIGHUP() throws {

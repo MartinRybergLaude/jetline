@@ -14,8 +14,9 @@ import Foundation
 /// loaded asynchronously on `start()` and refreshed when an event
 /// touches a `.gitignore` file. Until the load lands, every tick fires
 /// (conservative — same behaviour as before this filter existed). The
-/// auxiliary watched paths (the worktree's git-dir) are never filtered;
-/// commits update HEAD/index there and we always want to see those.
+/// auxiliary watched paths (the worktree's git-dir) skip only git's own
+/// bookkeeping (`isGitDirNoise`); commits update HEAD/index there and we
+/// always want to see those.
 @MainActor
 final class WorktreeWatcher {
     #if os(macOS)
@@ -28,8 +29,8 @@ final class WorktreeWatcher {
     /// gitignore filter.
     private let worktreePath: String
     /// Extra dirs the watcher arms (typically the worktree's `.git/worktrees/<id>`
-    /// dir for HEAD/index visibility). Events under any of these always
-    /// pass through unfiltered.
+    /// dir for HEAD/index visibility). Events under any of these pass
+    /// through unless they're `isGitDirNoise`.
     private let additionalPaths: [String]
     private let onChange: @MainActor () -> Void
     private var pendingTask: Task<Void, Never>?
@@ -188,10 +189,11 @@ final class WorktreeWatcher {
     }
 
     private func isInteresting(_ path: String) -> Bool {
-        // Auxiliary paths (git-dir) are always relevant — commits write
-        // HEAD/index there and we need to refresh the diff snapshot.
+        // Auxiliary paths (git-dir) are relevant but for git's bookkeeping —
+        // commits write HEAD/index there and we need to refresh the diff
+        // snapshot.
         for extra in additionalPaths where path.hasPrefix(extra) {
-            return true
+            return !Self.isGitDirNoise(path, gitDir: extra)
         }
         // Anything outside the worktree (and outside additional paths)
         // shouldn't normally appear. Treat as relevant defensively.
@@ -200,6 +202,20 @@ final class WorktreeWatcher {
             return false
         }
         return true
+    }
+
+    /// Git-dir writes that leave HEAD, the index and the refs as they were:
+    /// FETCH_HEAD (the branch poll's own `git fetch` rewrites it every time,
+    /// and firing on it kicked the next poll), lock files, the object store
+    /// and reflogs (written alongside the HEAD or index change that does
+    /// fire), and, for a repository's main checkout, its other worktrees'
+    /// git-dirs.
+    nonisolated static func isGitDirNoise(_ path: String, gitDir: String) -> Bool {
+        guard path.hasPrefix(gitDir + "/") else { return false }
+        let relative = path.dropFirst(gitDir.count + 1)
+        if relative == "FETCH_HEAD" || relative.hasSuffix(".lock") { return true }
+        let top = relative.prefix { $0 != "/" }
+        return top == "objects" || top == "logs" || top == "worktrees"
     }
 
     private func didTouchGitignore(_ paths: [String]) -> Bool {

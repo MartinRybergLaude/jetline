@@ -315,7 +315,7 @@ final class StderrTail: @unchecked Sendable {
     func append(_ chunk: Data) {
         lock.withLock {
             data.append(chunk)
-            if data.count > 4096 { data.removeFirst(data.count - 4096) }
+            if data.count > 4096 { data.removePrefix(data.count - 4096) }
         }
     }
 

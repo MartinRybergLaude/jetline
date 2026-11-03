@@ -24,8 +24,10 @@ struct ClaudeEventMapper {
     /// Item ids already finalized from `assistant` messages, so a block's
     /// complete message isn't matched twice.
     private var finalizedBlocks: Set<String> = []
-    /// Tool calls seen so far, by tool_use id. Tool results arrive as
-    /// separate `user` messages and need the call's name and input.
+    /// Tool calls awaiting their result, by tool_use id. Tool results
+    /// arrive as separate `user` messages and need the call's name and
+    /// input. A finished call is dropped (the chat has it), except a
+    /// subagent: its calls and a background one's report still look it up.
     private var tools: [String: ToolState] = [:]
     /// Tool uses the user declined. Their results come back as errors and
     /// should read as "declined", not "failed".
@@ -54,6 +56,9 @@ struct ClaudeEventMapper {
         var name: String
         var input: JSONValue
     }
+
+    /// Calls still tracked (in progress, or a subagent); for tests.
+    var trackedToolCalls: Int { tools.count }
 
     /// Record that the user declined `toolUseId`, before its result lands.
     mutating func markDeclined(_ toolUseId: String) {
@@ -255,7 +260,12 @@ struct ClaudeEventMapper {
                 isError: isError,
                 structured: toolUseResult
             )
-            tools[toolUseId] = state
+            if case .subagent = state.item.content {
+                tools[toolUseId] = state
+            } else {
+                tools[toolUseId] = nil
+            }
+            declinedToolUseIds.remove(toolUseId)
             events.append(.item(state.item))
         }
         return events

@@ -271,17 +271,20 @@ enum DiffComputer {
     /// what's left (or than the per-file cap) is listed without lines.
     private static func untrackedFileDiff(path: String, worktreePath: String, budget: inout Int) -> FileDiff? {
         let url = URL(fileURLWithPath: worktreePath).appendingPathComponent(path)
+        let notShown = FileDiff(path: path, status: .added, additions: 0, deletions: 0, hunks: [], isBinary: true)
+        // Oversized files get the not-shown treatment: an agent-created file
+        // that large is an artifact, and materializing it as hunk lines would
+        // bloat the panel for no reading value. Checked before reading, which
+        // on Linux copies the whole file into memory (`mappedIfSafe` maps only
+        // on Darwin), every refresh, just to be thrown away.
+        guard let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int else { return nil }
+        if size > min(maxUntrackedPreviewBytes, budget) { return notShown }
         guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
 
-        // NUL in the first 8k is git's own binary heuristic. Oversized files
-        // get the same not-shown treatment: an agent-created file that large
-        // is an artifact, and materializing it as hunk lines would bloat the
-        // panel for no reading value.
+        // NUL in the first 8k is git's own binary heuristic. The size is
+        // checked again: the file may have grown since.
         if data.prefix(8000).contains(0) || data.count > min(maxUntrackedPreviewBytes, budget) {
-            return FileDiff(
-                path: path, status: .added, additions: 0, deletions: 0,
-                hunks: [], isBinary: true
-            )
+            return notShown
         }
         guard !data.isEmpty else {
             return FileDiff(path: path, status: .added, additions: 0, deletions: 0, hunks: [])
