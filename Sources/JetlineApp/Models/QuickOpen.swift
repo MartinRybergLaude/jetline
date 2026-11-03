@@ -17,10 +17,14 @@ struct QuickOpenItem: Identifiable, Equatable, Sendable {
     let branch: String
     let repositoryName: String
     /// The machine, when repositories from more than one are listed.
+    /// Always searchable; shown only when `showsHostName`.
     let hostName: String?
     /// Has a terminal or chat tab open.
     let isOpen: Bool
     let lastActiveAt: Date
+    /// The row names its machine, because the repository is on more than
+    /// one. Set by `QuickOpen.labelingMachines`.
+    var showsHostName = false
 }
 
 /// Ordering and matching for the ⌘K switcher. Pure, so the ranking can be
@@ -38,6 +42,19 @@ enum QuickOpen {
             .sorted { $0.lastActiveAt > $1.lastActiveAt }
         let selected = selectedId.flatMap { byId[$0] }.map { [$0] } ?? []
         return recent + rest + selected
+    }
+
+    /// The items with `showsHostName` set on those whose repository is
+    /// listed from more than one machine, so the rows can be told apart.
+    /// Repositories on a single machine don't name it.
+    static func labelingMachines(_ items: [QuickOpenItem]) -> [QuickOpenItem] {
+        let hostsByRepo = Dictionary(grouping: items, by: \.repositoryName)
+            .mapValues { Set($0.compactMap(\.hostName)) }
+        return items.map { item in
+            var labeled = item
+            labeled.showsHostName = (hostsByRepo[item.repositoryName]?.count ?? 0) > 1
+            return labeled
+        }
     }
 
     /// The items matching every whitespace-separated token of `query`

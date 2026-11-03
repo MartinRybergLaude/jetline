@@ -165,7 +165,7 @@ struct QuickOpenView: View {
     }
 
     private func location(of item: QuickOpenItem) -> String {
-        [item.repositoryName, item.hostName].compactMap { $0 }.joined(separator: " · ")
+        [item.repositoryName, item.showsHostName ? item.hostName : nil].compactMap { $0 }.joined(separator: " · ")
     }
 }
 #endif

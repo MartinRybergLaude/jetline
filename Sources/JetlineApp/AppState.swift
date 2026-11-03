@@ -637,7 +637,7 @@ final class AppState: ObservableObject {
                 quickOpenItems(for: repo, in: host, hostName: namesHosts ? host.name : nil)
             }
         }
-        return QuickOpen.ordered(items, history: selectionHistory, selectedId: selectedWorkspaceId)
+        return QuickOpen.ordered(QuickOpen.labelingMachines(items), history: selectionHistory, selectedId: selectedWorkspaceId)
     }
 
     private func quickOpenItems(for repo: Repository, in host: EngineHost, hostName: String?) -> [QuickOpenItem] {
