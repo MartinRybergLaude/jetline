@@ -98,6 +98,36 @@ final class MemoryRetentionTests: XCTestCase {
         XCTAssertLessThan(grown, Self.allowedGrowth, "parsing kept \(grown) bytes")
     }
 
+    func testFinishedSubprocessesKeepNoOutput() async {
+        let output = 1024 * 1024
+        let before = Memory.residentBytes()
+        for _ in 0..<(Self.written / output) {
+            let result = await Subprocess.run(executable: "/bin/sh", args: ["-c", "head -c \(output) /dev/zero"])
+            XCTAssertEqual(result.stdout.utf8.count, output)
+        }
+        let grown = Memory.residentBytes() - before
+        XCTAssertLessThan(grown, Self.allowedGrowth, "finished subprocesses kept \(grown) bytes")
+    }
+
+    func testFinishedProcessIsReleased() async {
+        weak var released: Process?
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", "exit 0"]
+            process.terminationHandler = { proc in
+                proc.releaseRunLoopSource()
+                cont.resume()
+            }
+            released = process
+            try? process.run()
+        }
+        for _ in 0..<50 where released != nil {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertNil(released, "a finished Process stayed alive")
+    }
+
     func testRemoteStderrTailKeepsOnlyItsTail() {
         let tail = StderrTail()
         let before = Memory.residentBytes()

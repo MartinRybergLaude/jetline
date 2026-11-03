@@ -82,6 +82,7 @@ enum Subprocess {
             // and we don't want to wedge whichever internal queue Process
             // uses for terminationHandler callbacks.
             process.terminationHandler = { proc in
+                proc.releaseRunLoopSource()
                 DispatchQueue.global(qos: .userInitiated).async {
                     let stdoutData = outDrain.waitAndCollect(timeout: .milliseconds(250))
                     let stderrData = errDrain.waitAndCollect(timeout: .milliseconds(250))
@@ -131,6 +132,15 @@ enum Subprocess {
         let reason = String(cString: strerror(error))
         processSlots.release()
         return Result(stdout: "", stderr: "spawn failed: couldn't create a pipe (\(reason))", status: -1)
+    }
+}
+
+extension Process {
+    func releaseRunLoopSource() {
+        #if os(Linux)
+        waitUntilExit()
+        terminationHandler = nil
+        #endif
     }
 }
 

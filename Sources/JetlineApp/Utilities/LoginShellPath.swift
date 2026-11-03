@@ -75,6 +75,7 @@ enum LoginShellPath {
             let gate = ResumeGate()
 
             process.terminationHandler = { proc in
+                proc.releaseRunLoopSource()
                 let data = (try? outPipe.fileHandleForReading.readToEnd()) ?? Data()
                 let stdout = String(data: data, encoding: .utf8) ?? ""
                 // Some profiles (nvm/mise/direnv banners) write to stdout
