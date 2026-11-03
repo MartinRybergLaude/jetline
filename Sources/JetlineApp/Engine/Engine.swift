@@ -685,7 +685,11 @@ final class Engine {
             workspaceId: workspace.id,
             agent: agent,
             cwd: workspace.worktreePath,
-            launch: .agent(initialPrompt: initialPrompt, launchArgs: toolArgs + launchArgs),
+            launch: .agent(
+                initialPrompt: initialPrompt,
+                launchArgs: toolArgs + launchArgs,
+                env: agentTerminalEnvironment(for: workspace.id)
+            ),
             settings: { [weak self] in self?.settings ?? AppSettings() }
         )
         ws.terminals.append(terminal)

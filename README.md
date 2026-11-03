@@ -21,6 +21,7 @@ action bar that fast-paths the common things and hands the rest to an agent.
 - Fast-path rebase + pull (no agent token spend on the no-conflict case) ✅
 - Per-repo branch naming controls, setup / run / archive scripts, exclusive run ✅
 - Settings: agents, binary paths, prompt overrides (global + per-repo), theme, terminal font, stack grouping, delete on merge, reopen sessions on launch, hide closed workspaces ✅
+- Agent tools over MCP (`mcp__jetline__*`): agents list, create, stack and rebase workspaces and dispatch sessions into them. Agents Jetline launches get them directly, and `claude` / `codex` started by hand in any workspace's worktree get them too: Jetline registers the server in their user config on launch (remove the entry to opt out; it stays removed) ✅
 - Remote machines: repos on Linux boxes (`jetlined`, over ssh) sit in the sidebar next to this Mac's, one group per machine, all live at once ✅
 - File editor, Conductor import ❌ explicitly out of scope
 

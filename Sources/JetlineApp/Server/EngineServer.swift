@@ -537,6 +537,9 @@ final class EngineServer {
         on(API.AgentToolCall.self) { req, _ in
             await engine.runAgentTool(req.tool, arguments: req.arguments, callerId: req.workspaceId)
         }
+        on(API.ResolveAgentWorkspace.self) { req, _ in
+            API.ResolvedAgentWorkspace(workspaceId: engine.workspaceId(containingPath: req.path))
+        }
         on(API.DeleteWorkspace.self) { [unowned self] req, _ in
             await engine.deleteWorkspace(try self.workspace(req.workspaceId))
             return Empty()

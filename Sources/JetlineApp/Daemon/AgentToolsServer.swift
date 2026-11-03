@@ -7,57 +7,77 @@ import Glibc
 
 /// `jetlined mcp`: the MCP server (stdio, newline-delimited JSON-RPC) that
 /// gives an agent Jetline's tools. Jetline launches it for each agent with
-/// the engine's socket and the agent's workspace in its environment; every
-/// tool call is relayed to the engine, which decides what the caller may do.
+/// the engine's socket and the agent's workspace in its environment, and
+/// registers it with the agent CLIs so a session the user starts by hand
+/// gets it too (see `AgentToolsCaller` for how that one finds its
+/// workspace). Every tool call is relayed to the engine, which decides what
+/// the caller may do. Outside any workspace it serves no tools, so it costs
+/// sessions in unrelated projects nothing.
 enum AgentToolsServer {
     static func run() -> Never {
         signal(SIGPIPE, SIG_IGN)
-        let env = ProcessInfo.processInfo.environment
-        guard let socket = env[AgentToolsLaunch.socketEnvKey]?.nonBlank,
-              let workspaceId = env[AgentToolsLaunch.workspaceEnvKey]?.nonBlank else {
-            FileHandle.standardError.write(Data("jetlined mcp: run by Jetline for an agent; \(AgentToolsLaunch.socketEnvKey) and \(AgentToolsLaunch.workspaceEnvKey) aren't set\n".utf8))
-            exit(1)
-        }
-        let link = EngineLink(socketPath: socket)
+        var caller: AgentToolsCaller?
+        var link: EngineLink?
         while let line = readLine(strippingNewline: true) {
             guard let data = line.data(using: .utf8), !data.isEmpty,
                   let message = try? JSONValue.parse(data) else { continue }
-            // Notifications (no id) need no answer.
-            guard let id = message["id"], !id.isNull else { continue }
-            let reply: JSONValue
-            switch message["method"]?.string {
-            case "initialize":
-                reply = result(id, [
-                    "protocolVersion": message["params"]?["protocolVersion"] ?? "2025-06-18",
-                    "capabilities": ["tools": .object([:])],
-                    "serverInfo": ["name": .string(AgentTools.serverName), "version": .string(JetlineVersion.current)],
-                    "instructions": .string(instructions)
-                ])
-            case "ping":
-                reply = result(id, [:])
-            case "tools/list":
-                reply = result(id, ["tools": .array(AgentTools.catalog.map(describe))])
-            case "tools/call":
-                let name = message["params"]?["name"]?.string ?? ""
-                let arguments = message["params"]?["arguments"] ?? .object([:])
-                let outcome = link.callTool(name, arguments: arguments, workspaceId: workspaceId)
-                reply = result(id, [
-                    "content": .array([.object(["type": "text", "text": .string(outcome.text)])]),
-                    "isError": .bool(outcome.isError)
-                ])
-            default:
-                reply = .object([
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": ["code": -32601, "message": .string("Unknown method \(message["method"]?.string ?? "")")]
-                ])
+            // Until Jetline knows this directory (it may start after the agent).
+            if caller == nil, message["id"].map({ !$0.isNull }) == true {
+                caller = AgentToolsCaller.current()
+                link = caller.map { EngineLink(socketPath: $0.socketPath) }
             }
-            var out = reply.serialized()
-            out.append(0x0A)
-            FileHandle.standardOutput.write(out)
+            let out = reply(to: message, caller: caller) { name, arguments in
+                guard let caller, let link else { return notInWorkspace }
+                return link.callTool(name, arguments: arguments, workspaceId: caller.workspaceId)
+            }
+            guard var bytes = out?.serialized() else { continue }
+            bytes.append(0x0A)
+            FileHandle.standardOutput.write(bytes)
         }
         exit(0)
     }
+
+    /// The answer to one JSON-RPC message, or `nil` for a notification.
+    /// Without a caller there are no tools to list or call.
+    static func reply(
+        to message: JSONValue,
+        caller: AgentToolsCaller?,
+        call: (_ tool: String, _ arguments: JSONValue) -> API.AgentToolResult
+    ) -> JSONValue? {
+        guard let id = message["id"], !id.isNull else { return nil }
+        switch message["method"]?.string {
+        case "initialize":
+            return result(id, [
+                "protocolVersion": message["params"]?["protocolVersion"] ?? "2025-06-18",
+                "capabilities": ["tools": .object([:])],
+                "serverInfo": ["name": .string(AgentTools.serverName), "version": .string(JetlineVersion.current)],
+                "instructions": .string(caller == nil ? notInWorkspace.text : instructions)
+            ])
+        case "ping":
+            return result(id, [:])
+        case "tools/list":
+            return result(id, ["tools": .array(caller == nil ? [] : AgentTools.catalog.map(describe))])
+        case "tools/call":
+            let name = message["params"]?["name"]?.string ?? ""
+            let arguments = message["params"]?["arguments"] ?? .object([:])
+            let outcome = caller == nil ? notInWorkspace : call(name, arguments)
+            return result(id, [
+                "content": .array([.object(["type": "text", "text": .string(outcome.text)])]),
+                "isError": .bool(outcome.isError)
+            ])
+        default:
+            return .object([
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": ["code": -32601, "message": .string("Unknown method \(message["method"]?.string ?? "")")]
+            ])
+        }
+    }
+
+    private static let notInWorkspace = API.AgentToolResult(
+        text: "This session isn't in a Jetline workspace, so Jetline's tools are off. They're on for sessions started in a workspace's worktree while Jetline is running.",
+        isError: true
+    )
 
     private static let instructions = """
     Jetline manages this repository's worktrees ("workspaces") and shows them in the user's sidebar. \

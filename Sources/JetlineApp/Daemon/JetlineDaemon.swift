@@ -69,8 +69,10 @@ public enum JetlineDaemon {
       rpc METHOD [JSON]
                 Send one request to the running engine and print the reply
                 (for scripting and debugging; methods are in Protocol/API.swift).
-      mcp       Serve Jetline's agent tools over MCP on stdin/stdout. Jetline
-                starts this for the agents it launches.
+      mcp       Serve Jetline's agent tools over MCP on stdin/stdout, for the
+                workspace holding the working directory. Jetline starts this for
+                the agents it launches and registers it with Claude Code and Codex
+                (as ~/.jetline/bin/jetline) for the ones started by hand.
       version   Print the version.
       info      Print version and protocol as JSON.
 
@@ -198,6 +200,7 @@ public enum JetlineDaemon {
             server.accept(onListener: listener)
             // Agents this engine launches reach it on the same socket.
             engine.agentToolsSocket = socketPath
+            AgentToolsRegistration.registerInBackground { log($0) }
 
             for sig in [SIGTERM, SIGINT] {
                 signal(sig, SIG_IGN)

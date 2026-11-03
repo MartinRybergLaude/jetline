@@ -205,18 +205,30 @@ struct AgentToolsLaunch: Sendable, Hashable {
         let prefix = "mcp_servers.\(AgentTools.serverName)"
         var out = [
             "-c", "\(prefix).command=\(Self.toml(executable))",
-            "-c", "\(prefix).args=[\(args.map(Self.toml).joined(separator: ", "))]",
-            "-c", "\(prefix).default_tools_approval_mode=\"writes\"",
-            // Codex gives up on a tool call after 60s by default.
-            "-c", "\(prefix).tool_timeout_sec=\(AgentTools.maxWaitSeconds + 30)"
+            "-c", "\(prefix).args=\(Self.toml(args))"
         ]
+        for (key, value) in Self.codexServerSettings {
+            out += ["-c", "\(prefix).\(key)=\(value)"]
+        }
         for (key, value) in env.sorted(by: { $0.key < $1.key }) {
             out += ["-c", "\(prefix).env.\(key)=\(Self.toml(value))"]
         }
         return out
     }
 
-    private static func toml(_ string: String) -> String {
+    /// Codex server settings besides the command, as TOML values: shared
+    /// with the table `AgentToolsRegistration` writes to its config.
+    static let codexServerSettings: [(key: String, value: String)] = [
+        ("default_tools_approval_mode", "\"writes\""),
+        // Codex gives up on a tool call after 60s by default.
+        ("tool_timeout_sec", "\(AgentTools.maxWaitSeconds + 30)")
+    ]
+
+    static func toml(_ strings: [String]) -> String {
+        "[\(strings.map(toml).joined(separator: ", "))]"
+    }
+
+    static func toml(_ string: String) -> String {
         "\"" + string.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
 }
