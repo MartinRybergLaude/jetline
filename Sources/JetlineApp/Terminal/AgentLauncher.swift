@@ -78,6 +78,47 @@ enum AgentLauncher {
         )
     }
 
+    /// Whether Claude Code has a conversation for `cwd` that `claude
+    /// --continue` can pick up — without one it exits instead of starting.
+    /// `--continue` takes the newest session file, and a session that never
+    /// got a user message has nothing to continue.
+    static func hasClaudeConversation(inWorkingDirectory cwd: String) -> Bool {
+        let configDir = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"]?.nonBlank
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude").path
+        let projectDir = URL(fileURLWithPath: configDir)
+            .appendingPathComponent("projects")
+            .appendingPathComponent(claudeProjectDirectoryName(forWorkingDirectory: cwd))
+        let sessions = (try? FileManager.default.contentsOfDirectory(
+            at: projectDir,
+            includingPropertiesForKeys: [.contentModificationDateKey]
+        )) ?? []
+        let newest = sessions
+            .filter { $0.pathExtension == "jsonl" }
+            .max { modificationDate($0) < modificationDate($1) }
+        guard let newest, let contents = try? String(contentsOf: newest, encoding: .utf8) else { return false }
+        return claudeSessionHasUserMessage(contents)
+    }
+
+    /// Whether a Claude Code session transcript (JSON lines) has a user turn.
+    static func claudeSessionHasUserMessage(_ transcript: String) -> Bool {
+        transcript.split(whereSeparator: \.isNewline).contains { line in
+            line.contains("\"type\":\"user\"")
+        }
+    }
+
+    private static func modificationDate(_ url: URL) -> Date {
+        (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+    }
+
+    /// Claude Code keeps a project's conversations under `projects/` in a
+    /// directory named after the working directory, every character other
+    /// than an ASCII letter or digit replaced by `-`.
+    static func claudeProjectDirectoryName(forWorkingDirectory cwd: String) -> String {
+        String(cwd.unicodeScalars.map { scalar in
+            scalar.isASCII && CharacterSet.alphanumerics.contains(scalar) ? Character(scalar) : "-"
+        })
+    }
+
     private static func agentEnv() -> [String: String] {
         ["JETLINE": "1"]
     }

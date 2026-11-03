@@ -35,10 +35,13 @@ final class InspectorTabsAccessory: NSSplitViewItemAccessoryViewController {
         control.trackingMode = .selectOne
         // Xcode's inspector tabs: the thumb lifts into a glass lens that
         // follows the pointer while it's held. (macOS 26 draws the plain
-        // segmented look.)
+        // segmented look.) `role` only exists in the macOS 27 SDK, so older
+        // toolchains skip it at compile time.
+        #if compiler(>=6.4)
         if #available(macOS 27, *) {
             control.role = .tabs
         }
+        #endif
         control.segmentDistribution = .fillEqually
         control.controlSize = .large
         control.target = self

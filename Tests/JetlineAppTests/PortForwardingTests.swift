@@ -361,7 +361,9 @@ final class PortForwardingTests: XCTestCase {
         while true {
             do {
                 return try LoopbackListener(port: port, onAccept: onAccept)
-            } catch where Date() < deadline {
+            } catch {
+                // Not `catch where`: Swift 6.3 crashes in SILGen on it here.
+                guard Date() < deadline else { throw error }
                 try await Task.sleep(for: .milliseconds(50))
             }
         }

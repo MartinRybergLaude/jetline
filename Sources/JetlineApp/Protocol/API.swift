@@ -166,6 +166,18 @@ enum API {
         var isError: Bool
     }
 
+    /// The workspace whose worktree holds `path`, for an agent tools server
+    /// Jetline didn't launch (an agent the user started themselves).
+    struct ResolveAgentWorkspace: RPC {
+        typealias Response = ResolvedAgentWorkspace
+        static let method = "agentTools.resolve"
+        var path: String
+    }
+
+    struct ResolvedAgentWorkspace: Codable, Sendable {
+        var workspaceId: String?
+    }
+
     struct DeleteWorkspace: RPC {
         typealias Response = Empty
         static let method = "workspace.delete"

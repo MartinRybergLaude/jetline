@@ -47,6 +47,30 @@ final class WorkspaceStacksTests: XCTestCase {
         XCTAssertEqual(ids, ["a", "b", "c", "d"])
     }
 
+    func testUngroupedSidebarOrderKeepsListOrderFlat() {
+        let order = WorkspaceStacks.sidebarOrder([c, d, b, a], repo: repo, grouped: false)
+        XCTAssertEqual(order.map(\.workspace.id), ["c", "d", "b", "a"])
+        XCTAssertEqual(order.map(\.depth), [0, 0, 0, 0])
+    }
+
+    func testUngroupedReorderMovesOneWorkspace() {
+        // Grouped, moving a would carry b and c along; flat, it moves alone.
+        let ids = WorkspaceStacks.reorder([d, a, b, c], moving: "a", toGap: 4, repo: repo, grouped: false)
+        XCTAssertEqual(ids, ["d", "b", "c", "a"])
+    }
+
+    func testReorderAmongVisibleKeepsHiddenInPlace() {
+        // b is hidden, so c shows as a root: sidebar d, a, c. Moving c to the
+        // top shuffles only the shown rows; b keeps its slot in the list.
+        let ids = WorkspaceStacks.reorder([d, a, b, c], moving: "c", toGap: 0, repo: repo, visible: ["d", "a", "c"])
+        XCTAssertEqual(ids, ["c", "d", "b", "a"])
+    }
+
+    func testReorderAmongVisibleIgnoresAHiddenMovedRow() {
+        let ids = WorkspaceStacks.reorder([d, a, b, c], moving: "b", toGap: 0, repo: repo, visible: ["d", "a"])
+        XCTAssertEqual(ids, ["d", "a", "b", "c"])
+    }
+
     func testLocalStackSummary() throws {
         let all = [a, b, c, d]
         let summary = try XCTUnwrap(StackSummary.build(for: b, in: all, repo: repo) { _ in nil })
