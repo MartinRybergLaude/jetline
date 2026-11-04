@@ -28,6 +28,7 @@ NOTARY_PROFILE ?= jetline-notary
 ENTITLEMENTS   := BundleResources/Jetline.entitlements
 VERSION         = $(shell /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" BundleResources/Info.plist)
 DMG_NAME        = Jetline-$(VERSION).dmg
+BUNDLE_ID       = $(shell /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" BundleResources/Info.plist)
 
 .PHONY: all build app run release-app sign dmg notarize release clean test resolve linux-daemon deploy-daemon
 
@@ -87,6 +88,16 @@ app: build
 	@# XPC service entitlements — for release, scripts/sign.sh signs each
 	@# nested piece without `--deep`.
 	@codesign --force --deep --sign - "$(APP_BUNDLE)"
+	@# Re-sign the outer bundle with an explicit designated requirement.
+	@# An ad-hoc signature's default requirement is its cdhash, which
+	@# changes on every build, and TCC files each privacy answer under it:
+	@# after a rebuild macOS has forgotten every "Don't Allow", so the next
+	@# agent that runs a broad `find ~` sets off the same Desktop / Photos /
+	@# Music / network-volume / app-data prompts again. Pinning the
+	@# requirement to the bundle identifier keeps those answers across
+	@# rebuilds. Dev builds only: scripts/sign.sh re-signs with --force and
+	@# no -r, so the Developer ID requirement replaces this one.
+	@codesign --force --sign - -r='designated => identifier "$(BUNDLE_ID)"' "$(APP_BUNDLE)"
 	@echo "Built $(APP_BUNDLE)"
 
 run: app
