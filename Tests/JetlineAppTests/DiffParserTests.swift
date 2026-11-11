@@ -141,6 +141,18 @@ final class DiffParserTests: XCTestCase {
         XCTAssertFalse(untracked.isBinary)
         let small = try XCTUnwrap(byPath["small.txt"])
         XCTAssertEqual(small.hunks.flatMap(\.lines).map(\.text), ["a", "b"])
+        XCTAssertNil(small.omittedHunksHash)
+
+        var edited = bigLines
+        edited[10_000] = "an edit that keeps the line counts"
+        try (edited.joined(separator: "\n") + "\n").write(
+            to: dir.appendingPathComponent("untracked.log"), atomically: true, encoding: .utf8
+        )
+        let after = try await DiffComputer.compute(worktreePath: dir.path, baseBranch: "main", mode: .local)
+        let editedFile = try XCTUnwrap(after.files.first { $0.path == "untracked.log" })
+        XCTAssertEqual(editedFile.additions, untracked.additions)
+        XCTAssertNotNil(untracked.omittedHunksHash)
+        XCTAssertNotEqual(editedFile, untracked)
     }
 
     private func makeTempDir() throws -> URL {

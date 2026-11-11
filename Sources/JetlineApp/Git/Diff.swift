@@ -30,6 +30,7 @@ struct FileDiff: Identifiable, Equatable, Codable, Sendable {
     /// for this entry. UI uses it to suppress empty-hunk rendering and show
     /// a "binary" hint instead.
     var isBinary: Bool = false
+    var omittedHunksHash: Int?
 
     enum Status: String, Codable, Sendable {
         case added = "A"
@@ -222,14 +223,16 @@ enum DiffComputer {
         for entry in entries {
             let stat = stats[entry.path] ?? (0, 0)
             let payload = hunksByPath[entry.path] ?? .empty
-            files.append(FileDiff(
+            var file = FileDiff(
                 path: entry.path,
                 status: entry.status,
                 additions: stat.0,
                 deletions: stat.1,
-                hunks: snapshotHunks(payload.hunks, budget: &budget),
+                hunks: payload.hunks,
                 isBinary: payload.isBinary
-            ))
+            )
+            capHunks(of: &file, budget: &budget)
+            files.append(file)
             totalAdds += stat.0
             totalDels += stat.1
         }
@@ -249,7 +252,7 @@ enum DiffComputer {
                 guard !trackedPaths.contains(path),
                       var file = untrackedFileDiff(path: path, worktreePath: worktreePath, budget: &untrackedBudget)
                 else { continue }
-                file.hunks = snapshotHunks(file.hunks, budget: &budget)
+                capHunks(of: &file, budget: &budget)
                 totalAdds += file.additions
                 files.append(file)
             }
@@ -315,13 +318,26 @@ enum DiffComputer {
     private static let maxSnapshotFileHunkBytes = 256 << 10
     private static let maxSnapshotHunkBytes = 2 << 20
 
-    private static func snapshotHunks(_ hunks: [FileDiff.Hunk], budget: inout Int) -> [FileDiff.Hunk] {
-        let size = hunks.reduce(0) { total, hunk in
-            hunk.lines.reduce(total + hunk.header.utf8.count) { $0 + $1.text.utf8.count + 1 }
+    private static let encodedLineOverhead = 40
+
+    private static func capHunks(of file: inout FileDiff, budget: inout Int) {
+        let size = file.hunks.reduce(0) { total, hunk in
+            hunk.lines.reduce(total + hunk.header.utf8.count) { $0 + $1.text.utf8.count + encodedLineOverhead }
         }
-        guard size <= min(maxSnapshotFileHunkBytes, budget) else { return [] }
-        budget -= size
-        return hunks
+        if size <= min(maxSnapshotFileHunkBytes, budget) {
+            budget -= size
+            return
+        }
+        var hasher = Hasher()
+        for hunk in file.hunks {
+            hasher.combine(hunk.header)
+            for line in hunk.lines {
+                hasher.combine(line.kind)
+                hasher.combine(line.text)
+            }
+        }
+        file.omittedHunksHash = hasher.finalize()
+        file.hunks = []
     }
 
     /// `path`'s diff with the whole file as context, for the full-file diff
