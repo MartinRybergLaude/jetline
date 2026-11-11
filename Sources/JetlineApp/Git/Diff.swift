@@ -218,6 +218,7 @@ enum DiffComputer {
         var files: [FileDiff] = []
         var totalAdds = 0
         var totalDels = 0
+        var budget = maxSnapshotHunkBytes
         for entry in entries {
             let stat = stats[entry.path] ?? (0, 0)
             let payload = hunksByPath[entry.path] ?? .empty
@@ -226,7 +227,7 @@ enum DiffComputer {
                 status: entry.status,
                 additions: stat.0,
                 deletions: stat.1,
-                hunks: payload.hunks,
+                hunks: snapshotHunks(payload.hunks, budget: &budget),
                 isBinary: payload.isBinary
             ))
             totalAdds += stat.0
@@ -242,12 +243,13 @@ enum DiffComputer {
             let trackedPaths = Set(files.map(\.path))
             // Shared across the listing: an untracked build or fixture dump
             // would otherwise materialize every file as hunk lines.
-            var budget = maxUntrackedSnapshotBytes
+            var untrackedBudget = maxUntrackedSnapshotBytes
             for sub in untracked.stdout.split(separator: "\0") {
                 let path = String(sub)
                 guard !trackedPaths.contains(path),
-                      let file = untrackedFileDiff(path: path, worktreePath: worktreePath, budget: &budget)
+                      var file = untrackedFileDiff(path: path, worktreePath: worktreePath, budget: &untrackedBudget)
                 else { continue }
+                file.hunks = snapshotHunks(file.hunks, budget: &budget)
                 totalAdds += file.additions
                 files.append(file)
             }
@@ -310,6 +312,17 @@ enum DiffComputer {
 
     private static let maxUntrackedPreviewBytes = 4 << 20
     private static let maxUntrackedSnapshotBytes = 16 << 20
+    private static let maxSnapshotFileHunkBytes = 256 << 10
+    private static let maxSnapshotHunkBytes = 2 << 20
+
+    private static func snapshotHunks(_ hunks: [FileDiff.Hunk], budget: inout Int) -> [FileDiff.Hunk] {
+        let size = hunks.reduce(0) { total, hunk in
+            hunk.lines.reduce(total + hunk.header.utf8.count) { $0 + $1.text.utf8.count + 1 }
+        }
+        guard size <= min(maxSnapshotFileHunkBytes, budget) else { return [] }
+        budget -= size
+        return hunks
+    }
 
     /// `path`'s diff with the whole file as context, for the full-file diff
     /// tab: one hunk spanning every line, changes inline. Untracked files come
