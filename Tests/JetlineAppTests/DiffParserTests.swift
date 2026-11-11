@@ -108,6 +108,53 @@ final class DiffParserTests: XCTestCase {
         XCTAssertNil(DiffComputer.untrackedFileDiff(path: "gone.txt", worktreePath: dir.path))
     }
 
+    func testSnapshotLeavesOutHunksOfOversizedFiles() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        func git(_ args: String...) async throws {
+            _ = try await GitRunner.runChecked(["-c", "user.email=t@t", "-c", "user.name=t"] + args, cwd: dir.path)
+        }
+        try await git("init", "-q", "-b", "main")
+        try "a\n".write(to: dir.appendingPathComponent("big.log"), atomically: true, encoding: .utf8)
+        try "a\n".write(to: dir.appendingPathComponent("small.txt"), atomically: true, encoding: .utf8)
+        try await git("add", ".")
+        try await git("commit", "-qm", "init")
+
+        let bigLines = (0..<20_000).map { "line \($0) of a log that nobody reads in the changes panel" }
+        try (bigLines.joined(separator: "\n") + "\n").write(
+            to: dir.appendingPathComponent("big.log"), atomically: true, encoding: .utf8
+        )
+        try "b\n".write(to: dir.appendingPathComponent("small.txt"), atomically: true, encoding: .utf8)
+        try (bigLines.joined(separator: "\n") + "\n").write(
+            to: dir.appendingPathComponent("untracked.log"), atomically: true, encoding: .utf8
+        )
+
+        let snapshot = try await DiffComputer.compute(worktreePath: dir.path, baseBranch: "main", mode: .local)
+        let byPath = Dictionary(uniqueKeysWithValues: snapshot.files.map { ($0.path, $0) })
+
+        let big = try XCTUnwrap(byPath["big.log"])
+        XCTAssertTrue(big.hunks.isEmpty)
+        XCTAssertEqual(big.additions, 20_000)
+        let untracked = try XCTUnwrap(byPath["untracked.log"])
+        XCTAssertTrue(untracked.hunks.isEmpty)
+        XCTAssertEqual(untracked.additions, 20_000)
+        XCTAssertFalse(untracked.isBinary)
+        let small = try XCTUnwrap(byPath["small.txt"])
+        XCTAssertEqual(small.hunks.flatMap(\.lines).map(\.text), ["a", "b"])
+        XCTAssertNil(small.omittedHunksHash)
+
+        var edited = bigLines
+        edited[10_000] = "an edit that keeps the line counts"
+        try (edited.joined(separator: "\n") + "\n").write(
+            to: dir.appendingPathComponent("untracked.log"), atomically: true, encoding: .utf8
+        )
+        let after = try await DiffComputer.compute(worktreePath: dir.path, baseBranch: "main", mode: .local)
+        let editedFile = try XCTUnwrap(after.files.first { $0.path == "untracked.log" })
+        XCTAssertEqual(editedFile.additions, untracked.additions)
+        XCTAssertNotNil(untracked.omittedHunksHash)
+        XCTAssertNotEqual(editedFile, untracked)
+    }
+
     private func makeTempDir() throws -> URL {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("jetline-difftest-\(UUID().uuidString.prefix(8))")

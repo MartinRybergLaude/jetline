@@ -30,6 +30,7 @@ struct FileDiff: Identifiable, Equatable, Codable, Sendable {
     /// for this entry. UI uses it to suppress empty-hunk rendering and show
     /// a "binary" hint instead.
     var isBinary: Bool = false
+    var omittedHunksHash: Int?
 
     enum Status: String, Codable, Sendable {
         case added = "A"
@@ -218,17 +219,20 @@ enum DiffComputer {
         var files: [FileDiff] = []
         var totalAdds = 0
         var totalDels = 0
+        var budget = maxSnapshotHunkBytes
         for entry in entries {
             let stat = stats[entry.path] ?? (0, 0)
             let payload = hunksByPath[entry.path] ?? .empty
-            files.append(FileDiff(
+            var file = FileDiff(
                 path: entry.path,
                 status: entry.status,
                 additions: stat.0,
                 deletions: stat.1,
                 hunks: payload.hunks,
                 isBinary: payload.isBinary
-            ))
+            )
+            capHunks(of: &file, budget: &budget)
+            files.append(file)
             totalAdds += stat.0
             totalDels += stat.1
         }
@@ -242,12 +246,13 @@ enum DiffComputer {
             let trackedPaths = Set(files.map(\.path))
             // Shared across the listing: an untracked build or fixture dump
             // would otherwise materialize every file as hunk lines.
-            var budget = maxUntrackedSnapshotBytes
+            var untrackedBudget = maxUntrackedSnapshotBytes
             for sub in untracked.stdout.split(separator: "\0") {
                 let path = String(sub)
                 guard !trackedPaths.contains(path),
-                      let file = untrackedFileDiff(path: path, worktreePath: worktreePath, budget: &budget)
+                      var file = untrackedFileDiff(path: path, worktreePath: worktreePath, budget: &untrackedBudget)
                 else { continue }
+                capHunks(of: &file, budget: &budget)
                 totalAdds += file.additions
                 files.append(file)
             }
@@ -310,6 +315,30 @@ enum DiffComputer {
 
     private static let maxUntrackedPreviewBytes = 4 << 20
     private static let maxUntrackedSnapshotBytes = 16 << 20
+    private static let maxSnapshotFileHunkBytes = 256 << 10
+    private static let maxSnapshotHunkBytes = 2 << 20
+
+    private static let encodedLineOverhead = 40
+
+    private static func capHunks(of file: inout FileDiff, budget: inout Int) {
+        let size = file.hunks.reduce(0) { total, hunk in
+            hunk.lines.reduce(total + hunk.header.utf8.count) { $0 + $1.text.utf8.count + encodedLineOverhead }
+        }
+        if size <= min(maxSnapshotFileHunkBytes, budget) {
+            budget -= size
+            return
+        }
+        var hasher = Hasher()
+        for hunk in file.hunks {
+            hasher.combine(hunk.header)
+            for line in hunk.lines {
+                hasher.combine(line.kind)
+                hasher.combine(line.text)
+            }
+        }
+        file.omittedHunksHash = hasher.finalize()
+        file.hunks = []
+    }
 
     /// `path`'s diff with the whole file as context, for the full-file diff
     /// tab: one hunk spanning every line, changes inline. Untracked files come

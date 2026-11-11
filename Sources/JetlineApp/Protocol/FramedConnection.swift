@@ -59,6 +59,7 @@ final class FramedConnection: @unchecked Sendable {
     private let lock = NSLock()
     private var closed = false
     private var _pendingWriteBytes = 0
+    private var _uncountedPendingBytes = 0
 
     /// Called on the read queue with every complete frame read in one drain.
     var onFrames: (@Sendable ([Frame]) -> Void)?
@@ -82,6 +83,7 @@ final class FramedConnection: @unchecked Sendable {
     }
 
     var pendingWriteBytes: Int { lock.withLock { _pendingWriteBytes } }
+    var backlogBytes: Int { lock.withLock { _pendingWriteBytes - _uncountedPendingBytes } }
     var isClosed: Bool { lock.withLock { closed } }
 
     func start() {
@@ -102,7 +104,7 @@ final class FramedConnection: @unchecked Sendable {
         return frame
     }
 
-    func send(_ kind: FrameKind, _ payload: Data) {
+    func send(_ kind: FrameKind, _ payload: Data, countsTowardBacklog: Bool = true) {
         let frame = Self.frame(kind, payload)
         let size = frame.count
         let bytes = frame
@@ -112,10 +114,12 @@ final class FramedConnection: @unchecked Sendable {
         defer { lock.unlock() }
         guard !closed else { return }
         _pendingWriteBytes += size
+        if !countsTowardBacklog { _uncountedPendingBytes += size }
         writeQueue.async { [self] in
             let failure = writeAll(fd: writeFD, bytes)
             let drained: Bool = lock.withLock {
                 _pendingWriteBytes -= size
+                if !countsTowardBacklog { _uncountedPendingBytes -= size }
                 if _pendingWriteBytes > drainThreshold { wasBacklogged = true }
                 guard wasBacklogged, _pendingWriteBytes == 0 else { return false }
                 wasBacklogged = false

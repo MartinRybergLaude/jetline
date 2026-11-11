@@ -154,6 +154,7 @@ final class EngineConnection {
             client.start()
             let hello = try await client.call(API.Hello(protocolVersion: Wire.protocolVersion, clientName: "Jetline \(JetlineVersion.current)"))
             guard self.generation == generation else { return }
+            if client.isClosed { throw WireError.disconnected }
             self.hello = hello
             self.status = .connected
             onConnected?(client, hello)

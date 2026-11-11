@@ -209,7 +209,7 @@ final class EngineServer {
         Task { @MainActor in
             do {
                 let result = try await handler(payload, clientId)
-                clients[clientId]?.connection.send(.message, result)
+                clients[clientId]?.connection.send(.message, result, countsTowardBacklog: head.method != API.Hello.method)
             } catch {
                 let wire = (error as? WireError) ?? WireError(error.localizedDescription)
                 respondError(head.id, wire, to: clientId)
@@ -255,7 +255,7 @@ final class EngineServer {
     private static let maxClientBacklog = 64 * 1024 * 1024
 
     private func deliver(_ data: Data, to client: Client) {
-        guard client.connection.pendingWriteBytes < Self.maxClientBacklog else {
+        guard client.connection.backlogBytes < Self.maxClientBacklog else {
             client.connection.close()
             return
         }

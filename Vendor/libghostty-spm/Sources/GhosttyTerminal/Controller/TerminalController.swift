@@ -288,12 +288,11 @@ public final class TerminalController {
     }
 
     func handleWakeup() {
+        tick()
         guard shouldProcessWakeup?() ?? true else {
             TerminalDebugLog.log(.lifecycle, "wakeup suspended")
             return
         }
-
-        tick()
         onWakeup?()
     }
 
