@@ -238,6 +238,18 @@ final class WireFramingTests: XCTestCase {
         await eventually("drained") { drained.value == 1 && h.connection.pendingWriteBytes == 0 }
     }
 
+    func testUncountedFramesStayOutOfTheBacklog() async throws {
+        let h = try harness()
+        let snapshot = 4 * 1024 * 1024
+        h.connection.send(.message, Data(count: snapshot), countsTowardBacklog: false)
+        h.connection.send(.message, Data(count: 1000))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertGreaterThan(h.connection.pendingWriteBytes, snapshot)
+        XCTAssertEqual(h.connection.backlogBytes, 1005)
+        _ = await TestIO.readToEndWhile(h.peer) { h.connection.pendingWriteBytes > 0 }
+        await eventually("drained") { h.connection.pendingWriteBytes == 0 && h.connection.backlogBytes == 0 }
+    }
+
     // MARK: Terminal frames
 
     func testTerminalOutputFrameRoundTrip() throws {
