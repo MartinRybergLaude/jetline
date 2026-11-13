@@ -11,32 +11,39 @@ struct SidebarView: View {
     static let hostTitleInset = SidebarMetrics.leading
 
     var body: some View {
+        let grouped = state.hosts.count > 1
+        let hostsById = Dictionary(state.hosts.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let entries = SidebarRepositoryOrder.entries(
+            state.hosts.map { (id: $0.id, repositories: isCollapsed($0) ? [] : $0.repositories) },
+            grouped: grouped
+        )
         List {
-            ForEach(state.hosts) { host in
-                // With only this Mac there's nothing to group.
-                let grouped = state.hosts.count > 1
-                let repos = isCollapsed(host) ? [] : host.repositories
-                if grouped, repos.isEmpty {
-                    // A section of its own rather than a row, so the title
-                    // lands exactly where it does over a first repository.
-                    Section {} header: {
-                        hostHeader(host).hostHeaderPlacement()
+            ForEach(entries) { entry in
+                if let host = hostsById[entry.hostId] {
+                    if let repo = entry.repository {
+                        RepositorySection(
+                            repo: repo,
+                            onNewWorkspace: { showingCreation = CreationRequest(repository: repo, baseWorkspaceId: $0) },
+                            onOpenSettings: { showingRepoSettings = repo },
+                            groupHeader: grouped && entry.isFirstOfHost ? AnyView(hostHeader(host)) : nil
+                        )
+                        // A remote whose link is down stays listed, greyed out.
+                        .saturation(host.isLocal || host.isSynced ? 1 : 0)
+                        .opacity(host.isLocal || host.isSynced ? 1 : 0.5)
+                    } else {
+                        // A section of its own rather than a row, so the title
+                        // lands exactly where it does over a first repository.
+                        Section {} header: {
+                            hostHeader(host).hostHeaderPlacement()
+                        }
+                        .moveDisabled(true)
                     }
                 }
-                ForEach(repos) { repo in
-                    RepositorySection(
-                        repo: repo,
-                        onNewWorkspace: { showingCreation = CreationRequest(repository: repo, baseWorkspaceId: $0) },
-                        onOpenSettings: { showingRepoSettings = repo },
-                        groupHeader: grouped && repo.id == repos.first?.id ? AnyView(hostHeader(host)) : nil
-                    )
-                    // A remote whose link is down stays listed, greyed out.
-                    .saturation(host.isLocal || host.isSynced ? 1 : 0)
-                    .opacity(host.isLocal || host.isSynced ? 1 : 0.5)
-                }
-                .onMove { offsets, destination in
-                    state.moveRepositorySections(in: host, from: offsets, to: destination)
-                }
+            }
+            .onMove { offsets, destination in
+                guard let move = SidebarRepositoryOrder.move(in: entries, from: offsets, to: destination),
+                      let host = hostsById[move.hostId] else { return }
+                state.moveRepositorySections(in: host, from: move.offsets, to: move.destination)
             }
         }
         .listStyle(.sidebar)
