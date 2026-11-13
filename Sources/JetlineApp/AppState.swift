@@ -578,6 +578,8 @@ final class AppState: ObservableObject {
     /// Handler for `ForEach.onMove` within one host's group (SwiftUI's
     /// "insert before this index" convention, which `Array.move` shares).
     func moveRepositorySections(in host: EngineHost, from offsets: IndexSet, to destination: Int) {
+        guard let last = offsets.last, last < host.repositories.count,
+              (0...host.repositories.count).contains(destination) else { return }
         host.repositories.move(fromOffsets: offsets, toOffset: destination)
         rebuildAggregates()
         perform(API.ReorderRepositories(orderedIds: host.repositories.map(\.id)), on: host.connection)
