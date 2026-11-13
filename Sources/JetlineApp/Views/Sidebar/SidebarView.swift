@@ -36,6 +36,7 @@ struct SidebarView: View {
                         Section {} header: {
                             hostHeader(host).hostHeaderPlacement()
                         }
+                        .moveDisabled(true)
                     }
                 }
             }
